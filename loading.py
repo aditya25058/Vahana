@@ -131,10 +131,25 @@ class ShardMap:
         return self.u8[s:s + (e - b)].view(dtype).reshape(info["shape"])
 
 
+_SAFETENSORS_DTYPES = {
+    "BF16": torch.bfloat16, "F16": torch.float16, "F32": torch.float32,
+    "F64": torch.float64, "U8": torch.uint8, "I8": torch.int8,
+    "I16": torch.int16, "I32": torch.int32, "I64": torch.int64,
+    "BOOL": torch.bool,
+}
+
+
 def _safetensors_dtype(tag: str) -> torch.dtype:
-    return {"BF16": torch.bfloat16, "F16": torch.float16,
-            "F32": torch.float32, "U8": torch.uint8,
-            "I64": torch.int64}.get(tag.upper(), torch.bfloat16)
+    """Exact dtype for a safetensors tag; unknown tags are a hard error.
+
+    Defaulting unknown tags to BF16 reinterpreted e.g. FP8 bytes as BF16
+    silently (garbage weights, no error).
+    """
+    dt = _SAFETENSORS_DTYPES.get(tag.upper())
+    if dt is None:
+        raise ValueError(f"unsupported safetensors dtype {tag!r} "
+                         f"(supported: {sorted(_SAFETENSORS_DTYPES)}; FP8 not yet)")
+    return dt
 
 
 class ShardHandles:
