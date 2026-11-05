@@ -346,7 +346,6 @@ class ColumnTieredMoEWrapper(nn.Module):
             cn = inter - hn
             per_rows, per_w = [], []
             for e in es:
-                slot_idx = self._ensure_hot(e)
                 kpos, rows = torch.where(mask[e])
                 per_rows.append(rows)
                 per_w.append(TW[rows, kpos])
@@ -365,7 +364,12 @@ class ColumnTieredMoEWrapper(nn.Module):
                     continue
                 xb[i, :n] = flat[per_rows[i]]
                 wb[i, :n, 0] = per_w[i].to(dt)
-                slot = pool["slots"][pool["expert_to_slot"][e]]
+                # Stage right after ensuring residency: when the tier's
+                # union exceeds its pool, a later _ensure_hot evicts this
+                # slot (the copy queues before that reload's DMA, which
+                # waits for compute).
+                pool_e, slot_idx = self._ensure_hot(e)
+                slot = pool_e["slots"][slot_idx]
                 wg[i].copy_(slot.gate_hot.weight)
                 wu[i].copy_(slot.up_hot.weight)
                 wd[i].copy_(slot.down_hot.weight)

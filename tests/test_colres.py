@@ -216,3 +216,22 @@ def test_grouped_gemm_matches_loop_path():
     assert a.shape == b.shape
     assert torch.allclose(a.float(), b.float(), atol=0.05, rtol=0.05)
     assert batched.dma_bytes == loop.dma_bytes  # same bytes, fewer launches
+
+
+def test_grouped_gemm_union_larger_than_pool():
+    """Regression: KeyError when the tier's union exceeded its slot pool
+    (earlier experts got evicted before their weights were staged)."""
+    spec, handles, keys = _setup()
+    dev = torch.device("cpu")
+    loop = ColumnTieredMoEWrapper(layer_idx=0, spec=spec, expert_keys=keys,
+                                  device=dev, capacity=1, handles=handles,
+                                  hot_frac=0.5)
+    batched = ColumnTieredMoEWrapper(layer_idx=0, spec=spec, expert_keys=keys,
+                                     device=dev, capacity=1, handles=handles,
+                                     hot_frac=0.5, grouped_gemm=True)
+    g = torch.Generator().manual_seed(7)
+    x = torch.randn(13, 8, dtype=torch.bfloat16, generator=g)
+    a = loop(x)
+    b = batched(x)
+    assert len({int(e) for e in spec.route(x)[0].unique()}) > 1  # union > pool
+    assert torch.allclose(a.float(), b.float(), atol=0.05, rtol=0.05)
