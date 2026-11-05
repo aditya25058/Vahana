@@ -178,6 +178,7 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
                    grouped_gemm: bool = False,
                    matrix_tiers: bool = False,
                    prefill_seed: str = "off",
+                   kv_layout: str = "full",
                    ) -> dict[str, Any]:
     """Greedy lockstep serve with ledger. Returns results dict."""
     from transformers.cache_utils import DynamicCache
@@ -208,6 +209,14 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
                              prefetch_conf=prefetch_conf, config=config,
                              prefault=prefault,
                              hot_col_frac=hot_col_frac, **_wrap_opts)
+    mla_patched = 0
+    if kv_layout == "latent":
+        # Exact latent KV for MLA attention (see mla_cache.py); refuses
+        # with a reason on non-MLA or non-eager models.
+        from .mla_cache import install_latent_kv
+        mla_patched = install_latent_kv(model)
+    elif kv_layout != "full":
+        raise ValueError(f"kv_layout {kv_layout!r} not in ('full', 'latent')")
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     # Lockstep decode reads logits[:, -1]: that is a real token for every
@@ -234,7 +243,11 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         torch.cuda.synchronize(device)
         torch.cuda.reset_peak_memory_stats(device)
     t_prefill = time.perf_counter()
-    past = DynamicCache() if use_cache else None
+    if use_cache and kv_layout == "latent":
+        from .mla_cache import LatentKVCache
+        past = LatentKVCache()
+    else:
+        past = DynamicCache() if use_cache else None
     with torch.no_grad():
         if prefill_chunk > 0 and generated_ids.shape[1] > prefill_chunk:
             logits, seqlen = None, generated_ids.shape[1]
@@ -358,6 +371,8 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
 
     texts = tokenizer.batch_decode(generated_ids[:, prompt_len:],
                                    skip_special_tokens=True)
+    from .mla_cache import cache_nbytes
+    kv_bytes = cache_nbytes(past) if past is not None else None
     total_hits = sum(w.hits for w in wrappers)
     total_misses = sum(w.misses for w in wrappers)
     total_dma_mb = sum(w.dma_bytes for w in wrappers) / (1024 ** 2)
@@ -432,6 +447,9 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         "total_misses": total_misses,
         "total_dma_mb": total_dma_mb,
         "peak_vram_gb": peak,
+        "kv_layout": kv_layout,
+        "mla_layers_patched": mla_patched,
+        "kv_cache_mb": None if kv_bytes is None else kv_bytes / (1024 ** 2),
         "placement": placement,
         "capacity": capacity,
         "hot_frac": hot_col_frac,
