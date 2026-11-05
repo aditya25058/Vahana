@@ -53,6 +53,15 @@ def apply_gate(g: torch.Tensor, u: torch.Tensor, activation: str) -> torch.Tenso
     return F.silu(g) * u
 
 
+def _rusage():
+    """Process resource usage (page-fault counters); None where unsupported."""
+    try:
+        import resource
+        return resource.getrusage(resource.RUSAGE_SELF)
+    except Exception:
+        return None
+
+
 def dma_after_compute(dma_stream: Any, device: torch.device) -> None:
     """Order the next copy on `dma_stream` after work queued on compute.
 
@@ -151,6 +160,10 @@ class TieredMoEWrapper(nn.Module):
         self.fetch_s = 0.0
         self.copy_s = 0.0
         self.forward_s = 0.0
+        # Process page faults taken while loading expert weights (minor =
+        # page cached but not yet mapped; major = read from disk).
+        self.load_minflt = 0
+        self.load_majflt = 0
 
     # -- loading ------------------------------------------------------
     def _expert_tensors(self, expert_id: int):
@@ -164,6 +177,16 @@ class TieredMoEWrapper(nn.Module):
 
     def _load_expert_to_slot(self, expert_id: int, slot_idx: int,
                              kind: str = "demand") -> int:
+        ru0 = _rusage()
+        try:
+            return self._load_expert_to_slot_impl(expert_id, slot_idx)
+        finally:
+            ru1 = _rusage()
+            if ru0 is not None and ru1 is not None:
+                self.load_minflt += ru1.ru_minflt - ru0.ru_minflt
+                self.load_majflt += ru1.ru_majflt - ru0.ru_majflt
+
+    def _load_expert_to_slot_impl(self, expert_id: int, slot_idx: int) -> int:
         slot = self.slots[slot_idx]
         t_gate, t_up, t_down = self._expert_tensors(expert_id)
         nbytes = int(t_gate.nbytes + t_up.nbytes + t_down.nbytes)
