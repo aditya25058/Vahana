@@ -145,13 +145,22 @@ class TieredMoEWrapper(nn.Module):
         self.routing_log = None
         self.cpu_ms = 0.0
         self.cpu_n = 0
+        # Host wall time by phase (step-time attribution): fetching tensors
+        # from the weight source, issuing slot copies (blocks the host for
+        # pageable sources), and the whole forward call.
+        self.fetch_s = 0.0
+        self.copy_s = 0.0
+        self.forward_s = 0.0
 
     # -- loading ------------------------------------------------------
     def _expert_tensors(self, expert_id: int):
         ks = self.expert_keys[expert_id]
-        return (self.handles.get_tensor(ks["gate"]),
-                self.handles.get_tensor(ks["up"]),
-                self.handles.get_tensor(ks["down"]))
+        t0 = time.perf_counter()
+        out = (self.handles.get_tensor(ks["gate"]),
+               self.handles.get_tensor(ks["up"]),
+               self.handles.get_tensor(ks["down"]))
+        self.fetch_s += time.perf_counter() - t0
+        return out
 
     def _load_expert_to_slot(self, expert_id: int, slot_idx: int,
                              kind: str = "demand") -> int:
@@ -159,6 +168,7 @@ class TieredMoEWrapper(nn.Module):
         t_gate, t_up, t_down = self._expert_tensors(expert_id)
         nbytes = int(t_gate.nbytes + t_up.nbytes + t_down.nbytes)
         use_stream = (self.dma_stream is not None and self.device.type == "cuda")
+        t0 = time.perf_counter()
         with torch.no_grad():
             if use_stream:
                 dma_after_compute(self.dma_stream, self.device)
@@ -170,6 +180,7 @@ class TieredMoEWrapper(nn.Module):
                 slot.gate_proj.weight.copy_(t_gate)
                 slot.up_proj.weight.copy_(t_up)
                 slot.down_proj.weight.copy_(t_down)
+        self.copy_s += time.perf_counter() - t0
         if slot_idx in self.slot_to_expert:
             self.expert_to_slot.pop(self.slot_to_expert.pop(slot_idx), None)
         self.slot_to_expert[slot_idx] = expert_id
@@ -290,6 +301,13 @@ class TieredMoEWrapper(nn.Module):
 
     # -- forward -------------------------------------------------------
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        t0 = time.perf_counter()
+        try:
+            return self._forward(hidden_states)
+        finally:
+            self.forward_s += time.perf_counter() - t0
+
+    def _forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         identity = hidden_states
         orig_shape = hidden_states.shape
         topk_indices, topk_weights = self.spec.route(hidden_states)
