@@ -31,7 +31,6 @@ correctness never depends on WHICH columns are hot).
 """
 from __future__ import annotations
 
-import time
 from typing import Any
 
 import torch
@@ -189,7 +188,24 @@ class ColumnTieredMoEWrapper(nn.Module):
         self.routing_log = None
         self.cpu_ms = 0.0
         self.cpu_n = 0
+        # Exposed cold-fetch stall, measured on the GPU: per cold fetch,
+        # how long the copy finished AFTER the hot GEMMs it hides behind
+        # (0 when fully hidden). Event pairs resolve lazily (flush_timing).
         self.stall_ms = 0.0
+        self.stall_n = 0
+        self._last_copy_event = None
+        self._stall_events: list[tuple] = []
+
+    def flush_timing(self) -> None:
+        """Fold completed (hot_done, copy_done) event pairs into stall_ms."""
+        pending = []
+        for hot_done, copy_done in self._stall_events:
+            if hot_done.query() and copy_done.query():
+                self.stall_ms += max(0.0, hot_done.elapsed_time(copy_done))
+                self.stall_n += 1
+            else:
+                pending.append((hot_done, copy_done))
+        self._stall_events = pending
 
     # -- loading ------------------------------------------------------
     @staticmethod
@@ -264,6 +280,8 @@ class ColumnTieredMoEWrapper(nn.Module):
                     self._scratch_gc[:cn].copy_(g_c, non_blocking=True)
                     self._scratch_uc[:cn].copy_(u_c, non_blocking=True)
                     self._scratch_dc[:, :cn].copy_(d_c, non_blocking=True)
+                    self._last_copy_event = torch.cuda.Event(enable_timing=True)
+                    self._last_copy_event.record(self.dma_stream)
             else:
                 self._scratch_gc[:cn].copy_(g_c)
                 self._scratch_uc[:cn].copy_(u_c)
@@ -411,6 +429,7 @@ class ColumnTieredMoEWrapper(nn.Module):
         # summed per expert (summation partition = exact).
         mask = F.one_hot(TI, num_classes=self.spec.n_routed + 1).permute(2, 1, 0)
         act = self.spec.activation
+        self.flush_timing()
         if self.grouped_gemm:
             out = self._forward_grouped(flat, TI, TW, needed, mask, act, out)
             shared_out = self.shared_experts(identity) \
@@ -431,7 +450,9 @@ class ColumnTieredMoEWrapper(nn.Module):
             # immediately (hot weights are resident — no dependency), and
             # only then wait for cold. Cold-fetch latency hides behind
             # hot GEMMs; the wait left over is the exposed stall.
+            self._last_copy_event = None
             gc, uc, dc = self._fetch_cold(e)
+            copy_done = self._last_copy_event
             kpos, rows = torch.where(mask[e])
             xe = flat[rows]
             w = TW[rows, kpos].unsqueeze(-1)
@@ -440,9 +461,11 @@ class ColumnTieredMoEWrapper(nn.Module):
                 uh = F.linear(xe, slot.up_hot.weight)
                 yh = F.linear(apply_gate(gh, uh, act), slot.down_hot.weight)
                 if cn > 0:
-                    t0 = time.perf_counter()
+                    if copy_done is not None:
+                        hot_done = torch.cuda.Event(enable_timing=True)
+                        hot_done.record(torch.cuda.current_stream(self.device))
+                        self._stall_events.append((hot_done, copy_done))
                     self._sync_dma()
-                    self.stall_ms += (time.perf_counter() - t0) * 1000.0
                     gc = F.linear(xe, gc)
                     uc = F.linear(xe, uc)
                     yc = F.linear(apply_gate(gc, uc, act), dc)

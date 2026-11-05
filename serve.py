@@ -355,6 +355,16 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
                    / (1024 ** 2) if hot_dma_mb is not None else None)
     total_decode = sum(latencies)
     agg_tokens = sum(new_counts)
+    # Token #1 of every row comes from prefill, so decode throughput counts
+    # only tokens produced by decode steps (the legacy figure counted the
+    # prefill token against decode time, overstating it by ~B/steps).
+    decode_tokens = sum(max(0, c - 1) for c in new_counts)
+    decode_tps = decode_tokens / total_decode if total_decode > 0 else 0.0
+    e2e_s = t_prefill + total_decode
+    for w in wrappers:
+        flush = getattr(w, "flush_timing", None)
+        if callable(flush):
+            flush()  # every step ended in a device sync: all events done
     peak = (torch.cuda.max_memory_allocated(device) / (1024 ** 3)
             if device.type == "cuda" else 0.0)
     routing_steps = 0
@@ -385,10 +395,27 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         "texts": texts,
         "batch_size": B,
         "prompt_tokens": prompt_len,
-        "generated_tokens": max_new_tokens,
+        "max_new_tokens": max_new_tokens,
+        "generated_tokens": max(new_counts) if new_counts else 0,
+        "generated_tokens_per_row": list(new_counts),
+        "generated_tokens_total": agg_tokens,
+        "decode_tokens": decode_tokens,
         "prefill_s": t_prefill,
+        "decode_s": total_decode,
+        "step_ms": [s * 1000.0 for s in latencies],
         "decode_avg_ms": (total_decode / max(1, len(latencies))) * 1000.0,
-        "batch_decode_tps": agg_tokens / total_decode if total_decode > 0 else 0.0,
+        "batch_decode_tps": decode_tps,
+        "e2e_tps": agg_tokens / e2e_s if e2e_s > 0 else 0.0,
+        "legacy_batch_decode_tps": agg_tokens / total_decode if total_decode > 0 else 0.0,
+        "metric_definitions": {
+            "batch_decode_tps": "decode_tokens / decode_s (prefill token excluded)",
+            "e2e_tps": "generated_tokens_total / (prefill_s + decode_s)",
+            "legacy_batch_decode_tps": "generated_tokens_total / decode_s "
+                                        "(definition used in COLOSSUS_REPORT up to section 36)",
+            "decode_s": "sum of per-step wall times, each bracketed by device syncs",
+            "stall_ms": "GPU-event time cold copies finished after their expert's "
+                        "hot GEMMs (column slots only; 0 = fully hidden)",
+        },
         "total_hits": total_hits,
         "total_misses": total_misses,
         "total_dma_mb": total_dma_mb,
@@ -404,6 +431,7 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         "cold_dma_mb": cold_dma_mb,
         "cold_hits": sum(getattr(w, "cold_hits", 0) for w in wrappers),
         "stall_ms": sum(getattr(w, "stall_ms", 0.0) for w in wrappers),
+        "stall_n": sum(getattr(w, "stall_n", 0) for w in wrappers),
         "seed_loads": seed_loads,
         "routing_log_steps": routing_steps,
         "flip_audit": flip_audit,
