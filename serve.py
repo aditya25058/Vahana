@@ -17,6 +17,14 @@ from .placement import TieredMoEWrapper, wrap_moe_layers
 _compat_installed = False
 
 
+def _load_counters(wrappers) -> dict:
+    """Cumulative expert-load counters summed over all MoE wrappers."""
+    return {"misses": sum(getattr(w, "misses", 0) for w in wrappers),
+            "dma_bytes": sum(getattr(w, "dma_bytes", 0) for w in wrappers),
+            "copy_s": sum(getattr(w, "copy_s", 0.0) for w in wrappers),
+            "minflt": sum(getattr(w, "load_minflt", 0) for w in wrappers)}
+
+
 def install_cache_compat(model_type: str | None = None) -> None:
     """Polyfills for modeling code written against older transformers cache APIs.
 
@@ -287,6 +295,9 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         if int(next_token[bi, 0].item()) == eos_id:
             finished[bi] = True
     latencies: list[float] = []
+    # Cumulative load counters after prefill and after every decode step;
+    # diffs give per-step misses / bytes / copy time / page faults.
+    step_loads = [_load_counters(wrappers)]
     if log_routing:
         for w in wrappers:
             w.routing_log = []
@@ -332,6 +343,7 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         if device.type == "cuda":
             torch.cuda.synchronize(device)
         latencies.append(time.perf_counter() - t0)
+        step_loads.append(_load_counters(wrappers))
         if next_token.device != device:
             next_token = next_token.to(device)
         for bi in range(B):
@@ -436,6 +448,8 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         "moe_fetch_s": sum(getattr(w, "fetch_s", 0.0) for w in wrappers),
         "moe_copy_s": sum(getattr(w, "copy_s", 0.0) for w in wrappers),
         "moe_forward_s": sum(getattr(w, "forward_s", 0.0) for w in wrappers),
+        "step_loads": [{k: b[k] - a[k] for k in a}
+                       for a, b in zip(step_loads, step_loads[1:])],
         "load_minflt": sum(getattr(w, "load_minflt", 0) for w in wrappers),
         "load_majflt": sum(getattr(w, "load_majflt", 0) for w in wrappers),
         "seed_loads": seed_loads,

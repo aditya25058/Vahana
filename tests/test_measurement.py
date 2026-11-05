@@ -35,6 +35,12 @@ def test_decode_tps_excludes_prefill_token():
     assert res["legacy_batch_decode_tps"] == pytest.approx(8 / d)
     assert res["e2e_tps"] == pytest.approx(8 / (res["prefill_s"] + d))
     assert "batch_decode_tps" in res["metric_definitions"]
+    # Per-step load deltas: one per decode step, summing to the run totals
+    # minus what prefill loaded.
+    sl = res["step_loads"]
+    assert len(sl) == 3 and set(sl[0]) == {"misses", "dma_bytes", "copy_s", "minflt"}
+    assert all(s["misses"] >= 0 and s["dma_bytes"] >= 0 for s in sl)
+    assert sum(s["misses"] for s in sl) <= res["total_misses"]
 
 
 def test_env_snapshot_never_raises():
