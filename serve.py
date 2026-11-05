@@ -202,6 +202,10 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
                              hot_col_frac=hot_col_frac, **_wrap_opts)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    # Lockstep decode reads logits[:, -1]: that is a real token for every
+    # row only with left padding.
+    if len(prompts) > 1 and getattr(tokenizer, "padding_side", "left") != "left":
+        tokenizer.padding_side = "left"
     enc = tokenizer(prompts, padding=True, return_tensors="pt")
     input_ids = enc["input_ids"]
     attn_mask = enc.get("attention_mask")
@@ -210,6 +214,14 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
     if attn_mask is not None:
         attn_mask = attn_mask.to(device)
     generated_ids = input_ids.clone()
+    if attn_mask is None:
+        attn_mask = torch.ones_like(input_ids)
+    # Mixed-length batches are padded: pad positions must stay masked and
+    # positions must count real tokens only (as generate() does), or rows
+    # diverge from their B=1 runs. Unpadded batches keep the original call
+    # path unchanged, so canonical counters stay reproducible.
+    padded = bool((attn_mask == 0).any())
+    pos_ids = (attn_mask.long().cumsum(-1) - 1).clamp(min=0) if padded else None
     if device.type == "cuda":
         torch.cuda.synchronize(device)
         torch.cuda.reset_peak_memory_stats(device)
@@ -220,15 +232,17 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
             logits, seqlen = None, generated_ids.shape[1]
             for s in range(0, seqlen, prefill_chunk):
                 chunk = generated_ids[:, s:s + prefill_chunk]
-                cmask = torch.ones((B, s + chunk.shape[1]), dtype=torch.long,
-                                   device=device)
+                cmask = attn_mask[:, :s + chunk.shape[1]]
+                extra = ({"position_ids": pos_ids[:, s:s + chunk.shape[1]]}
+                         if padded else {})
                 out = model(input_ids=chunk, attention_mask=cmask,
-                            past_key_values=past, use_cache=use_cache)
+                            past_key_values=past, use_cache=use_cache, **extra)
                 logits = out.logits
                 past = getattr(out, "past_key_values", None)
         else:
+            extra = {"position_ids": pos_ids} if padded else {}
             out = model(input_ids=generated_ids, attention_mask=attn_mask,
-                        past_key_values=past, use_cache=use_cache)
+                        past_key_values=past, use_cache=use_cache, **extra)
             logits = out.logits
         next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
         past = getattr(out, "past_key_values", None)
@@ -285,11 +299,21 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
             torch.cuda.synchronize(device)
         t0 = time.perf_counter()
         with torch.no_grad():
+            extra = {}
+            if padded:
+                attn_mask = torch.cat([attn_mask, attn_mask.new_ones((B, 1))], dim=1)
+                pos_ids = attn_mask.long().cumsum(-1) - 1
+                extra = {"attention_mask": attn_mask}
             if use_cache and past is not None:
-                out = model(input_ids=next_token, past_key_values=past, use_cache=True)
+                if padded:
+                    extra["position_ids"] = pos_ids[:, -1:]
+                out = model(input_ids=next_token, past_key_values=past, use_cache=True,
+                            **extra)
             else:
+                if padded:
+                    extra["position_ids"] = pos_ids.clamp(min=0)
                 out = model(input_ids=torch.cat([generated_ids, next_token], dim=1),
-                            use_cache=False)
+                            use_cache=False, **extra)
             logits = out.logits
             next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
             if use_cache:

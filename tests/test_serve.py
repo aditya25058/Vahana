@@ -153,6 +153,61 @@ def test_teacher_audit_records(tmp_path):
     assert res["flip_audit"] == audit
 
 
+class _LeftPadTokenizer(FakeTokenizer):
+    """Real left padding + a mask with zeros on pad positions."""
+
+    padding_side = "left"
+
+    def __call__(self, texts, padding=True, return_tensors="pt"):
+        ids = [[max(2, (ord(c) % 30) + 2) for c in t[:8]] for t in texts]
+        n = max(len(r) for r in ids)
+        mask = [[0] * (n - len(r)) + [1] * len(r) for r in ids]
+        ids = [[0] * (n - len(r)) + r for r in ids]
+        return {"input_ids": torch.tensor(ids), "attention_mask": torch.tensor(mask)}
+
+
+class _RecordingMoE(FakeCausalMoE):
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def forward(self, input_ids, attention_mask=None, past_key_values=None,
+                use_cache=False, position_ids=None):
+        self.calls.append({"n": input_ids.shape[1], "mask": attention_mask,
+                           "pos": position_ids})
+        return super().forward(input_ids, attention_mask, past_key_values, use_cache)
+
+
+def test_padded_batch_masks_and_positions_reach_every_step():
+    torch.manual_seed(0)
+    model = _RecordingMoE()
+    tok = _LeftPadTokenizer()
+    tok.eos_token_id = -1
+    handles = _stub_handles(model)
+    serve_huge_moe(model, tok, FakeProfile(), handles, torch.device("cpu"),
+                   ["hello", "hi"], max_new_tokens=3, capacity=8)
+    # Cache-less fake model: decode re-feeds the full sequence each step.
+    pre, *dec = model.calls
+    assert pre["mask"][1].tolist() == [0, 0, 0, 1, 1]
+    assert pre["pos"][1].tolist() == [0, 0, 0, 0, 1]
+    assert len(dec) == 2
+    for step, c in enumerate(dec, 1):
+        assert c["mask"].shape[1] == 5 + step
+        assert c["mask"][1, :3].sum() == 0  # pad stays masked
+        assert c["pos"][1, -1].item() == 1 + step  # counts real tokens only
+
+
+def test_unpadded_batch_keeps_original_call_path():
+    model = _RecordingMoE()
+    tok = FakeTokenizer()  # equal-length rows, all-ones mask
+    tok.eos_token_id = -1
+    handles = _stub_handles(model)
+    serve_huge_moe(model, tok, FakeProfile(), handles, torch.device("cpu"),
+                   ["ab", "cd"], max_new_tokens=3, capacity=8)
+    assert all(c["pos"] is None for c in model.calls)
+    assert all(c["mask"] is None for c in model.calls[1:])
+
+
 def test_cache_compat_mask_patch_gated_by_family():
     from transformers.modeling_attn_mask_utils import AttentionMaskConverter as AMC
     from bhaskera.inference.colossus.serve import install_cache_compat
