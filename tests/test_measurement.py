@@ -53,6 +53,6 @@ def test_pagecache_residency_and_evict(tmp_path):
     with open(p, "rb") as f:
         f.read()  # just written + read: resident
     r = pc.residency(str(tmp_path))
-    assert r["total_gb"] > 0 and 0.0 <= r["resident_frac"] <= 1.0
+    assert r["total_bytes"] == 1 << 20 and 0.0 <= r["resident_frac"] <= 1.0
     e = pc.evict(str(tmp_path))
     assert e["evicted_shards"] == 1 and e["resident_frac"] <= r["resident_frac"]
