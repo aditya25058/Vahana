@@ -179,6 +179,7 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
                    matrix_tiers: bool = False,
                    prefill_seed: str = "off",
                    kv_layout: str = "full",
+                   diag_row_split: bool = False,
                    ) -> dict[str, Any]:
     """Greedy lockstep serve with ledger. Returns results dict."""
     from transformers.cache_utils import DynamicCache
@@ -217,6 +218,12 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         mla_patched = install_latent_kv(model)
     elif kv_layout != "full":
         raise ValueError(f"kv_layout {kv_layout!r} not in ('full', 'latent')")
+    detector = None
+    if diag_row_split:
+        # Probe only (identical-prompt batches): first module where rows split.
+        from .rowsplit import RowSplitDetector
+        detector = RowSplitDetector()
+        detector.attach(model, profile)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     # Lockstep decode reads logits[:, -1]: that is a real token for every
@@ -321,6 +328,8 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
             break
         if device.type == "cuda":
             torch.cuda.synchronize(device)
+        if detector is not None:
+            detector.step = step
         t0 = time.perf_counter()
         with torch.no_grad():
             extra = {}
@@ -447,6 +456,8 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         "total_misses": total_misses,
         "total_dma_mb": total_dma_mb,
         "peak_vram_gb": peak,
+        "row_split_first": detector.first() if detector is not None else None,
+        "row_split_events": detector.events if detector is not None else None,
         "kv_layout": kv_layout,
         "mla_layers_patched": mla_patched,
         "kv_cache_mb": None if kv_bytes is None else kv_bytes / (1024 ** 2),
