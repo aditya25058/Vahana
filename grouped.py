@@ -159,6 +159,8 @@ class GroupedTieredMoEWrapper(nn.Module):
         use_stream = (self.dma_stream is not None and self.device.type == "cuda")
         with torch.no_grad():
             if use_stream:
+                from .placement import dma_after_compute
+                dma_after_compute(self.dma_stream, self.device)
                 with torch.cuda.stream(self.dma_stream):
                     slot.gate_up_proj.weight.copy_(t_fused, non_blocking=True)
                     slot.down_proj.weight.copy_(t_down, non_blocking=True)

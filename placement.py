@@ -53,6 +53,17 @@ def apply_gate(g: torch.Tensor, u: torch.Tensor, activation: str) -> torch.Tenso
     return F.silu(g) * u
 
 
+def dma_after_compute(dma_stream: Any, device: torch.device) -> None:
+    """Order the next copy on `dma_stream` after work queued on compute.
+
+    Slots and cold scratch are reused buffers. Without this wait an async
+    copy can overwrite weights a queued GEMM has not read yet
+    (write-after-read). Event wait only, no host sync.
+    """
+    if dma_stream is not None and device.type == "cuda":
+        dma_stream.wait_stream(torch.cuda.current_stream(device))
+
+
 class TieredMoEWrapper(nn.Module):
     """Dynamic slot residency MoE layer (model-agnostic).
 
@@ -150,6 +161,7 @@ class TieredMoEWrapper(nn.Module):
         use_stream = (self.dma_stream is not None and self.device.type == "cuda")
         with torch.no_grad():
             if use_stream:
+                dma_after_compute(self.dma_stream, self.device)
                 with torch.cuda.stream(self.dma_stream):
                     slot.gate_proj.weight.copy_(t_gate, non_blocking=True)
                     slot.up_proj.weight.copy_(t_up, non_blocking=True)

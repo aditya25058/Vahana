@@ -25,6 +25,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from .grouped import GroupedSlot, GroupedTieredMoEWrapper
+from .placement import dma_after_compute
 
 
 class GroupedColumnSlot(GroupedSlot):
@@ -90,6 +91,7 @@ class GroupedColumnWrapper(GroupedTieredMoEWrapper):
         use_stream = (self.dma_stream is not None and self.device.type == "cuda")
         with torch.no_grad():
             if use_stream:
+                dma_after_compute(self.dma_stream, self.device)
                 with torch.cuda.stream(self.dma_stream):
                     slot.gate_up_proj.weight[:hn].copy_(gh, non_blocking=True)
                     slot.gate_up_proj.weight[hn:].copy_(uh, non_blocking=True)
@@ -117,6 +119,8 @@ class GroupedColumnWrapper(GroupedTieredMoEWrapper):
         fu, dc = self._scratch_fu, self._scratch_dc
         with torch.no_grad():
             if use_stream:
+                # Shared scratch: previous expert's cold GEMMs may still read it.
+                dma_after_compute(self.dma_stream, self.device)
                 with torch.cuda.stream(self.dma_stream):
                     fu[:cn].copy_(g_c, non_blocking=True)
                     fu[cn:].copy_(u_c, non_blocking=True)

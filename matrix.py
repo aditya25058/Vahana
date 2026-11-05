@@ -22,7 +22,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .placement import apply_gate
+from .placement import apply_gate, dma_after_compute
 
 
 class MatrixTieredMoEWrapper(nn.Module):
@@ -103,6 +103,7 @@ class MatrixTieredMoEWrapper(nn.Module):
         use_stream = (self.dma_stream is not None and self.device.type == "cuda")
         with torch.no_grad():
             if use_stream:
+                dma_after_compute(self.dma_stream, self.device)
                 with torch.cuda.stream(self.dma_stream):
                     pool["slots"][slot_idx].weight.copy_(t, non_blocking=True)
             else:

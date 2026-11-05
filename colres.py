@@ -38,7 +38,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .placement import apply_gate
+from .placement import apply_gate, dma_after_compute
 
 
 class ColumnSlot(nn.Module):
@@ -216,6 +216,7 @@ class ColumnTieredMoEWrapper(nn.Module):
         use_stream = (self.dma_stream is not None and self.device.type == "cuda")
         with torch.no_grad():
             if use_stream:
+                dma_after_compute(self.dma_stream, self.device)
                 with torch.cuda.stream(self.dma_stream):
                     slot.gate_hot.weight.copy_(g_h, non_blocking=True)
                     slot.up_hot.weight.copy_(u_h, non_blocking=True)
@@ -256,6 +257,9 @@ class ColumnTieredMoEWrapper(nn.Module):
         use_stream = (self.dma_stream is not None and self.device.type == "cuda")
         with torch.no_grad():
             if use_stream:
+                # Shared scratch: the previous expert's cold GEMMs may
+                # still be queued on compute and reading it.
+                dma_after_compute(self.dma_stream, self.device)
                 with torch.cuda.stream(self.dma_stream):
                     self._scratch_gc[:cn].copy_(g_c, non_blocking=True)
                     self._scratch_uc[:cn].copy_(u_c, non_blocking=True)
