@@ -200,7 +200,7 @@ def test_padded_batch_masks_and_positions_reach_every_step():
 def test_dump_ids_writes_every_row(tmp_path):
     import json
 
-    model = FakeCausalMoE()
+    model = _RecordingMoE()  # padded batch: model must accept position_ids
     tok = _LeftPadTokenizer()
     tok.eos_token_id = -1
     path = str(tmp_path / "ids.json")
