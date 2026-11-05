@@ -193,11 +193,13 @@ class TieredMoEWrapper(nn.Module):
             return 0
         import torch as _torch
         freq = self.prefill_freq or [1] * self.spec.n_routed
+        # Ascending frequency; keep the top-C tail so the most frequent
+        # expert is loaded last (most recent in LRU).
         order = sorted(self.prefill_union,
                        key=lambda e: freq[e] if e < len(freq) else 0)
         loaded = 0
         with torch.no_grad():
-            for exp_id in order[:self.capacity]:
+            for exp_id in order[-self.capacity:]:
                 if exp_id in self.expert_to_slot:
                     slot_idx = self.expert_to_slot[exp_id]
                     self.slot_lru.remove(slot_idx)

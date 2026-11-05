@@ -245,3 +245,20 @@ def test_seed_from_prefill_moves_data_not_values():
     assert sum(w.seed_from_prefill("off") for w in wrappers) == 0
     # Prefill profile recorded on first forward.
     assert all(w.prefill_union for w in wrappers)
+
+
+def test_seed_from_prefill_loads_most_frequent_experts():
+    """Regression: seeding used to load the C LEAST frequent experts."""
+    block = FakeDeepSeekBlock()
+    spec = MoELayerSpec.from_block(block)
+    handles, keys = _handles_for(block)
+    w = TieredMoEWrapper(layer_idx=0, spec=spec, expert_keys=keys,
+                         device=torch.device("cpu"), capacity=2,
+                         handles=handles, dma_stream=None)
+    freq = [0] * spec.n_routed
+    freq[0], freq[1], freq[2], freq[3] = 5, 1, 9, 3
+    w.prefill_union, w.prefill_freq = [0, 1, 2, 3], freq
+    assert w.seed_from_prefill("freq") == 2
+    assert set(w.expert_to_slot) == {2, 0}
+    # Most frequent is most recent: evicted last.
+    assert w.slot_to_expert[w.slot_lru[-1]] == 2
