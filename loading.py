@@ -128,7 +128,12 @@ class ShardMap:
         b, e = info["data_offsets"]
         s = self.data_start + b
         dtype = _safetensors_dtype(info.get("dtype", "BF16"))
-        return self.u8[s:s + (e - b)].view(dtype).reshape(info["shape"])
+        # frombuffer at a byte offset: tensors may start at odd file offsets
+        # (odd header length), where viewing the uint8 map as a wider dtype
+        # raises. Still zero-copy.
+        n = (e - b) // torch.empty((), dtype=dtype).element_size()
+        return torch.frombuffer(self.mm, dtype=dtype, count=n,
+                                offset=s).reshape(info["shape"])
 
 
 _SAFETENSORS_DTYPES = {
