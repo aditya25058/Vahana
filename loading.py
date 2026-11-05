@@ -163,20 +163,20 @@ class ShardHandles:
     SOURCES = ("mmap", "safe_open")
 
     def __init__(self, model_dir: str, weight_map: dict[str, str],
-                 source: str = "mmap"):
+                 source: str = "safe_open"):
         if source not in self.SOURCES:
             raise ValueError(f"weight source {source!r} not in {self.SOURCES}")
         self.model_dir = model_dir
         self.weight_map = weight_map
-        # mmap: zero-copy views on our own shard maps (measured 2.7x faster
-        # host->GPU copies than safe_open tensors on DeepSeek-V2 experts;
-        # same bytes). safe_open: the previous path, kept for A/B.
+        # safe_open (default) or zero-copy views on our own shard maps.
+        # Same bytes either way; the step-3 A/B (DeepSeek-V2, B=1 and 64)
+        # found no speed difference, so the long-standing path stays default.
         self.source = source
         self._maps: dict[str, ShardMap] = {}
         self._safe: dict[str, Any] = {}  # shard -> persistent safe_open handle
 
     @classmethod
-    def open(cls, model_dir: str, source: str = "mmap") -> ShardHandles:
+    def open(cls, model_dir: str, source: str = "safe_open") -> ShardHandles:
         idx_path = os.path.join(model_dir, "model.safetensors.index.json")
         with open(idx_path) as f:
             weight_map = json.load(f)["weight_map"]
@@ -211,7 +211,11 @@ class ShardHandles:
                 return self.header_view(key)[0]
             except ValueError:
                 pass  # dtype outside the view map: let safetensors decode it
-        return self._safe_handle(self.weight_map[key]).get_tensor(key)
+            return self._safe_handle(self.weight_map[key]).get_tensor(key)
+        try:
+            return self._safe_handle(self.weight_map[key]).get_tensor(key)
+        except Exception:
+            return self.header_view(key)[0]
 
     def header_view(self, key: str):
         """(tensor view, info dict) for a key without persistent handles."""
