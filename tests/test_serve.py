@@ -197,6 +197,22 @@ def test_padded_batch_masks_and_positions_reach_every_step():
         assert c["pos"][1, -1].item() == 1 + step  # counts real tokens only
 
 
+def test_dump_ids_writes_every_row(tmp_path):
+    import json
+
+    model = FakeCausalMoE()
+    tok = _LeftPadTokenizer()
+    tok.eos_token_id = -1
+    path = str(tmp_path / "ids.json")
+    serve_huge_moe(model, tok, FakeProfile(), _stub_handles(model),
+                   torch.device("cpu"), ["hello", "hi", "hey"],
+                   max_new_tokens=4, capacity=8, dump_ids=path)
+    d = json.load(open(path))
+    assert d["batch"] == 3 and len(d["continuation_ids"]) == 3
+    assert all(len(r) == 4 for r in d["continuation_ids"])
+    assert d["new_counts"] == [4, 4, 4]
+
+
 def test_unpadded_batch_keeps_original_call_path():
     model = _RecordingMoE()
     tok = FakeTokenizer()  # equal-length rows, all-ones mask

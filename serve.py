@@ -374,9 +374,12 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         flip_audit = audit
     if dump_ids:
         import json as _json3
+        # One row per sequence (left padding keeps [prompt_len:] aligned).
+        # Rows that hit EOS keep lockstep tokens after it; new_counts says
+        # how many are real (the batched exactness audit truncates there).
         with open(dump_ids, "w") as f:
-            _json3.dump({"continuation_ids": generated_ids[:, prompt_len:].tolist()
-                         if B == 1 else None,
+            _json3.dump({"continuation_ids": generated_ids[:, prompt_len:].tolist(),
+                         "new_counts": list(new_counts),
                          "batch": B, "prompt_len": prompt_len}, f)
     return {
         "texts": texts,
