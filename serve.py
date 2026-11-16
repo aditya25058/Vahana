@@ -180,6 +180,7 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
                    prefill_seed: str = "off",
                    kv_layout: str = "full",
                    diag_row_split: bool = False,
+                   sync_loads: bool = False,
                    ) -> dict[str, Any]:
     """Greedy lockstep serve with ledger. Returns results dict."""
     from transformers.cache_utils import DynamicCache
@@ -218,6 +219,9 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         mla_patched = install_latent_kv(model)
     elif kv_layout != "full":
         raise ValueError(f"kv_layout {kv_layout!r} not in ('full', 'latent')")
+    if sync_loads:
+        for w in wrappers:
+            w.sync_loads = True  # diagnostic: honest per-load copy timing
     detector = None
     if diag_row_split:
         # Probe only (identical-prompt batches): first module where rows split.
@@ -481,6 +485,12 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
                        for a, b in zip(step_loads, step_loads[1:])],
         "load_minflt": sum(getattr(w, "load_minflt", 0) for w in wrappers),
         "load_majflt": sum(getattr(w, "load_majflt", 0) for w in wrappers),
+        "per_layer_loads": [{"layer": w.layer_idx, "misses": w.misses,
+                             "dma_bytes": w.dma_bytes,
+                             "copy_s": getattr(w, "copy_s", 0.0),
+                             "minflt": getattr(w, "load_minflt", 0)} for w in wrappers],
+        "sync_loads": sync_loads,
+        "host_register": (handles.stats() if hasattr(handles, "reg_bytes") else None),
         "seed_loads": seed_loads,
         "routing_log_steps": routing_steps,
         "flip_audit": flip_audit,

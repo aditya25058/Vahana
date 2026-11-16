@@ -191,6 +191,13 @@ class TieredMoEWrapper(nn.Module):
         t_gate, t_up, t_down = self._expert_tensors(expert_id)
         nbytes = int(t_gate.nbytes + t_up.nbytes + t_down.nbytes)
         use_stream = (self.dma_stream is not None and self.device.type == "cuda")
+        # Diagnostic: time each load through to completion. Pinned sources
+        # copy asynchronously, so issue time alone would flatter them; queued
+        # compute is drained first so neither source is charged for it.
+        sync = use_stream and getattr(self, "sync_loads", False)
+        if sync:
+            torch.cuda.current_stream(self.device).synchronize()
+            self.dma_stream.synchronize()
         t0 = time.perf_counter()
         with torch.no_grad():
             if use_stream:
@@ -199,6 +206,8 @@ class TieredMoEWrapper(nn.Module):
                     slot.gate_proj.weight.copy_(t_gate, non_blocking=True)
                     slot.up_proj.weight.copy_(t_up, non_blocking=True)
                     slot.down_proj.weight.copy_(t_down, non_blocking=True)
+                if sync:
+                    self.dma_stream.synchronize()
             else:
                 slot.gate_proj.weight.copy_(t_gate)
                 slot.up_proj.weight.copy_(t_up)
