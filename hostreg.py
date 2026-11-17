@@ -31,6 +31,7 @@ import torch
 from .loading import _safetensors_dtype, is_routed_expert_key
 
 _LAYER_RE = re.compile(r"\.layers\.(\d+)\.")
+_EXPERT_RE = re.compile(r"\.experts\.(\d+)\.")
 _REGISTER_READ_ONLY = 0x08  # cudaHostRegisterReadOnly (CUDA >= 11.1)
 _PAGE = mmap.PAGESIZE
 
@@ -75,14 +76,33 @@ class _SharedMap:
         os.close(self.fd)
 
 
+def merge_page_spans(spans: list[tuple[int, int]], page: int) -> list[tuple[int, int]]:
+    """Page-align [start, end) byte spans and merge any that touch or overlap.
+
+    Two tensors sharing a page must land in one registration: registering the
+    same page twice fails (cudaErrorHostMemoryAlreadyRegistered).
+    """
+    out: list[list[int]] = []
+    for s, e in sorted(spans):
+        a, b = s // page * page, (e + page - 1) // page * page
+        if out and a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return [(a, b) for a, b in out]
+
+
 class RegisteredHandles:
     """Weight handles whose selected layers' experts live in pinned host memory."""
 
-    def __init__(self, base: Any, layers: set[int], verify: int = 3):
+    def __init__(self, base: Any, layers: set[int] | None = None, verify: int = 3,
+                 experts: set[tuple[int, int]] | None = None):
         self.base = base
         self.weight_map = base.weight_map
         self.model_dir = getattr(base, "model_dir", "")
-        self.layers = set(int(x) for x in layers)
+        self.layers = set(int(x) for x in (layers or ()))
+        self.experts = {(int(a), int(b)) for a, b in (experts or ())}
+        self.served = 0  # get_tensor calls answered from pinned memory
         self._cu = _cudart()
         self._cu.cudaHostRegister.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint]
         self._cu.cudaHostRegister.restype = ctypes.c_int
@@ -100,36 +120,47 @@ class RegisteredHandles:
         m = _LAYER_RE.search(key)
         return int(m.group(1)) if m else None
 
+    @staticmethod
+    def expert_of(key: str) -> int | None:
+        m = _EXPERT_RE.search(key)
+        return int(m.group(1)) if m else None
+
+    def selected(self, key: str) -> bool:
+        if not is_routed_expert_key(key):
+            return False
+        lyr = self.layer_of(key)
+        return lyr in self.layers or (lyr, self.expert_of(key)) in self.experts
+
     def _register(self) -> None:
         by_shard: dict[str, list[str]] = {}
         for k, shard in self.weight_map.items():
-            if is_routed_expert_key(k) and self.layer_of(k) in self.layers:
+            if self.selected(k):
                 by_shard.setdefault(shard, []).append(k)
         if not by_shard:
-            raise ValueError(f"no routed expert keys for layers {sorted(self.layers)}")
+            raise ValueError(f"no routed expert keys for layers {sorted(self.layers)} "
+                             f"/ {len(self.experts)} experts")
         t0 = time.perf_counter()
         for shard, keys in sorted(by_shard.items()):
             sm = _SharedMap(os.path.join(self.model_dir, shard))
             self._maps[shard] = sm
-            lo, hi = None, None
+            spans = []
             for k in keys:
                 info = self.base.header(k)
                 b, e = info["data_offsets"]
                 s = sm.data_start + b
                 self._keys[k] = (shard, s, e - b, tuple(info["shape"]), info.get("dtype", "BF16"))
-                lo = s if lo is None else min(lo, s)
-                hi = s + (e - b) if hi is None else max(hi, s + (e - b))
-            start = lo // _PAGE * _PAGE
-            end = min(sm.size, (hi + _PAGE - 1) // _PAGE * _PAGE)
-            ptr = sm.addr + start
-            err = self._cu.cudaHostRegister(ctypes.c_void_p(ptr), ctypes.c_size_t(end - start),
-                                            ctypes.c_uint(_REGISTER_READ_ONLY))
-            if err != 0:
-                self.close()
-                raise RuntimeError(f"cudaHostRegister(read-only) failed with code {err} on "
-                                   f"{shard} span [{start}, {end})")
-            self._spans.append(ptr)
-            self.reg_bytes += end - start
+                spans.append((s, s + (e - b)))
+            for start, end in merge_page_spans(spans, _PAGE):
+                end = min(sm.size, end)
+                ptr = sm.addr + start
+                err = self._cu.cudaHostRegister(ctypes.c_void_p(ptr), ctypes.c_size_t(end - start),
+                                                ctypes.c_uint(_REGISTER_READ_ONLY))
+                if err != 0:
+                    self.close()
+                    raise RuntimeError(f"cudaHostRegister(read-only) failed with code {err} on "
+                                       f"{shard} span [{start}, {end})")
+                self._spans.append(ptr)
+                self.reg_bytes += end - start
         self.reg_s = time.perf_counter() - t0
 
     def _view(self, key: str) -> torch.Tensor:
@@ -152,6 +183,7 @@ class RegisteredHandles:
 
     def get_tensor(self, key: str) -> torch.Tensor:
         if key in self._keys:
+            self.served += 1
             return self._view(key)
         return self.base.get_tensor(key)
 
@@ -162,7 +194,8 @@ class RegisteredHandles:
         return self.base.shards()
 
     def stats(self) -> dict:
-        return {"layers": sorted(self.layers), "keys": len(self._keys),
+        return {"layers": sorted(self.layers), "experts": len(self.experts),
+                "keys": len(self._keys), "served_tensors": self.served,
                 "spans": len(self._spans), "registered_gb": self.reg_bytes / 1e9,
                 "register_s": self.reg_s, "verified_keys": self.verified}
 
