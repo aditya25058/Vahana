@@ -92,23 +92,44 @@ def merge_page_spans(spans: list[tuple[int, int]], page: int) -> list[tuple[int,
     return [(a, b) for a, b in out]
 
 
+def mem_available_bytes() -> int:
+    with open("/proc/meminfo") as f:
+        for line in f:
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) * 1024
+    raise OSError("MemAvailable not found in /proc/meminfo")
+
+
+def within_margin(avail_at_start: int, pinned: int, span: int, margin: int) -> bool:
+    """Pinned page-cache pages stop being reclaimable for everyone else, so count
+    every pinned byte against the RAM that was available when pinning began."""
+    return avail_at_start - pinned - span >= margin
+
+
 class RegisteredHandles:
     """Weight handles whose selected layers' experts live in pinned host memory."""
 
     def __init__(self, base: Any, layers: set[int] | None = None, verify: int = 3,
-                 experts: set[tuple[int, int]] | None = None):
+                 experts: set[tuple[int, int]] | None = None,
+                 margin_gb: float | None = None):
         self.base = base
         self.weight_map = base.weight_map
         self.model_dir = getattr(base, "model_dir", "")
         self.layers = set(int(x) for x in (layers or ()))
         self.experts = {(int(a), int(b)) for a, b in (experts or ())}
         self.served = 0  # get_tensor calls answered from pinned memory
+        # Shared-box guard: stop pinning (keeping what is pinned) once less than
+        # margin_gb of the RAM available at start would remain for everyone else.
+        self.margin = int(margin_gb * 1e9) if margin_gb is not None else None
+        self.avail_start = mem_available_bytes() if self.margin is not None else None
+        self.truncated = False
         self._cu = _cudart()
         self._cu.cudaHostRegister.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint]
         self._cu.cudaHostRegister.restype = ctypes.c_int
         self._cu.cudaHostUnregister.argtypes = [ctypes.c_void_p]
         self._maps: dict[str, _SharedMap] = {}
         self._spans: list[int] = []
+        self._span_sizes: list[tuple[int, int]] = []
         self._keys: dict[str, tuple[str, int, int, tuple, str]] = {}
         self.reg_bytes = 0
         self.reg_s = 0.0
@@ -152,6 +173,10 @@ class RegisteredHandles:
                 spans.append((s, s + (e - b)))
             for start, end in merge_page_spans(spans, _PAGE):
                 end = min(sm.size, end)
+                if self.margin is not None and not within_margin(
+                        self.avail_start, self.reg_bytes, end - start, self.margin):
+                    self.truncated = True
+                    break
                 ptr = sm.addr + start
                 err = self._cu.cudaHostRegister(ctypes.c_void_p(ptr), ctypes.c_size_t(end - start),
                                                 ctypes.c_uint(_REGISTER_READ_ONLY))
@@ -160,8 +185,23 @@ class RegisteredHandles:
                     raise RuntimeError(f"cudaHostRegister(read-only) failed with code {err} on "
                                        f"{shard} span [{start}, {end})")
                 self._spans.append(ptr)
+                self._span_sizes.append((ptr, end - start))
                 self.reg_bytes += end - start
+            if self.truncated:
+                break
         self.reg_s = time.perf_counter() - t0
+        if self.truncated:
+            self._drop_unpinned()
+
+    def _drop_unpinned(self) -> None:
+        """After a truncated pass, keep views only for keys fully inside a pinned span."""
+        ranges: dict[str, list[tuple[int, int]]] = {}
+        for ptr, sz in self._span_sizes:
+            for sh, sm in self._maps.items():
+                if sm.addr <= ptr < sm.addr + sm.size:
+                    ranges.setdefault(sh, []).append((ptr - sm.addr, ptr - sm.addr + sz))
+        self._keys = {k: v for k, v in self._keys.items()
+                      if any(a <= v[1] and v[1] + v[2] <= b for a, b in ranges.get(v[0], []))}
 
     def _view(self, key: str) -> torch.Tensor:
         shard, s, n, shape, tag = self._keys[key]
@@ -196,6 +236,9 @@ class RegisteredHandles:
     def stats(self) -> dict:
         return {"layers": sorted(self.layers), "experts": len(self.experts),
                 "keys": len(self._keys), "served_tensors": self.served,
+                "truncated_by_margin": self.truncated,
+                "margin_gb": (self.margin / 1e9) if self.margin is not None else None,
+                "mem_available_start_gb": (self.avail_start / 1e9) if self.avail_start else None,
                 "spans": len(self._spans), "registered_gb": self.reg_bytes / 1e9,
                 "register_s": self.reg_s, "verified_keys": self.verified}
 

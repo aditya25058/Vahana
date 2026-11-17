@@ -41,3 +41,11 @@ def test_select_counts_and_ties():
                          {"layer": 2, "experts": [0]}])
     assert c == Counter({(1, 4): 2, (1, 3): 1, (2, 0): 1})
     assert m.select(c, 2) == [(1, 4), (1, 3)]
+
+
+def test_margin_guard_counts_pinned_bytes():
+    from bhaskera.inference.colossus.hostreg import within_margin
+    G = 10**9
+    assert within_margin(469 * G, 0, 400 * G, 64 * G)
+    assert not within_margin(469 * G, 400 * G, 10 * G, 64 * G)
+    assert within_margin(469 * G, 400 * G, 5 * G, 64 * G)
