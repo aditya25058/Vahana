@@ -6,6 +6,7 @@ Model-agnostic: no names, no templates, no architecture branches.
 """
 from __future__ import annotations
 
+import os
 import time
 from typing import Any
 
@@ -253,6 +254,16 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
     if device.type == "cuda":
         torch.cuda.synchronize(device)
         torch.cuda.reset_peak_memory_stats(device)
+    # Every caller reads logits[:, -1] only. COLOSSUS_LAST_LOGITS=1 feeds the LM head the last
+    # position alone, so prefill does not materialise B x S x vocab fp32 logits (40 GB at
+    # B=4096). Off by default.
+    if os.environ.get("COLOSSUS_LAST_LOGITS") == "1" and getattr(model, "lm_head", None) is not None:
+        def _last_only(_mod, args):
+            h = args[0]
+            if h.dim() == 3 and h.shape[1] > 1:
+                return (h[:, -1:, :],) + tuple(args[1:])
+            return None
+        model.lm_head.register_forward_pre_hook(_last_only)
     t_prefill = time.perf_counter()
     if use_cache and kv_layout == "latent":
         from .mla_cache import LatentKVCache
