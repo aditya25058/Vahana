@@ -178,6 +178,9 @@ class TieredMoEWrapper(nn.Module):
         from .ansplane import get_plane
         self.ans = get_plane() if device.type == "cuda" and dma_stream is not None else None
         self.ans_lookahead = int(_os.environ.get("COLOSSUS_ANS_LOOKAHEAD", "8"))
+        # Phase 17: decode G missing experts per nvCOMP call (1 = per-expert, as before).
+        self.ans_group = int(_os.environ.get("COLOSSUS_ANS_GROUP", "1"))
+        self._ans_grouped: set[int] = set()
         self._ans_todo: dict[int, int] = {}
         self._ans_list: list[int] = []
         # Opt-in (COLOSSUS_XLAYER_PREFETCH=k): at the end of this layer's MoE, load
@@ -227,6 +230,50 @@ class TieredMoEWrapper(nn.Module):
             ks = self._ans_keys(e)
             if self.ans.has(ks):
                 self.ans.stage((self.layer_idx, e), ks, self.dma_stream)
+
+    def _ans_load_group(self, first: int) -> bool:
+        """Bind up to `ans_group` upcoming ANS misses (from `first`, in loop order) to LRU
+        slots and decode them with one call. Returns False if `first` is not servable."""
+        p = self._ans_todo.get(first)
+        if p is None or not self.ans.has(self._ans_keys(first)):
+            return False
+        group = []
+        for e in self._ans_list[p:]:
+            if len(group) == self.ans_group:
+                break
+            if e in self.expert_to_slot:
+                continue
+            if not self.ans.has(self._ans_keys(e)):
+                break
+            group.append(e)
+        t0 = time.perf_counter()
+        tags, keys, dsts, frees = [], [], [], []
+        for e in group:
+            slot_idx = self.slot_lru.pop(0)
+            self.slot_lru.append(slot_idx)
+            free = self._slot_evt.get(slot_idx) if self.slot_events else None
+            if free is None and not self.slot_events:
+                free = torch.cuda.Event()
+                free.record(torch.cuda.current_stream(self.device))
+            slot = self.slots[slot_idx]
+            if slot_idx in self.slot_to_expert:
+                self.expert_to_slot.pop(self.slot_to_expert.pop(slot_idx), None)
+            self.slot_to_expert[slot_idx] = e
+            self.expert_to_slot[e] = slot_idx
+            d = (slot.gate_proj.weight, slot.up_proj.weight, slot.down_proj.weight)
+            tags.append((self.layer_idx, e))
+            keys.append(self._ans_keys(e))
+            dsts.append(d)
+            frees.append(free)
+            self.misses += 1
+            self.dma_bytes += int(sum(w.numel() * w.element_size() for w in d))
+        with torch.no_grad():
+            self.ans.finish_group(tags, keys, dsts, self.dma_stream, frees)
+        for e in group:
+            self._ans_stage_ahead(e)
+        self._ans_grouped.update(group)
+        self.copy_s += time.perf_counter() - t0
+        return True
 
     def _load_expert_to_slot_impl(self, expert_id: int, slot_idx: int) -> int:
         slot = self.slots[slot_idx]
@@ -422,6 +469,7 @@ class TieredMoEWrapper(nn.Module):
 
     def _forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         self._ans_todo, self._ans_list = {}, []
+        self._ans_grouped = set()
         identity = hidden_states
         orig_shape = hidden_states.shape
         topk_indices, topk_weights = self.spec.route(hidden_states)
@@ -510,9 +558,14 @@ class TieredMoEWrapper(nn.Module):
             end_idx = start_idx + num_tokens
             if num_tokens == 0:
                 continue
+            if (i not in self.expert_to_slot and self.ans is not None and self.ans_group > 1
+                    and len(needed_experts) > self.capacity and self._ans_load_group(i)):
+                self._sync_dma()
             if i in self.expert_to_slot:
                 slot_idx = self.expert_to_slot[i]
-                if len(needed_experts) > self.capacity:
+                if i in self._ans_grouped:
+                    self._ans_grouped.discard(i)       # loaded this forward: not a hit
+                elif len(needed_experts) > self.capacity:
                     self.hits += 1
                     self.slot_lru.remove(slot_idx)
                     self.slot_lru.append(slot_idx)

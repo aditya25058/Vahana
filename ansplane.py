@@ -208,6 +208,44 @@ class AnsPlane:
         self.stats["raw_bytes"] += sum(w.numel() * w.element_size() for w in dsts)
         return ev
 
+    def finish_group(self, tags, keys_list, dsts_list, dma_stream, slot_frees) -> torch.cuda.Event:
+        """Decode several staged experts with ONE nvCOMP call (Phase 17).
+
+        Each decode call costs ~1.8 ms and blocks the host regardless of size, so one call
+        per expert caps the plane at ~26 GB/s; 8 experts per call reach ~180 GB/s. Same
+        bytes, same interleave: the slots receive exactly the bytes finish() would write.
+        """
+        for tag, keys in zip(tags, keys_list):
+            if tag not in self._staged:
+                self.stage(tag, keys, dma_stream)
+        ents = [self._slots[self._staged.pop(t)] for t in tags]
+        d = self.dec_stream
+        for e in ents:
+            d.wait_event(e["copied"])
+        for f in slot_frees:
+            if f is not None:
+                d.wait_event(f)
+        srcs = [self._nv.as_array(s) for e in ents for s in e["segs"]]
+        outs = [self._nv.as_array(h) for e in ents for h in e["hi"]]
+        n = len(srcs)
+        if n not in self._cfg:
+            for e in ents:
+                e["copied"].synchronize()
+            self._cfg[n] = self.codec.decompression_config(srcs)
+        with torch.cuda.stream(d):
+            self.codec.decode(srcs, out=outs, decompression_config=self._cfg[n])
+            for e, dsts in zip(ents, dsts_list):
+                for lo, hi, w in zip(e["lo"], e["hi"], dsts):
+                    torch.stack((lo, hi), dim=-1, out=w.view(torch.uint8).view(-1, 2))
+            ev = torch.cuda.Event()
+            ev.record(d)
+        for e, dsts in zip(ents, dsts_list):
+            e["free"] = ev
+            self.stats["decoded"] += 1
+            self.stats["raw_bytes"] += sum(w.numel() * w.element_size() for w in dsts)
+        self.stats["group_calls"] = self.stats.get("group_calls", 0) + 1
+        return ev
+
     def self_check(self, keys, raw_tensors, dma_stream) -> bool:
         dsts = [torch.empty(t.shape, dtype=t.dtype, device=self.device) for t in raw_tensors]
         ev = self.finish((-1, -1), keys, dsts, dma_stream)
