@@ -105,21 +105,22 @@ def inv_rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tens
 
 # --------------------------------------------------------------------------- MLA attention
 @triton.jit
-def _mla_kernel(ql, qp, lat, kpe, out, first, basep, Q, H, T, scale,
+def _mla_kernel(ql, qp, lat, kpe, out, first, basep, rowmap, Q, H, T, scale,
                 sqb, sqq, sqh, spb, spq, sph, slb, slt, skb, skt, sob, soq, soh,
                 R: tl.constexpr, RP: tl.constexpr, BH: tl.constexpr, BT: tl.constexpr):
     bq = tl.program_id(0).to(tl.int64)
     hb = tl.program_id(1).to(tl.int64)
     b = bq // Q
     q = bq % Q
+    bc = tl.load(rowmap + b).to(tl.int64)   # cache row (slot) of query row b
     hs = hb * BH + tl.arange(0, BH)
     hm = hs < H
     rr = tl.arange(0, R)
     rp = tl.arange(0, RP)
     qlat = tl.load(ql + b * sqb + q * sqq + hs[:, None] * sqh + rr[None, :], mask=hm[:, None], other=0.0)
     qpe = tl.load(qp + b * spb + q * spq + hs[:, None] * sph + rp[None, :], mask=hm[:, None], other=0.0)
-    start = tl.load(first + b).to(tl.int64)
-    end = tl.load(basep + b).to(tl.int64) + q        # causal: last key this query may see (inclusive)
+    start = tl.load(first + bc).to(tl.int64)
+    end = tl.load(basep + bc).to(tl.int64) + q        # causal: last key this query may see (inclusive)
     m_i = tl.full((BH,), float("-inf"), dtype=tl.float32)
     l_i = tl.zeros((BH,), dtype=tl.float32)
     acc = tl.zeros((BH, R), dtype=tl.float32)
@@ -127,8 +128,8 @@ def _mla_kernel(ql, qp, lat, kpe, out, first, basep, Q, H, T, scale,
     for t0 in range(start, end + 1, BT):     # blocks anchored at the first real token
         t = t0 + tt
         tm = t <= end
-        kl = tl.load(lat + b * slb + t[:, None] * slt + rr[None, :], mask=tm[:, None], other=0.0)
-        kp = tl.load(kpe + b * skb + t[:, None] * skt + rp[None, :], mask=tm[:, None], other=0.0)
+        kl = tl.load(lat + bc * slb + t[:, None] * slt + rr[None, :], mask=tm[:, None], other=0.0)
+        kp = tl.load(kpe + bc * skb + t[:, None] * skt + rp[None, :], mask=tm[:, None], other=0.0)
         s = tl.dot(qlat, tl.trans(kl)) + tl.dot(qpe, tl.trans(kp))
         s = s * scale
         s = tl.where(tm[None, :], s, float("-inf"))
@@ -144,7 +145,9 @@ def _mla_kernel(ql, qp, lat, kpe, out, first, basep, Q, H, T, scale,
              mask=hm[:, None])
 
 
-def inv_mla_attention(q_lat, q_pe, latent, kpe, first_valid, softmax_scale, base=None):
+def inv_mla_attention(q_lat, q_pe, latent, kpe, first_valid, softmax_scale, base=None, rows=None):
+    """rows: cache row (slot) for each query row (default: identity). first_valid / base are
+    indexed by cache row."""
     """q_lat [B, Q, H, R], q_pe [B, Q, H, RP], latent [B, T, R], kpe [B, T, RP], first_valid [B]
     (int32 index of each row's first real key). Query q sits at key index T-Q+q (causal).
     Returns ctx [B, Q, H, R] = softmax(q.k) @ latent, per query independent of B, Q and padding."""
@@ -154,12 +157,14 @@ def inv_mla_attention(q_lat, q_pe, latent, kpe, first_valid, softmax_scale, base
     q_lat, q_pe = q_lat.contiguous(), q_pe.contiguous()
     latent, kpe = latent.contiguous(), kpe.contiguous()
     out = torch.empty((B, Q, H, R), dtype=latent.dtype, device=latent.device)
+    if rows is None:
+        rows = torch.arange(B, device=latent.device)
     if base is None:                     # right-aligned cache: query 0 sits at key T-Q
         base = torch.full((B,), T - Q, dtype=torch.int32, device=latent.device)
     BH, BT = 16, 32
     grid = (B * Q, triton.cdiv(H, BH))
     _mla_kernel[grid](q_lat, q_pe, latent, kpe, out, first_valid.to(torch.int32).contiguous(),
-                      base.to(torch.int32).contiguous(),
+                      base.to(torch.int32).contiguous(), rows.to(torch.int32).contiguous(),
                       Q, H, T, softmax_scale,
                       q_lat.stride(0), q_lat.stride(1), q_lat.stride(2),
                       q_pe.stride(0), q_pe.stride(1), q_pe.stride(2),

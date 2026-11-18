@@ -281,6 +281,35 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         detector.attach(model, profile)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    from . import refill as _refill
+    if _refill.enabled():
+        # Continuous refill + (optional) exact speculation; see refill.py.
+        if os.environ.get("COLOSSUS_INVARIANT") != "1" or kv_layout != "latent" or device.type != "cuda":
+            raise ValueError("COLOSSUS_REFILL needs COLOSSUS_INVARIANT=1, --kv-layout latent, CUDA")
+        torch.cuda.reset_peak_memory_stats(device)
+        _outs, _lat, _wall, _st = _refill.refill_generate(
+            model, tokenizer, prompts, int(os.environ.get("COLOSSUS_REFILL_SLOTS", "512")),
+            max_new_tokens, int(os.environ.get("COLOSSUS_SPEC", "0") or 0), device,
+            tokenizer.eos_token_id, refill_min=int(os.environ.get("COLOSSUS_REFILL_MIN", "32")))
+        _tot = sum(len(o) for o in _outs)
+        if dump_ids:
+            with open(dump_ids, "w") as f:
+                json.dump({"continuation_ids": _outs, "new_counts": [len(o) for o in _outs],
+                           "batch": len(prompts), "prompt_len": None}, f)
+        return {"texts": tokenizer.batch_decode(_outs, skip_special_tokens=True),
+                "batch_size": len(prompts), "max_new_tokens": max_new_tokens,
+                "generated_tokens_total": _tot, "decode_tokens": _tot, "prefill_s": 0.0,
+                "decode_s": _wall, "step_ms": [s * 1000.0 for s in _lat],
+                "batch_decode_tps": _tot / _wall, "e2e_tps": _tot / _wall,
+                "legacy_batch_decode_tps": _tot / _wall,
+                "metric_definitions": {"e2e_tps": "all generated tokens / wall time of the whole "
+                                                  "refill run (prefills included)"},
+                "refill_stats": _st, "placement": placement, "capacity": capacity,
+                "total_hits": sum(w.hits for w in wrappers),
+                "total_misses": sum(w.misses for w in wrappers),
+                "total_dma_mb": sum(w.dma_bytes for w in wrappers) / (1024 ** 2),
+                "peak_vram_gb": torch.cuda.max_memory_allocated(device) / (1024 ** 3),
+                "kv_layout": kv_layout}
     # Lockstep decode reads logits[:, -1]: that is a real token for every
     # row only with left padding.
     if len(prompts) > 1 and getattr(tokenizer, "padding_side", "left") != "left":

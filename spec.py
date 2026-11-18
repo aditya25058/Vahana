@@ -33,6 +33,7 @@ class RaggedLatentCache(LatentKVCache):
         self.cap = int(cap)
         self._buf_lat: dict[int, torch.Tensor] = {}
         self._buf_kpe: dict[int, torch.Tensor] = {}
+        self.active_rows: torch.Tensor | None = None   # slot subset for the next attention call
 
     def _ensure(self, layer: int, latent: torch.Tensor, kpe: torch.Tensor, need: int) -> None:
         buf = self._buf_lat.get(layer)
@@ -51,12 +52,28 @@ class RaggedLatentCache(LatentKVCache):
     def append_ragged(self, layer: int, latent: torch.Tensor, kpe: torch.Tensor):
         """latent [B, Q, r], kpe [B, 1, Q, rope] written at rows' own offsets (not committed)."""
         Q = latent.shape[1]
+        rows = self.active_rows
+        if rows is None:
+            rows = torch.arange(self.B, device=latent.device)
         self._ensure(layer, latent, kpe.squeeze(1), max(self.len_host) + Q)
-        idx = self.length.unsqueeze(1) + torch.arange(Q, device=latent.device)      # [B, Q]
-        rows = torch.arange(self.B, device=latent.device).unsqueeze(1).expand(-1, Q)
-        self._buf_lat[layer][rows, idx] = latent
-        self._buf_kpe[layer][rows, idx] = kpe.squeeze(1)
-        return self._buf_lat[layer], self._buf_kpe[layer], self.first, self.length
+        idx = self.length[rows].unsqueeze(1) + torch.arange(Q, device=latent.device)   # [Bg, Q]
+        r2 = rows.unsqueeze(1).expand(-1, Q)
+        self._buf_lat[layer][r2, idx] = latent
+        self._buf_kpe[layer][r2, idx] = kpe.squeeze(1)
+        return self._buf_lat[layer], self._buf_kpe[layer], self.first, self.length, rows
+
+    def reset_rows(self, rows: list[int], first: list[int]) -> None:
+        """Give slots to new sequences: first real key index, empty length (old data is overwritten)."""
+        for r, f in zip(rows, first):
+            self.len_host[r] = 0
+        self.length = torch.tensor(self.len_host, dtype=torch.int64, device=self.length.device)
+        idx = torch.tensor(rows, device=self.first.device)
+        self.first[idx] = torch.tensor(first, dtype=torch.int32, device=self.first.device)
+
+    def commit_rows(self, rows: list[int], n: list[int]) -> None:
+        for r, a in zip(rows, n):
+            self.len_host[r] += a
+        self.length = torch.tensor(self.len_host, dtype=torch.int64, device=self.length.device)
 
     def commit(self, n: list[int]) -> None:
         self.len_host = [a + b for a, b in zip(self.len_host, n)]
