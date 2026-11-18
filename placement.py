@@ -22,6 +22,11 @@ from . import timing as _timing
 # Phase 17b: one decode pool per device shared by all MoE layers (only one layer runs at a
 # time). Entries: [modules], [free events], next index.
 _ANS_POOL: dict = {}
+
+
+def _timing_inv() -> bool:
+    import os
+    return os.environ.get("COLOSSUS_INVARIANT", "0") == "1"
 from .interface import MoELayerSpec
 
 
@@ -665,11 +670,22 @@ class TieredMoEWrapper(nn.Module):
         outs = torch.cat(outputs, dim=0) if outputs else sorted_tokens.new_empty(0)
         new_x = torch.empty_like(outs)
         new_x[idxs] = outs
-        final_out = (new_x.view(*topk_indices.shape, -1)
-                     .type(topk_weights.dtype)
-                     .mul_(topk_weights.unsqueeze(dim=-1))
-                     .sum(dim=1)
-                     .type(new_x.dtype))
+        if _timing_inv():
+            # Invariant combine: each row's experts in ascending id order, fp32 accumulation,
+            # so the result does not depend on top-k output order or on the batch.
+            order = topk_indices.argsort(dim=1)
+            v = torch.take_along_dim(new_x.view(*topk_indices.shape, -1), order.unsqueeze(-1), dim=1)
+            wv = torch.take_along_dim(topk_weights, order, dim=1).float()
+            acc = v[:, 0].float() * wv[:, 0:1]
+            for j in range(1, v.shape[1]):
+                acc = acc + v[:, j].float() * wv[:, j:j + 1]
+            final_out = acc.type(new_x.dtype)
+        else:
+            final_out = (new_x.view(*topk_indices.shape, -1)
+                         .type(topk_weights.dtype)
+                         .mul_(topk_weights.unsqueeze(dim=-1))
+                         .sum(dim=1)
+                         .type(new_x.dtype))
         out = shared_out + final_out.view(*orig_shape)
         nxt = self.next_wrapper
         if self.xlayer_k > 0 and nxt is not None and nxt.last_needed and not nxt.streaming:

@@ -104,6 +104,20 @@ def _latent_forward(self, hidden_states, attention_mask=None, position_ids=None,
     # the transient expanded K/V (B*T*heads*(q_head+v_head) values per layer).
     # Off (0) by default; COLOSSUS_ATTN_ROWS=R runs R rows at a time.
     rows = _attn_rows()
+    if _inv_on() and not output_attentions:
+        # Invariant mode: absorbed latent attention for ANY query count through fixed-order
+        # kernels (invariant.py): bits independent of batch, padding and q_len.
+        from .invariant import inv_bmm, inv_mla_attention
+        wuk, wuvT = _absorb_weights(self)
+        H, r = self.num_heads, self.kv_lora_rank
+        qn = q_nope.permute(1, 0, 2, 3).reshape(H, bsz * q_len, nope).contiguous()
+        q_lat = inv_bmm(qn, wuk).view(H, bsz, q_len, r).permute(1, 2, 0, 3)
+        first = (attention_mask[:, 0, -1, :] == 0).int().argmax(dim=-1)
+        ctx = inv_mla_attention(q_lat, q_pe.permute(0, 2, 1, 3), latent_all, kpe_all.squeeze(1),
+                                first, self.softmax_scale)
+        c = ctx.permute(2, 0, 1, 3).reshape(H, bsz * q_len, r).contiguous()
+        o = inv_bmm(c, wuvT).view(H, bsz, q_len, vdim).permute(1, 2, 0, 3).reshape(bsz, q_len, H * vdim)
+        return self.o_proj(o), None, past_key_value
     if q_len == 1 and _absorb_on() and not output_attentions:
         # Decode step in latent space (weight absorption): no K/V expansion.
         # Same weights and the same math up to bf16 rounding order, so not
@@ -130,6 +144,11 @@ def _attn_rows() -> int:
         return int(os.environ.get("COLOSSUS_ATTN_ROWS", "0"))
     except ValueError:
         return 0
+
+
+def _inv_on() -> bool:
+    import os
+    return os.environ.get("COLOSSUS_INVARIANT", "0") == "1"
 
 
 def _absorb_on() -> bool:
