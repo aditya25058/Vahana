@@ -95,16 +95,52 @@ def _latent_forward(self, hidden_states, attention_mask=None, position_ids=None,
     # -- cache the latent, re-expand K/V for every cached token -------------
     latent_all, kpe_all, _ = past_key_value.append(self.layer_idx, latent, k_pe)
     t_all = latent_all.shape[1]
+    if attention_mask is None:
+        raise ValueError("latent MLA path needs the 4D attention mask (as stock eager)")
+    if attention_mask.size() != (bsz, 1, q_len, t_all):
+        raise ValueError(f"attention mask {tuple(attention_mask.size())} != "
+                         f"{(bsz, 1, q_len, t_all)}")
+    # Rows are independent in attention, so it can run on row chunks to bound
+    # the transient expanded K/V (B*T*heads*(q_head+v_head) values per layer).
+    # Off (0) by default; COLOSSUS_ATTN_ROWS=R runs R rows at a time.
+    rows = _attn_rows()
+    if rows <= 0 or rows >= bsz:
+        out, w = _attend(self, q_nope, q_pe, latent_all, kpe_all, attention_mask)
+    else:
+        parts = [_attend(self, q_nope[s:s + rows], q_pe[s:s + rows], latent_all[s:s + rows],
+                         kpe_all[s:s + rows], attention_mask[s:s + rows])
+                 for s in range(0, bsz, rows)]
+        out = torch.cat([p[0] for p in parts], dim=0)
+        w = torch.cat([p[1] for p in parts], dim=0) if output_attentions else None
+        del parts
+    attn_output = self.o_proj(out)
+    return attn_output, (w if output_attentions else None), past_key_value
+
+
+def _attn_rows() -> int:
+    import os
+    try:
+        return int(os.environ.get("COLOSSUS_ATTN_ROWS", "0"))
+    except ValueError:
+        return 0
+
+
+def _attend(self, q_nope, q_pe, latent_all, kpe_all, attention_mask):
+    """Stock eager attention math for a block of rows; returns pre-o_proj output."""
+    nope, vdim = self.qk_nope_head_dim, self.v_head_dim
+    bsz, _, q_len, _ = q_nope.shape
+    t_all = latent_all.shape[1]
     kv = (self.kv_b_proj(latent_all)
           .view(bsz, t_all, self.num_heads, nope + vdim).transpose(1, 2))
     k_nope, value_states = torch.split(kv, [nope, vdim], dim=-1)
 
-    query_states = k_pe.new_empty(bsz, self.num_heads, q_len, self.q_head_dim)
+    query_states = q_pe.new_empty(bsz, self.num_heads, q_len, self.q_head_dim)
     query_states[:, :, :, :nope] = q_nope
     query_states[:, :, :, nope:] = q_pe
     key_states = kpe_all.new_empty(bsz, self.num_heads, t_all, self.q_head_dim)
     key_states[:, :, :, :nope] = k_nope
     key_states[:, :, :, nope:] = kpe_all
+    del kv, k_nope
     # Stock DynamicCache (transformers 5.x) concatenates on every update,
     # first call included, so attention always sees contiguous V.
     value_states = value_states.contiguous()
@@ -114,21 +150,15 @@ def _latent_forward(self, hidden_states, attention_mask=None, position_ids=None,
     if attn_weights.size() != (bsz, self.num_heads, q_len, t_all):
         raise ValueError(f"attention weights {tuple(attn_weights.size())} != "
                          f"{(bsz, self.num_heads, q_len, t_all)}")
-    if attention_mask is None:
-        raise ValueError("latent MLA path needs the 4D attention mask (as stock eager)")
-    if attention_mask.size() != (bsz, 1, q_len, t_all):
-        raise ValueError(f"attention mask {tuple(attention_mask.size())} != "
-                         f"{(bsz, 1, q_len, t_all)}")
+    del key_states, query_states
     attn_weights = attn_weights + attention_mask
     attn_weights = nn.functional.softmax(attn_weights, dim=-1,
-                                         dtype=torch.float32).to(query_states.dtype)
+                                         dtype=torch.float32).to(value_states.dtype)
     attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout,
                                          training=self.training)
     attn_output = torch.matmul(attn_weights, value_states)
     attn_output = attn_output.transpose(1, 2).contiguous()
-    attn_output = attn_output.reshape(bsz, q_len, self.num_heads * vdim)
-    attn_output = self.o_proj(attn_output)
-    return attn_output, (attn_weights if output_attentions else None), past_key_value
+    return attn_output.reshape(bsz, q_len, self.num_heads * vdim), attn_weights
 
 
 def install_latent_kv(model: nn.Module) -> int:
