@@ -26,11 +26,11 @@ import triton.language as tl
 def _bmm_kernel(a, b, c, M, N, K,
                 sab, sam, sak, sbb, sbk, sbn, scb, scm, scn,
                 BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr, IEEE: tl.constexpr):
-    pb = tl.program_id(2)
-    pm = tl.program_id(0)
-    pn = tl.program_id(1)
-    rm = pm * BM + tl.arange(0, BM)
-    rn = pn * BN + tl.arange(0, BN)
+    pb = tl.program_id(2).to(tl.int64)          # 64-bit offsets: G*M*N can exceed 2**31
+    pm = tl.program_id(0).to(tl.int64)
+    pn = tl.program_id(1).to(tl.int64)
+    rm = pm * BM + tl.arange(0, BM).to(tl.int64)
+    rn = pn * BN + tl.arange(0, BN).to(tl.int64)
     rk = tl.arange(0, BK)
     a += pb * sab
     b += pb * sbb
@@ -82,7 +82,7 @@ def inv_linear(x: torch.Tensor, w: torch.Tensor, bias: torch.Tensor | None = Non
 # --------------------------------------------------------------------------- RMSNorm
 @triton.jit
 def _rms_kernel(x, w, y, N, sx, sy, eps, BLOCK: tl.constexpr):
-    r = tl.program_id(0)
+    r = tl.program_id(0).to(tl.int64)
     cols = tl.arange(0, BLOCK)
     m = cols < N
     v = tl.load(x + r * sx + cols, mask=m, other=0.0).to(tl.float32)
@@ -108,8 +108,8 @@ def inv_rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tens
 def _mla_kernel(ql, qp, lat, kpe, out, first, basep, Q, H, T, scale,
                 sqb, sqq, sqh, spb, spq, sph, slb, slt, skb, skt, sob, soq, soh,
                 R: tl.constexpr, RP: tl.constexpr, BH: tl.constexpr, BT: tl.constexpr):
-    bq = tl.program_id(0)
-    hb = tl.program_id(1)
+    bq = tl.program_id(0).to(tl.int64)
+    hb = tl.program_id(1).to(tl.int64)
     b = bq // Q
     q = bq % Q
     hs = hb * BH + tl.arange(0, BH)
@@ -118,8 +118,8 @@ def _mla_kernel(ql, qp, lat, kpe, out, first, basep, Q, H, T, scale,
     rp = tl.arange(0, RP)
     qlat = tl.load(ql + b * sqb + q * sqq + hs[:, None] * sqh + rr[None, :], mask=hm[:, None], other=0.0)
     qpe = tl.load(qp + b * spb + q * spq + hs[:, None] * sph + rp[None, :], mask=hm[:, None], other=0.0)
-    start = tl.load(first + b)
-    end = tl.load(basep + b) + q        # causal: last key this query may see (inclusive)
+    start = tl.load(first + b).to(tl.int64)
+    end = tl.load(basep + b).to(tl.int64) + q        # causal: last key this query may see (inclusive)
     m_i = tl.full((BH,), float("-inf"), dtype=tl.float32)
     l_i = tl.zeros((BH,), dtype=tl.float32)
     acc = tl.zeros((BH, R), dtype=tl.float32)
