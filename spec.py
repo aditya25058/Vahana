@@ -38,8 +38,9 @@ class RaggedLatentCache(LatentKVCache):
         buf = self._buf_lat.get(layer)
         if buf is not None and buf.shape[1] >= need:
             return
-        cap = max(need, self.cap, 64)
-        cap = max(cap, (buf.shape[1] * 3 // 2) if buf is not None else 0)
+        # Exact preallocation (cap = prompt + max_new + k + 1) avoids growth; if ever exceeded,
+        # grow by a small step only (1.5x growth cost ~20 GB extra at B=768).
+        cap = max(need, self.cap) if buf is None else need + 64
         lat = latent.new_zeros((self.B, cap, latent.shape[-1]))
         kp = kpe.new_zeros((self.B, cap, kpe.shape[-1]))
         if buf is not None:

@@ -325,7 +325,8 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         from .mla_cache import LatentKVCache
         if _spec_k > 0:
             from .spec import RaggedLatentCache
-            past = RaggedLatentCache((attn_mask == 0).sum(dim=-1))
+            past = RaggedLatentCache((attn_mask == 0).sum(dim=-1),
+                                     cap=input_ids.shape[1] + max_new_tokens + _spec_k + 1)
         else:
             past = LatentKVCache()
     else:
