@@ -186,6 +186,17 @@ class TieredMoEWrapper(nn.Module):
         self.ans_group = int(_os.environ.get("COLOSSUS_ANS_GROUP", "1"))
         self._ans_grouped: set[int] = set()
         self._pool_bind: dict[int, int] = {}
+        # Phase 20b (COLOSSUS_SECOND_GPU=1): a second GPU is a second weight link. Alternate
+        # groups of this layer's ANS misses are copied/decoded/computed there; outputs come
+        # back at the end of the layer. Same bytes, same kernels: values unchanged.
+        self.dev2 = None
+        self._on2: set[int] = set()
+        self._pend2: list = []
+        if (self.ans is not None and self.ans_group > 1 and torch.cuda.device_count() > 1
+                and _os.environ.get("COLOSSUS_SECOND_GPU") == "1"):
+            from .ansplane import get_peer
+            self.dev2 = torch.device("cuda", 1 if (device.index or 0) == 0 else 0)
+            self.ans2 = get_peer(self.dev2)
         self._ans_todo: dict[int, int] = {}
         self._ans_list: list[int] = []
         # Opt-in (COLOSSUS_XLAYER_PREFETCH=k): at the end of this layer's MoE, load
@@ -224,6 +235,11 @@ class TieredMoEWrapper(nn.Module):
         ks = self.expert_keys[expert_id]
         return [ks["gate"], ks["up"], ks["down"]]
 
+    def _plane_for(self, e: int):
+        if e in self._on2:
+            return self.ans2, self.ans2.dma_stream, self.dev2
+        return self.ans, self.dma_stream, self.device
+
     def _ans_stage_ahead(self, expert_id: int) -> None:
         """After loading expert_id, issue copies for the expert `lookahead` places later."""
         p = self._ans_todo.get(expert_id)
@@ -233,8 +249,9 @@ class TieredMoEWrapper(nn.Module):
         if q < len(self._ans_list):
             e = self._ans_list[q]
             ks = self._ans_keys(e)
-            if self.ans.has(ks):
-                self.ans.stage((self.layer_idx, e), ks, self.dma_stream)
+            pl, ds, _ = self._plane_for(e)
+            if pl.has(ks):
+                pl.stage((self.layer_idx, e), ks, ds)
 
     def _ans_load_group(self, first: int) -> bool:
         """Bind up to `ans_group` upcoming ANS misses (from `first`, in loop order) to LRU
@@ -248,15 +265,18 @@ class TieredMoEWrapper(nn.Module):
                 break
             if e in self.expert_to_slot or e in self._pool_bind:
                 continue
+            if (e in self._on2) != (first in self._on2):
+                break
             if not self.ans.has(self._ans_keys(e)):
                 break
             group.append(e)
         t0 = time.perf_counter()
-        pool = _ANS_POOL.get(str(self.device))
+        plane, dstream, dev = self._plane_for(first)
+        pool = _ANS_POOL.get(str(dev))
         if pool is None:
             import copy
-            mods = [copy.deepcopy(self.slots[0]) for _ in range(2 * self.ans_group)]
-            pool = _ANS_POOL[str(self.device)] = {"mods": mods, "free": [None] * len(mods), "next": 0}
+            mods = [copy.deepcopy(self.slots[0]).to(dev) for _ in range(2 * self.ans_group)]
+            pool = _ANS_POOL[str(dev)] = {"mods": mods, "free": [None] * len(mods), "next": 0}
         tags, keys, dsts, frees = [], [], [], []
         for e in group:
             ps = pool["next"] % len(pool["mods"])
@@ -264,7 +284,7 @@ class TieredMoEWrapper(nn.Module):
             free = pool["free"][ps]
             if free is None and not self.slot_events:
                 free = torch.cuda.Event()
-                free.record(torch.cuda.current_stream(self.device))
+                free.record(torch.cuda.current_stream(dev))
             slot = pool["mods"][ps]
             self._pool_bind[e] = ps
             d = (slot.gate_proj.weight, slot.up_proj.weight, slot.down_proj.weight)
@@ -274,8 +294,10 @@ class TieredMoEWrapper(nn.Module):
             frees.append(free)
             self.misses += 1
             self.dma_bytes += int(sum(w.numel() * w.element_size() for w in d))
-        with torch.no_grad():
-            self.ans.finish_group(tags, keys, dsts, self.dma_stream, frees)
+        with torch.no_grad(), torch.cuda.device(dev):
+            plane.finish_group(tags, keys, dsts, dstream, frees)
+        if dev != self.device:
+            torch.cuda.current_stream(dev).wait_stream(plane.dec_stream)
         for e in group:
             self._ans_stage_ahead(e)
         self._ans_grouped.update(group)
@@ -478,6 +500,8 @@ class TieredMoEWrapper(nn.Module):
         self._ans_todo, self._ans_list = {}, []
         self._ans_grouped = set()
         self._pool_bind = {}
+        self._on2 = set()
+        self._pend2 = []
         identity = hidden_states
         orig_shape = hidden_states.shape
         topk_indices, topk_weights = self.spec.route(hidden_states)
@@ -553,10 +577,15 @@ class TieredMoEWrapper(nn.Module):
                               if n > 0 and i not in self.expert_to_slot]
             self._ans_todo = {e: p for p, e in enumerate(self._ans_list)}
             self.ans.drop_layer(self.layer_idx, keep=set(self._ans_list))
+            if self.dev2 is not None:
+                G = self.ans_group
+                self._on2 = {e for q, e in enumerate(self._ans_list) if (q // G) % 2 == 1}
+                self.ans2.drop_layer(self.layer_idx, keep=self._on2)
             for e in self._ans_list[:self.ans_lookahead]:
                 ks = self._ans_keys(e)
-                if self.ans.has(ks):
-                    self.ans.stage((self.layer_idx, e), ks, self.dma_stream)
+                pl, ds, _ = self._plane_for(e)
+                if pl.has(ks):
+                    pl.stage((self.layer_idx, e), ks, ds)
         idxs = topk_indices.view(-1).argsort()
         flat_x = hidden_states.reshape(-1, hidden_states.shape[-1])
         sorted_tokens = flat_x[idxs // topk_indices.shape[1]]
@@ -570,6 +599,20 @@ class TieredMoEWrapper(nn.Module):
                     and self.ans_group > 1 and len(needed_experts) > self.capacity
                     and self._ans_load_group(i)):
                 self._sync_dma()
+            if i in self._pool_bind and i in self._on2:
+                dev = self.dev2
+                pool = _ANS_POOL[str(dev)]
+                ps = self._pool_bind.pop(i)
+                with torch.cuda.device(dev):
+                    x2 = sorted_tokens[start_idx:end_idx].to(dev, non_blocking=True)
+                    y2 = pool["mods"][ps](x2)
+                    fe = torch.cuda.Event()
+                    fe.record(torch.cuda.current_stream(dev))
+                    pool["free"][ps] = fe
+                self._pend2.append((len(outputs), y2))
+                outputs.append(None)
+                start_idx = end_idx
+                continue
             if i in self._pool_bind:
                 pool = _ANS_POOL[str(self.device)]
                 ps = self._pool_bind.pop(i)
@@ -616,6 +659,9 @@ class TieredMoEWrapper(nn.Module):
             _T.span("copy_layer", _dma0, _T.ev(self.dma_stream))
             if self.ans is not None:
                 _T.span("decode_layer", _dma0, _T.ev(self.ans.dec_stream))
+        for k, y2 in self._pend2:
+            outputs[k] = y2.to(self.device, non_blocking=True)
+        self._pend2 = []
         outs = torch.cat(outputs, dim=0) if outputs else sorted_tokens.new_empty(0)
         new_x = torch.empty_like(outs)
         new_x[idxs] = outs

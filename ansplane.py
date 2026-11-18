@@ -30,7 +30,9 @@ import torch
 from .hostreg import _cudart, mem_available_bytes, merge_page_spans
 
 _REGISTER_READ_ONLY = 0x08
+_REGISTER_PORTABLE = 0x01   # visible to every device in the process (2-GPU mode)
 _PLANE = None
+_PEERS: dict = {}
 
 
 def _nvcomp():
@@ -65,6 +67,8 @@ class AnsPlane:
         self.reg_bytes, self.truncated = 0, False
         self.avail_start = mem_available_bytes()
         self.margin = int(margin_gb * (1 << 30))
+        self._reg_flags = _REGISTER_READ_ONLY | (
+            _REGISTER_PORTABLE if os.environ.get("COLOSSUS_SECOND_GPU") == "1" else 0)
         t0 = time.perf_counter()
         self._register()
         self.reg_s = time.perf_counter() - t0
@@ -105,7 +109,7 @@ class AnsPlane:
                     self.truncated = True
                     break
                 err = self._cu.cudaHostRegister(ctypes.c_void_p(addr + a), ctypes.c_size_t(b - a),
-                                                ctypes.c_uint(_REGISTER_READ_ONLY))
+                                                ctypes.c_uint(self._reg_flags))
                 if err != 0:
                     raise RuntimeError(f"cudaHostRegister(read-only) failed ({err}) on {fn}")
                 self._regs.append(addr + a)
@@ -280,3 +284,31 @@ def init_plane(store: str, device: torch.device, margin_gb: float = 64.0) -> Ans
 
 def get_plane() -> AnsPlane | None:
     return _PLANE
+
+
+def get_peer(device: torch.device) -> AnsPlane:
+    """A plane on another GPU that reuses the primary plane's mapped + registered (portable)
+    host spans, with its own copy stream, decode stream, codec and staging ring."""
+    if device.index in _PEERS:
+        return _PEERS[device.index]
+    base = _PLANE
+    if base is None:
+        raise RuntimeError("primary ANS plane not initialised")
+    p = object.__new__(AnsPlane)
+    for k in ("store", "ring", "idx", "lidx", "_cu", "_libc", "_maps", "served", "margin",
+              "avail_start", "_reg_flags", "_nv", "_pinned_ranges"):
+        setattr(p, k, getattr(base, k))
+    p.device = device
+    p._regs, p.reg_bytes, p.truncated, p.reg_s = [], 0, False, 0.0
+    with torch.cuda.device(device):
+        p.dec_stream = torch.cuda.Stream(device=device)
+        p.dma_stream = torch.cuda.Stream(device=device)
+        p.codec = p._nv.Codec(algorithm="ans", device_id=device.index,
+                              cuda_stream=p.dec_stream.cuda_stream)
+    p._slots = [None] * p.ring
+    p._next = 0
+    p._staged = {}
+    p._cfg = {}
+    p.stats = {"staged": 0, "decoded": 0, "wire_bytes": 0, "raw_bytes": 0}
+    _PEERS[device.index] = p
+    return p
