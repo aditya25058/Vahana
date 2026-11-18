@@ -17,6 +17,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from . import timing as _timing
 from .interface import MoELayerSpec
 
 
@@ -428,7 +429,13 @@ class TieredMoEWrapper(nn.Module):
         K = topk_indices.shape[-1]
         topk_indices = topk_indices.reshape(-1, K)
         topk_weights = topk_weights.reshape(-1, K)
+        _T = _timing.REC
+        _h = time.perf_counter()
         needed_experts = topk_indices.unique().tolist()
+        if _T is not None:
+            _T.add_host("route_sync", time.perf_counter() - _h)
+            if self.dma_stream is not None:
+                _dma0 = _T.ev(self.dma_stream)
         if self._xlayer_pending:
             self.xlayer_used += len(self._xlayer_pending & set(needed_experts))
             self._xlayer_pending = set()
@@ -480,7 +487,10 @@ class TieredMoEWrapper(nn.Module):
 
         cnts = topk_indices.new_zeros((topk_indices.shape[0], self.spec.n_routed))
         cnts.scatter_(1, topk_indices, 1)
+        _h = time.perf_counter()
         tokens_per_expert = cnts.sum(dim=0).cpu().numpy()
+        if _T is not None:
+            _T.add_host("count_sync", time.perf_counter() - _h)
         if self.ans is not None:
             # Copies for the first `lookahead` misses go out now, so the link stays busy.
             self._ans_list = [i for i, n in enumerate(tokens_per_expert)
@@ -495,6 +505,7 @@ class TieredMoEWrapper(nn.Module):
         flat_x = hidden_states.reshape(-1, hidden_states.shape[-1])
         sorted_tokens = flat_x[idxs // topk_indices.shape[1]]
         outputs, start_idx = [], 0
+        _prev = _T.ev() if _T is not None else None
         for i, num_tokens in enumerate(tokens_per_expert):
             end_idx = start_idx + num_tokens
             if num_tokens == 0:
@@ -512,12 +523,22 @@ class TieredMoEWrapper(nn.Module):
                 self.slot_lru.append(slot_idx)
                 self._sync_dma()
             expert = self.slots[slot_idx]
+            if _T is not None:
+                _a = _T.ev()
+                _T.span("moe_stall", _prev, _a)
             outputs.append(expert(sorted_tokens[start_idx:end_idx]))
+            if _T is not None:
+                _prev = _T.ev()
+                _T.span("expert_gemm", _a, _prev)
             if self.slot_events:
                 ev = torch.cuda.Event()
                 ev.record(torch.cuda.current_stream(self.device))
                 self._slot_evt[slot_idx] = ev
             start_idx = end_idx
+        if _T is not None and self.dma_stream is not None:
+            _T.span("copy_layer", _dma0, _T.ev(self.dma_stream))
+            if self.ans is not None:
+                _T.span("decode_layer", _dma0, _T.ev(self.ans.dec_stream))
         outs = torch.cat(outputs, dim=0) if outputs else sorted_tokens.new_empty(0)
         new_x = torch.empty_like(outs)
         new_x[idxs] = outs

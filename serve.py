@@ -6,6 +6,7 @@ Model-agnostic: no names, no templates, no architecture branches.
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 from typing import Any
@@ -388,6 +389,11 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
     _prof_a, _prof_b = (int(x) for x in _prof.split(",")) if _prof else (-1, -1)
     if _prof and device.type == "cuda":
         _install_nvtx(model, wrappers)
+    _trec = None
+    if os.environ.get("COLOSSUS_TIMING") == "1" and device.type == "cuda":
+        from . import timing as _timing
+        _trec = _timing.install(model, wrappers)
+    timing_steps: list[dict] = []
     for step in range(max_new_tokens - 1):
         if all(finished):
             break
@@ -434,6 +440,9 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         if device.type == "cuda":
             torch.cuda.synchronize(device)
         latencies.append(time.perf_counter() - t0)
+        if _trec is not None:
+            timing_steps.append(_trec.flush(step, latencies[-1]))
+            print("TIMING", json.dumps(timing_steps[-1]), flush=True)
         if _prof and device.type == "cuda":
             torch.cuda.nvtx.range_pop()
             if step == _prof_b:
