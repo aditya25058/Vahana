@@ -262,13 +262,13 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         # with a reason on non-MLA or non-eager models.
         from .mla_cache import install_latent_kv
         mla_patched = install_latent_kv(model)
+    elif kv_layout != "full":
+        raise ValueError(f"kv_layout {kv_layout!r} not in ('full', 'latent')")
     from . import invariant as _inv
     if _inv.enabled():
         if device.type != "cuda" or kv_layout != "latent":
             raise ValueError("COLOSSUS_INVARIANT=1 needs CUDA and --kv-layout latent")
         print("invariant mode:", _inv.install(model), flush=True)
-    elif kv_layout != "full":
-        raise ValueError(f"kv_layout {kv_layout!r} not in ('full', 'latent')")
     if sync_loads:
         for w in wrappers:
             w.sync_loads = True  # diagnostic: honest per-load copy timing
