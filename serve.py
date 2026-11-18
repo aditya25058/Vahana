@@ -26,6 +26,22 @@ def _load_counters(wrappers) -> dict:
             "minflt": sum(getattr(w, "load_minflt", 0) for w in wrappers)}
 
 
+def _install_nvtx(model, wrappers) -> None:
+    """NVTX push/pop around each attention module and each MoE wrapper (diagnostics)."""
+    def pre(name):
+        return lambda _m, _a: torch.cuda.nvtx.range_push(name)
+
+    def post(_m, _a, _o):
+        torch.cuda.nvtx.range_pop()
+    for name, m in model.named_modules():
+        if name.endswith(".self_attn"):
+            m.register_forward_pre_hook(pre("attn"))
+            m.register_forward_hook(post)
+    for w in wrappers:
+        w.register_forward_pre_hook(pre("moe"))
+        w.register_forward_hook(post)
+
+
 def _ans_info():
     try:
         from .ansplane import get_plane
@@ -363,11 +379,22 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
             w.routing_log = []
     if all(finished):
         latencies = []
+    # Opt-in profiling (COLOSSUS_PROFILE_STEPS="a,b"): cudaProfilerStart before decode step a,
+    # Stop after step b (for nsys --capture-range=cudaProfilerApi), with NVTX ranges on every
+    # attention and MoE module. Diagnostics only; no effect on values.
+    _prof = os.environ.get("COLOSSUS_PROFILE_STEPS")
+    _prof_a, _prof_b = (int(x) for x in _prof.split(",")) if _prof else (-1, -1)
+    if _prof and device.type == "cuda":
+        _install_nvtx(model, wrappers)
     for step in range(max_new_tokens - 1):
         if all(finished):
             break
         if device.type == "cuda":
             torch.cuda.synchronize(device)
+        if step == _prof_a and device.type == "cuda":
+            torch.cuda.profiler.start()
+        if _prof and device.type == "cuda":
+            torch.cuda.nvtx.range_push(f"step{step}")
         if detector is not None:
             detector.step = step
         t0 = time.perf_counter()
@@ -405,6 +432,10 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         if device.type == "cuda":
             torch.cuda.synchronize(device)
         latencies.append(time.perf_counter() - t0)
+        if _prof and device.type == "cuda":
+            torch.cuda.nvtx.range_pop()
+            if step == _prof_b:
+                torch.cuda.profiler.stop()
         step_loads.append(_load_counters(wrappers))
         if next_token.device != device:
             next_token = next_token.to(device)
