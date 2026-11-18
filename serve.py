@@ -29,7 +29,9 @@ def _load_counters(wrappers) -> dict:
 def _install_nvtx(model, wrappers) -> None:
     """NVTX push/pop around each attention module and each MoE wrapper (diagnostics)."""
     def pre(name):
-        return lambda _m, _a: torch.cuda.nvtx.range_push(name)
+        def _hook(_m, _a):
+            torch.cuda.nvtx.range_push(name)   # must return None (a value would replace args)
+        return _hook
 
     def post(_m, _a, _o):
         torch.cuda.nvtx.range_pop()
