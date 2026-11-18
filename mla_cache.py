@@ -104,6 +104,13 @@ def _latent_forward(self, hidden_states, attention_mask=None, position_ids=None,
     # the transient expanded K/V (B*T*heads*(q_head+v_head) values per layer).
     # Off (0) by default; COLOSSUS_ATTN_ROWS=R runs R rows at a time.
     rows = _attn_rows()
+    if q_len == 1 and _absorb_on() and not output_attentions:
+        # Decode step in latent space (weight absorption): no K/V expansion.
+        # Same weights and the same math up to bf16 rounding order, so not
+        # bitwise-identical to the stock path; opt-in (COLOSSUS_MLA_ABSORB=1).
+        attn_output = self.o_proj(_attend_absorbed(self, q_nope, q_pe, latent_all,
+                                                   kpe_all, attention_mask))
+        return attn_output, None, past_key_value
     if rows <= 0 or rows >= bsz:
         out, w = _attend(self, q_nope, q_pe, latent_all, kpe_all, attention_mask)
     else:
@@ -123,6 +130,49 @@ def _attn_rows() -> int:
         return int(os.environ.get("COLOSSUS_ATTN_ROWS", "0"))
     except ValueError:
         return 0
+
+
+def _absorb_on() -> bool:
+    import os
+    return os.environ.get("COLOSSUS_MLA_ABSORB", "0") == "1"
+
+
+def _absorb_weights(self):
+    """Per-head W_UK [H, nope, rank] and W_UV^T [H, rank, vdim] from kv_b_proj."""
+    w = getattr(self, "_colossus_wuk", None)
+    if w is None:
+        if getattr(self.kv_b_proj, "bias", None) is not None:
+            raise ValueError("absorbed MLA assumes kv_b_proj has no bias")
+        H, nope, vdim = self.num_heads, self.qk_nope_head_dim, self.v_head_dim
+        W = self.kv_b_proj.weight.detach().view(H, nope + vdim, self.kv_lora_rank)
+        self._colossus_wuk = W[:, :nope, :].contiguous()
+        self._colossus_wuvT = W[:, nope:, :].transpose(1, 2).contiguous()
+    return self._colossus_wuk, self._colossus_wuvT
+
+
+def _attend_absorbed(self, q_nope, q_pe, latent_all, kpe_all, attention_mask):
+    """Attention in latent space: score = [q_nope W_UK | q_pe] . [latent | k_pe],
+    output = (softmax . latent) W_UV. Returns pre-o_proj output [B, q, H*vdim]."""
+    if self.training:
+        raise ValueError("absorbed MLA is inference-only")
+    bsz, H, q_len, nope = q_nope.shape
+    r, vdim, t_all = self.kv_lora_rank, self.v_head_dim, latent_all.shape[1]
+    wuk, wuvT = _absorb_weights(self)
+    qn = q_nope.permute(1, 0, 2, 3).reshape(H, bsz * q_len, nope)
+    q_lat = torch.bmm(qn, wuk).view(H, bsz, q_len, r).permute(1, 0, 2, 3)
+    query = torch.cat([q_lat, q_pe], dim=-1).reshape(bsz, H * q_len, -1)
+    del qn, q_lat
+    key = torch.cat([latent_all, kpe_all.squeeze(1)], dim=-1)          # [B, T, r+rope]
+    scores = torch.matmul(query, key.transpose(1, 2)) * self.softmax_scale
+    del query, key
+    scores = scores.view(bsz, H, q_len, t_all) + attention_mask
+    p = nn.functional.softmax(scores, dim=-1, dtype=torch.float32).to(latent_all.dtype)
+    del scores
+    ctx = torch.matmul(p.view(bsz, H * q_len, t_all), latent_all)       # [B, H*q, r]
+    del p
+    ctx = ctx.view(bsz, H, q_len, r).permute(1, 0, 2, 3).reshape(H, bsz * q_len, r)
+    o = torch.bmm(ctx, wuvT)                                           # [H, B*q, vdim]
+    return o.view(H, bsz, q_len, vdim).permute(1, 2, 0, 3).reshape(bsz, q_len, H * vdim)
 
 
 def _attend(self, q_nope, q_pe, latent_all, kpe_all, attention_mask):

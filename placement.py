@@ -164,6 +164,15 @@ class TieredMoEWrapper(nn.Module):
         # page cached but not yet mapped; major = read from disk).
         self.load_minflt = 0
         self.load_majflt = 0
+        # Opt-in (COLOSSUS_SLOT_EVENTS=1): order each slot copy after the last
+        # GEMM that read THAT slot (per-slot event) instead of after all queued
+        # compute, so copy i+1 overlaps compute i. Scheduling only: the same
+        # weights reach the same slots before the same GEMMs, so values are
+        # unchanged by construction.
+        import os as _os
+        self.slot_events = (_os.environ.get("COLOSSUS_SLOT_EVENTS", "0") == "1"
+                            and device.type == "cuda" and dma_stream is not None)
+        self._slot_evt: dict[int, Any] = {}
 
     # -- loading ------------------------------------------------------
     def _expert_tensors(self, expert_id: int):
@@ -201,7 +210,12 @@ class TieredMoEWrapper(nn.Module):
         t0 = time.perf_counter()
         with torch.no_grad():
             if use_stream:
-                dma_after_compute(self.dma_stream, self.device)
+                if self.slot_events:
+                    ev = self._slot_evt.get(slot_idx)
+                    if ev is not None:
+                        self.dma_stream.wait_event(ev)
+                else:
+                    dma_after_compute(self.dma_stream, self.device)
                 with torch.cuda.stream(self.dma_stream):
                     slot.gate_proj.weight.copy_(t_gate, non_blocking=True)
                     slot.up_proj.weight.copy_(t_up, non_blocking=True)
@@ -418,6 +432,10 @@ class TieredMoEWrapper(nn.Module):
                 self._sync_dma()
             expert = self.slots[slot_idx]
             outputs.append(expert(sorted_tokens[start_idx:end_idx]))
+            if self.slot_events:
+                ev = torch.cuda.Event()
+                ev.record(torch.cuda.current_stream(self.device))
+                self._slot_evt[slot_idx] = ev
             start_idx = end_idx
         outs = torch.cat(outputs, dim=0) if outputs else sorted_tokens.new_empty(0)
         new_x = torch.empty_like(outs)
