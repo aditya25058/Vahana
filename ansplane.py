@@ -1,0 +1,231 @@
+"""Lossless compressed expert plane: ANS-coded high bytes + raw low bytes, decoded on the GPU.
+
+Store layout (built by rudra/encode_ans_store.py): for every routed expert tensor,
+`index.json` gives an nvCOMP ANS blob of the high bytes (sign + 7 exponent bits of
+each BF16 value) in `<shard>.ansh`, and `lo_index.json` gives the raw low bytes in
+`<shard>.lob`. ~0.70 of the raw bytes travel over PCIe; the GPU decodes the high
+bytes and interleaves both halves back into BF16. Lossless: the slot holds the
+exact original bytes (checked at startup with torch.equal against the raw shard).
+
+Both files are mapped read-only/shared and the needed spans are pinned in place
+(cudaHostRegisterReadOnly), so nothing is copied in host RAM; the same 64 GB
+shared-RAM margin guard as hostreg applies.
+
+Pipelining: copies run on the caller's DMA stream into a ring of R staging
+entries; decode + interleave run on a separate decode stream; the GEMM stream
+waits on the decode stream. `stage()` can be called ahead of `finish()` so the
+link stays busy even if a decode call blocks the host.
+"""
+from __future__ import annotations
+
+import ctypes
+import json
+import mmap
+import os
+import time
+from typing import Any
+
+import torch
+
+from .hostreg import _cudart, mem_available_bytes, merge_page_spans
+
+_REGISTER_READ_ONLY = 0x08
+_PLANE = None
+
+
+def _nvcomp():
+    # The venv's nvidia namespace can be shadowed by another 'nvidia' package; add
+    # the site-packages copy next to torch (same fix as rudra/encode_ans_store.py).
+    import nvidia
+    site = os.environ.get("COLOSSUS_NVCOMP_SITE") or os.path.join(
+        os.path.dirname(os.path.dirname(torch.__file__)), "nvidia")
+    if os.path.isdir(site) and site not in list(nvidia.__path__):
+        nvidia.__path__.append(site)
+    import nvidia.nvcomp as nvcomp
+    return nvcomp
+
+
+class AnsPlane:
+    def __init__(self, store: str, device: torch.device, margin_gb: float = 64.0,
+                 layers: set[int] | None = None, ring: int = 16):
+        self.store, self.device, self.ring = store, device, int(ring)
+        self.idx = json.load(open(os.path.join(store, "index.json")))
+        self.lidx = json.load(open(os.path.join(store, "lo_index.json")))
+        if layers is not None:
+            keep = {k for k in self.idx if _layer(k) in layers}
+            self.idx = {k: v for k, v in self.idx.items() if k in keep}
+        self._cu = _cudart()
+        self._libc = ctypes.CDLL(None, use_errno=True)
+        self._libc.mmap.restype = ctypes.c_void_p
+        self._libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int,
+                                    ctypes.c_int, ctypes.c_long]
+        self._maps: dict[str, tuple[int, int, int]] = {}
+        self._regs: list[int] = []
+        self.reg_bytes, self.truncated = 0, False
+        self.avail_start = mem_available_bytes()
+        self.margin = int(margin_gb * (1 << 30))
+        t0 = time.perf_counter()
+        self._register()
+        self.reg_s = time.perf_counter() - t0
+        nv = _nvcomp()
+        self._nv = nv
+        self.dec_stream = torch.cuda.Stream(device=device)
+        self.codec = nv.Codec(algorithm="ans", cuda_stream=self.dec_stream.cuda_stream)
+        self._slots: list[dict | None] = [None] * self.ring
+        self._next = 0
+        self._staged: dict[tuple[int, int], int] = {}
+        self.stats = {"staged": 0, "decoded": 0, "wire_bytes": 0, "raw_bytes": 0}
+
+    # -- mapping / pinning -------------------------------------------------
+    def _map(self, fn: str) -> tuple[int, int, int]:
+        if fn not in self._maps:
+            path = os.path.join(self.store, fn)
+            size = os.path.getsize(path)
+            fd = os.open(path, os.O_RDONLY)
+            addr = self._libc.mmap(None, size, mmap.PROT_READ, mmap.MAP_SHARED, fd, 0)
+            if addr in (None, ctypes.c_void_p(-1).value):
+                raise OSError(f"mmap failed: {path}")
+            self._maps[fn] = (int(addr), size, fd)
+        return self._maps[fn]
+
+    def _register(self) -> None:
+        spans: dict[str, list[tuple[int, int]]] = {}
+        for k, m in self.idx.items():
+            spans.setdefault(m["blob"], []).append((m["offset"], m["offset"] + m["comp_len"]))
+            lm = self.lidx[k]
+            spans.setdefault(lm["lob"], []).append((lm["offset"], lm["offset"] + lm["len"]))
+        self._pinned_ranges: dict[str, list[tuple[int, int]]] = {}
+        for fn in sorted(spans):
+            addr, size, _ = self._map(fn)
+            for a, b in merge_page_spans(spans[fn], mmap.PAGESIZE):
+                b = min(b, size)
+                if self.avail_start - self.reg_bytes - (b - a) < self.margin:
+                    self.truncated = True
+                    break
+                err = self._cu.cudaHostRegister(ctypes.c_void_p(addr + a), ctypes.c_size_t(b - a),
+                                                ctypes.c_uint(_REGISTER_READ_ONLY))
+                if err != 0:
+                    raise RuntimeError(f"cudaHostRegister(read-only) failed ({err}) on {fn}")
+                self._regs.append(addr + a)
+                self._pinned_ranges.setdefault(fn, []).append((a, b))
+                self.reg_bytes += b - a
+            if self.truncated:
+                break
+        # Keys whose blob and low bytes are both fully pinned are served from the plane.
+        def inside(fn, s, e):
+            return any(a <= s and e <= b for a, b in self._pinned_ranges.get(fn, []))
+        self.served = {k for k, m in self.idx.items()
+                       if inside(m["blob"], m["offset"], m["offset"] + m["comp_len"])
+                       and inside(self.lidx[k]["lob"], self.lidx[k]["offset"],
+                                  self.lidx[k]["offset"] + self.lidx[k]["len"])}
+
+    def _view(self, fn: str, off: int, n: int) -> torch.Tensor:
+        addr, _, _ = self._map(fn)
+        return torch.frombuffer((ctypes.c_char * n).from_address(addr + off), dtype=torch.uint8)
+
+    def has(self, keys) -> bool:
+        return all(k in self.served for k in keys)
+
+    # -- staging ring --------------------------------------------------------
+    def _entry(self, sizes: list[int], comp_total: int) -> int:
+        i = self._next % self.ring
+        self._next += 1
+        if i in self._staged.values():
+            raise RuntimeError("ANS staging ring overrun: lookahead must be < ring size")
+        e = self._slots[i]
+        if e is None or e["comp"].numel() < comp_total or [t.numel() for t in e["lo"]] != sizes:
+            old_ev = e["free"] if e else None
+            e = {"lo": [torch.empty(n, dtype=torch.uint8, device=self.device) for n in sizes],
+                 "comp": torch.empty(max(comp_total, 16 << 20), dtype=torch.uint8, device=self.device),
+                 "free": old_ev, "keep": None}
+            self._slots[i] = e
+        return i
+
+    def stage(self, tag: tuple[int, int], keys, dma_stream) -> None:
+        """Issue the copies of one expert's low bytes + compressed high bytes (async)."""
+        if tag in self._staged:
+            return
+        los = [self.lidx[k] for k in keys]
+        cps = [self.idx[k] for k in keys]
+        i = self._entry([m["len"] for m in los], sum(m["comp_len"] for m in cps))
+        e = self._slots[i]
+        with torch.cuda.stream(dma_stream):
+            if e["free"] is not None:
+                dma_stream.wait_event(e["free"])
+            segs, off = [], 0
+            for j, (lm, cm) in enumerate(zip(los, cps)):
+                e["lo"][j].copy_(self._view(lm["lob"], lm["offset"], lm["len"]), non_blocking=True)
+                n = cm["comp_len"]
+                seg = e["comp"][off:off + n]
+                seg.copy_(self._view(cm["blob"], cm["offset"], n), non_blocking=True)
+                segs.append(seg)
+                off += n
+            ev = torch.cuda.Event()
+            ev.record(dma_stream)
+        e["segs"], e["copied"], e["tag"] = segs, ev, tag
+        self._staged[tag] = i
+        self.stats["staged"] += 1
+        self.stats["wire_bytes"] += sum(m["len"] for m in los) + off
+
+    def drop_layer(self, layer: int, keep: set[int]) -> None:
+        """Forget staged copies of `layer` that this forward will not decode (their ring
+        entries are reused later; copies on one DMA stream stay ordered)."""
+        for tag in [t for t in self._staged if t[0] == layer and t[1] not in keep]:
+            self._staged.pop(tag)
+
+    def finish(self, tag, keys, dsts, dma_stream, slot_free=None) -> torch.cuda.Event:
+        """Decode the staged expert into `dsts` (BF16 weights); returns the ready event."""
+        if tag not in self._staged:
+            self.stage(tag, keys, dma_stream)
+        i = self._staged.pop(tag)
+        e = self._slots[i]
+        d = self.dec_stream
+        d.wait_event(e["copied"])
+        if slot_free is not None:
+            d.wait_event(slot_free)
+        with torch.cuda.stream(d):
+            dec = self.codec.decode([self._nv.as_array(s) for s in e["segs"]])
+            his = [torch.utils.dlpack.from_dlpack(x) for x in dec]
+            for lo, hi, w in zip(e["lo"], his, dsts):
+                torch.stack((lo, hi.view(-1)), dim=-1, out=w.view(torch.uint8).view(-1, 2))
+            ev = torch.cuda.Event()
+            ev.record(d)
+        e["free"], e["keep"] = ev, (dec, his)        # keep decode outputs alive until reuse
+        self.stats["decoded"] += 1
+        self.stats["raw_bytes"] += sum(w.numel() * w.element_size() for w in dsts)
+        return ev
+
+    def self_check(self, keys, raw_tensors, dma_stream) -> bool:
+        dsts = [torch.empty(t.shape, dtype=t.dtype, device=self.device) for t in raw_tensors]
+        ev = self.finish((-1, -1), keys, dsts, dma_stream)
+        ev.synchronize()
+        return all(torch.equal(d, t.to(self.device)) for d, t in zip(dsts, raw_tensors))
+
+    def info(self) -> dict:
+        return {"store": self.store, "registered_gb": self.reg_bytes / 1e9, "register_s": self.reg_s,
+                "truncated_by_margin": self.truncated, "served_tensors": len(self.served),
+                "margin_gb": self.margin / (1 << 30), "mem_available_start_gb": self.avail_start / 1e9,
+                **self.stats}
+
+    def close(self) -> None:
+        for p in self._regs:
+            self._cu.cudaHostUnregister(ctypes.c_void_p(p))
+        self._regs.clear()
+
+
+def _layer(k: str) -> int | None:
+    import re
+    m = re.search(r"\.layers\.(\d+)\.", k)
+    return int(m.group(1)) if m else None
+
+
+def init_plane(store: str, device: torch.device, margin_gb: float = 64.0) -> AnsPlane:
+    global _PLANE
+    if _PLANE is None:
+        _PLANE = AnsPlane(store, device, margin_gb=margin_gb,
+                          ring=int(os.environ.get("COLOSSUS_ANS_RING", "16")))
+    return _PLANE
+
+
+def get_plane() -> AnsPlane | None:
+    return _PLANE

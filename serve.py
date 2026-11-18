@@ -26,6 +26,15 @@ def _load_counters(wrappers) -> dict:
             "minflt": sum(getattr(w, "load_minflt", 0) for w in wrappers)}
 
 
+def _ans_info():
+    try:
+        from .ansplane import get_plane
+        p = get_plane()
+        return p.info() if p is not None else None
+    except Exception:
+        return None
+
+
 def install_cache_compat(model_type: str | None = None) -> None:
     """Polyfills for modeling code written against older transformers cache APIs.
 
@@ -204,6 +213,13 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
     elif matrix_tiers:
         from .matrix import MatrixTieredMoEWrapper
         _wrap_opts = {"wrapper_cls": MatrixTieredMoEWrapper}
+    ans_store = os.environ.get("COLOSSUS_ANS_STORE")
+    if ans_store and device.type == "cuda":
+        # Lossless compressed expert plane (ansplane.py): pinned in place with the
+        # same RAM margin as --host-register-margin-gb (default 64 GB).
+        from .ansplane import init_plane
+        init_plane(ans_store, device,
+                   margin_gb=float(os.environ.get("COLOSSUS_ANS_MARGIN_GB", "64")))
     wrappers = prepare_model(model, profile, handles, device, capacity,
                              placement=placement,
                              dma_stream=(torch.cuda.Stream(device=device)
@@ -212,6 +228,15 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
                              prefetch_conf=prefetch_conf, config=config,
                              prefault=prefault,
                              hot_col_frac=hot_col_frac, **_wrap_opts)
+    if ans_store and device.type == "cuda" and wrappers:
+        from .ansplane import get_plane
+        _w = wrappers[0]
+        _ks = _w._ans_keys(0)
+        if get_plane().has(_ks):
+            _raw = [handles.get_tensor(k) for k in _ks]
+            if not get_plane().self_check(_ks, _raw, _w.dma_stream):
+                raise RuntimeError("ANS plane self-check failed: decoded expert != raw bytes")
+            print(f"ANS plane: self-check exact; {get_plane().info()['registered_gb']:.1f} GB pinned")
     mla_patched = 0
     if kv_layout == "latent":
         # Exact latent KV for MLA attention (see mla_cache.py); refuses
@@ -502,6 +527,9 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
                              "minflt": getattr(w, "load_minflt", 0)} for w in wrappers],
         "sync_loads": sync_loads,
         "host_register": (handles.stats() if hasattr(handles, "reg_bytes") else None),
+        "ans_plane": _ans_info(),
+        "xlayer_loads": sum(getattr(w, "xlayer_loads", 0) for w in wrappers),
+        "xlayer_used": sum(getattr(w, "xlayer_used", 0) for w in wrappers),
         "seed_loads": seed_loads,
         "routing_log_steps": routing_steps,
         "flip_audit": flip_audit,

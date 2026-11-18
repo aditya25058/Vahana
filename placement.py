@@ -173,6 +173,22 @@ class TieredMoEWrapper(nn.Module):
         self.slot_events = (_os.environ.get("COLOSSUS_SLOT_EVENTS", "0") == "1"
                             and device.type == "cuda" and dma_stream is not None)
         self._slot_evt: dict[int, Any] = {}
+        # Optional lossless compressed weight source (COLOSSUS_ANS_STORE, see ansplane.py).
+        from .ansplane import get_plane
+        self.ans = get_plane() if device.type == "cuda" and dma_stream is not None else None
+        self.ans_lookahead = int(_os.environ.get("COLOSSUS_ANS_LOOKAHEAD", "8"))
+        self._ans_todo: dict[int, int] = {}
+        self._ans_list: list[int] = []
+        # Opt-in (COLOSSUS_XLAYER_PREFETCH=k): at the end of this layer's MoE, load
+        # up to k experts of the NEXT MoE layer into its free slots, guessed from that
+        # layer's previous forward, so the link is busy during the next attention.
+        # Data movement only: a slot always holds its expert's exact weights.
+        self.xlayer_k = int(_os.environ.get("COLOSSUS_XLAYER_PREFETCH", "0"))
+        self.next_wrapper = None
+        self.last_needed: list[int] = []
+        self.xlayer_loads = 0
+        self.xlayer_used = 0
+        self._xlayer_pending: set[int] = set()
 
     # -- loading ------------------------------------------------------
     def _expert_tensors(self, expert_id: int):
@@ -195,8 +211,43 @@ class TieredMoEWrapper(nn.Module):
                 self.load_minflt += ru1.ru_minflt - ru0.ru_minflt
                 self.load_majflt += ru1.ru_majflt - ru0.ru_majflt
 
+    def _ans_keys(self, expert_id: int) -> list[str]:
+        ks = self.expert_keys[expert_id]
+        return [ks["gate"], ks["up"], ks["down"]]
+
+    def _ans_stage_ahead(self, expert_id: int) -> None:
+        """After loading expert_id, issue copies for the expert `lookahead` places later."""
+        p = self._ans_todo.get(expert_id)
+        if p is None:
+            return
+        q = p + self.ans_lookahead
+        if q < len(self._ans_list):
+            e = self._ans_list[q]
+            ks = self._ans_keys(e)
+            if self.ans.has(ks):
+                self.ans.stage((self.layer_idx, e), ks, self.dma_stream)
+
     def _load_expert_to_slot_impl(self, expert_id: int, slot_idx: int) -> int:
         slot = self.slots[slot_idx]
+        if self.ans is not None and self.ans.has(self._ans_keys(expert_id)):
+            t0 = time.perf_counter()
+            free = self._slot_evt.get(slot_idx) if self.slot_events else None
+            if free is None and not self.slot_events:
+                free = torch.cuda.Event()            # stock ordering: after all queued compute
+                free.record(torch.cuda.current_stream(self.device))
+            dsts = (slot.gate_proj.weight, slot.up_proj.weight, slot.down_proj.weight)
+            with torch.no_grad():
+                self.ans.finish((self.layer_idx, expert_id), self._ans_keys(expert_id), dsts,
+                                self.dma_stream, slot_free=free)
+            self._ans_stage_ahead(expert_id)
+            self.copy_s += time.perf_counter() - t0
+            if slot_idx in self.slot_to_expert:
+                self.expert_to_slot.pop(self.slot_to_expert.pop(slot_idx), None)
+            self.slot_to_expert[slot_idx] = expert_id
+            self.expert_to_slot[expert_id] = slot_idx
+            nbytes = int(sum(w.numel() * w.element_size() for w in dsts))
+            self.dma_bytes += nbytes
+            return nbytes
         t_gate, t_up, t_down = self._expert_tensors(expert_id)
         nbytes = int(t_gate.nbytes + t_up.nbytes + t_down.nbytes)
         use_stream = (self.dma_stream is not None and self.device.type == "cuda")
@@ -234,9 +285,24 @@ class TieredMoEWrapper(nn.Module):
         self.dma_bytes += nbytes
         return nbytes
 
+    def prefetch_guess(self, k: int) -> None:
+        """Load the first k experts this layer used last time (index order, as the
+        dispatch loop visits them) into its least-recently-used slots."""
+        want = [e for e in self.last_needed if e not in self.expert_to_slot][:min(k, self.capacity)]
+        self._ans_todo, self._ans_list = {}, []      # no ANS stage-ahead from a guess
+        with torch.no_grad():
+            for e in want:
+                slot_idx = self.slot_lru.pop(0)
+                self._load_expert_to_slot(e, slot_idx, kind="prefetch")
+                self.slot_lru.append(slot_idx)
+                self.xlayer_loads += 1
+                self._xlayer_pending.add(e)
+
     def _sync_dma(self) -> None:
         if self.dma_stream is not None and self.device.type == "cuda":
             torch.cuda.current_stream(self.device).wait_stream(self.dma_stream)
+            if self.ans is not None:
+                torch.cuda.current_stream(self.device).wait_stream(self.ans.dec_stream)
 
     def seed_from_prefill(self, policy: str = "freq") -> int:
         """Pre-position decode slots from the prefill self-profile.
@@ -354,6 +420,7 @@ class TieredMoEWrapper(nn.Module):
             self.forward_s += time.perf_counter() - t0
 
     def _forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        self._ans_todo, self._ans_list = {}, []
         identity = hidden_states
         orig_shape = hidden_states.shape
         topk_indices, topk_weights = self.spec.route(hidden_states)
@@ -362,6 +429,10 @@ class TieredMoEWrapper(nn.Module):
         topk_indices = topk_indices.reshape(-1, K)
         topk_weights = topk_weights.reshape(-1, K)
         needed_experts = topk_indices.unique().tolist()
+        if self._xlayer_pending:
+            self.xlayer_used += len(self._xlayer_pending & set(needed_experts))
+            self._xlayer_pending = set()
+        self.last_needed = needed_experts
         if self.routing_log is not None:
             self.routing_log.append((self.layer_idx, needed_experts))
         if self.prefill_union is None:
@@ -410,6 +481,16 @@ class TieredMoEWrapper(nn.Module):
         cnts = topk_indices.new_zeros((topk_indices.shape[0], self.spec.n_routed))
         cnts.scatter_(1, topk_indices, 1)
         tokens_per_expert = cnts.sum(dim=0).cpu().numpy()
+        if self.ans is not None:
+            # Copies for the first `lookahead` misses go out now, so the link stays busy.
+            self._ans_list = [i for i, n in enumerate(tokens_per_expert)
+                              if n > 0 and i not in self.expert_to_slot]
+            self._ans_todo = {e: p for p, e in enumerate(self._ans_list)}
+            self.ans.drop_layer(self.layer_idx, keep=set(self._ans_list))
+            for e in self._ans_list[:self.ans_lookahead]:
+                ks = self._ans_keys(e)
+                if self.ans.has(ks):
+                    self.ans.stage((self.layer_idx, e), ks, self.dma_stream)
         idxs = topk_indices.view(-1).argsort()
         flat_x = hidden_states.reshape(-1, hidden_states.shape[-1])
         sorted_tokens = flat_x[idxs // topk_indices.shape[1]]
@@ -446,6 +527,9 @@ class TieredMoEWrapper(nn.Module):
                      .sum(dim=1)
                      .type(new_x.dtype))
         out = shared_out + final_out.view(*orig_shape)
+        nxt = self.next_wrapper
+        if self.xlayer_k > 0 and nxt is not None and nxt.last_needed and not nxt.streaming:
+            nxt.prefetch_guess(self.xlayer_k)
         if self.streaming:
             # Transient slot: bindings die here; next forward misses everything.
             self.expert_to_slot.clear()
@@ -513,6 +597,8 @@ def wrap_moe_layers(model: nn.Module, profile: Any, handles: Any,
             capacity=capacity, handles=handles, dma_stream=dma_stream,
             tupled=(attr == "block_sparse_moe"), **wkw)
         setattr(layer, attr, wrapper)
+        if wrappers:
+            wrappers[-1].next_wrapper = wrapper
         wrappers.append(wrapper)
     _want = int(getattr(profile, "num_experts", 0) or 0)
     _grouped = bool(getattr(profile, "grouped_moe", False))
