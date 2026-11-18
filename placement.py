@@ -18,6 +18,10 @@ import torch.nn.functional as F
 from torch import nn
 
 from . import timing as _timing
+
+# Phase 17b: one decode pool per device shared by all MoE layers (only one layer runs at a
+# time). Entries: [modules], [free events], next index.
+_ANS_POOL: dict = {}
 from .interface import MoELayerSpec
 
 
@@ -181,6 +185,7 @@ class TieredMoEWrapper(nn.Module):
         # Phase 17: decode G missing experts per nvCOMP call (1 = per-expert, as before).
         self.ans_group = int(_os.environ.get("COLOSSUS_ANS_GROUP", "1"))
         self._ans_grouped: set[int] = set()
+        self._pool_bind: dict[int, int] = {}
         self._ans_todo: dict[int, int] = {}
         self._ans_list: list[int] = []
         # Opt-in (COLOSSUS_XLAYER_PREFETCH=k): at the end of this layer's MoE, load
@@ -241,25 +246,27 @@ class TieredMoEWrapper(nn.Module):
         for e in self._ans_list[p:]:
             if len(group) == self.ans_group:
                 break
-            if e in self.expert_to_slot:
+            if e in self.expert_to_slot or e in self._pool_bind:
                 continue
             if not self.ans.has(self._ans_keys(e)):
                 break
             group.append(e)
         t0 = time.perf_counter()
+        pool = _ANS_POOL.get(str(self.device))
+        if pool is None:
+            import copy
+            mods = [copy.deepcopy(self.slots[0]) for _ in range(2 * self.ans_group)]
+            pool = _ANS_POOL[str(self.device)] = {"mods": mods, "free": [None] * len(mods), "next": 0}
         tags, keys, dsts, frees = [], [], [], []
         for e in group:
-            slot_idx = self.slot_lru.pop(0)
-            self.slot_lru.append(slot_idx)
-            free = self._slot_evt.get(slot_idx) if self.slot_events else None
+            ps = pool["next"] % len(pool["mods"])
+            pool["next"] += 1
+            free = pool["free"][ps]
             if free is None and not self.slot_events:
                 free = torch.cuda.Event()
                 free.record(torch.cuda.current_stream(self.device))
-            slot = self.slots[slot_idx]
-            if slot_idx in self.slot_to_expert:
-                self.expert_to_slot.pop(self.slot_to_expert.pop(slot_idx), None)
-            self.slot_to_expert[slot_idx] = e
-            self.expert_to_slot[e] = slot_idx
+            slot = pool["mods"][ps]
+            self._pool_bind[e] = ps
             d = (slot.gate_proj.weight, slot.up_proj.weight, slot.down_proj.weight)
             tags.append((self.layer_idx, e))
             keys.append(self._ans_keys(e))
@@ -470,6 +477,7 @@ class TieredMoEWrapper(nn.Module):
     def _forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         self._ans_todo, self._ans_list = {}, []
         self._ans_grouped = set()
+        self._pool_bind = {}
         identity = hidden_states
         orig_shape = hidden_states.shape
         topk_indices, topk_weights = self.spec.route(hidden_states)
@@ -558,9 +566,25 @@ class TieredMoEWrapper(nn.Module):
             end_idx = start_idx + num_tokens
             if num_tokens == 0:
                 continue
-            if (i not in self.expert_to_slot and self.ans is not None and self.ans_group > 1
-                    and len(needed_experts) > self.capacity and self._ans_load_group(i)):
+            if (i not in self.expert_to_slot and i not in self._pool_bind and self.ans is not None
+                    and self.ans_group > 1 and len(needed_experts) > self.capacity
+                    and self._ans_load_group(i)):
                 self._sync_dma()
+            if i in self._pool_bind:
+                pool = _ANS_POOL[str(self.device)]
+                ps = self._pool_bind.pop(i)
+                if _T is not None:
+                    _a = _T.ev()
+                    _T.span("moe_stall", _prev, _a)
+                outputs.append(pool["mods"][ps](sorted_tokens[start_idx:end_idx]))
+                fe = torch.cuda.Event()
+                fe.record(torch.cuda.current_stream(self.device))
+                pool["free"][ps] = fe
+                if _T is not None:
+                    _prev = _T.ev()
+                    _T.span("expert_gemm", _a, _prev)
+                start_idx = end_idx
+                continue
             if i in self.expert_to_slot:
                 slot_idx = self.expert_to_slot[i]
                 if i in self._ans_grouped:
