@@ -17,6 +17,7 @@ from .loading import ShardHandles, materialize, split_routed
 from .placement import TieredMoEWrapper, wrap_moe_layers
 
 _compat_installed = False
+_KEEP = [1]   # positions the last-logits hook keeps (k+1 while verifying drafts)
 
 
 def _load_counters(wrappers) -> dict:
@@ -309,14 +310,24 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
     if os.environ.get("COLOSSUS_LAST_LOGITS") == "1" and getattr(model, "lm_head", None) is not None:
         def _last_only(_mod, args):
             h = args[0]
-            if h.dim() == 3 and h.shape[1] > 1:
-                return (h[:, -1:, :],) + tuple(args[1:])
+            keep = _KEEP[0]                      # 1, or k+1 during speculative verify steps
+            if h.dim() == 3 and h.shape[1] > keep:
+                return (h[:, -keep:, :],) + tuple(args[1:])
             return None
         model.lm_head.register_forward_pre_hook(_last_only)
+    _spec_k = int(os.environ.get("COLOSSUS_SPEC", "0") or 0)
+    _spec_stats = None
+    if _spec_k > 0 and not (os.environ.get("COLOSSUS_INVARIANT") == "1" and kv_layout == "latent"
+                            and use_cache and teacher_tokens is None):
+        raise ValueError("COLOSSUS_SPEC needs COLOSSUS_INVARIANT=1, --kv-layout latent, cache on")
     t_prefill = time.perf_counter()
     if use_cache and kv_layout == "latent":
         from .mla_cache import LatentKVCache
-        past = LatentKVCache()
+        if _spec_k > 0:
+            from .spec import RaggedLatentCache
+            past = RaggedLatentCache((attn_mask == 0).sum(dim=-1))
+        else:
+            past = LatentKVCache()
     else:
         past = DynamicCache() if use_cache else None
     with torch.no_grad():
@@ -331,11 +342,15 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
                             past_key_values=past, use_cache=use_cache, **extra)
                 logits = out.logits
                 past = getattr(out, "past_key_values", None)
+                if _spec_k > 0:
+                    past.commit([chunk.shape[1]] * B)
         else:
             extra = {"position_ids": pos_ids} if padded else {}
             out = model(input_ids=generated_ids, attention_mask=attn_mask,
                         past_key_values=past, use_cache=use_cache, **extra)
             logits = out.logits
+            if _spec_k > 0:
+                getattr(out, "past_key_values", past).commit([generated_ids.shape[1]] * B)
         next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
         past = getattr(out, "past_key_values", None)
     if device.type == "cuda":
@@ -399,7 +414,19 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         from . import timing as _timing
         _trec = _timing.install(model, wrappers)
     timing_steps: list[dict] = []
-    for step in range(max_new_tokens - 1):
+    if _spec_k > 0:
+        from .spec import spec_decode
+        real = [input_ids[b][attn_mask[b] == 1].tolist() for b in range(B)]
+        _new, latencies, _spec_stats = spec_decode(
+            model, past, real, next_token, max_new_tokens, _spec_k, eos_id, device,
+            lambda n: _KEEP.__setitem__(0, n))
+        new_counts = [len(n) for n in _new]
+        width = max(new_counts)
+        pad_tok = eos_id if eos_id is not None else 0
+        gen = torch.tensor([n + [pad_tok] * (width - len(n)) for n in _new], device=device)
+        generated_ids = torch.cat([input_ids, gen], dim=1)
+        finished = [True] * B
+    for step in range(0 if _spec_k > 0 else max_new_tokens - 1):
         if all(finished):
             break
         if device.type == "cuda":
@@ -546,6 +573,7 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         "row_split_first": detector.first() if detector is not None else None,
         "row_split_events": detector.events if detector is not None else None,
         "kv_layout": kv_layout,
+        "spec_stats": _spec_stats,
         "mla_layers_patched": mla_patched,
         "kv_cache_mb": None if kv_bytes is None else kv_bytes / (1024 ** 2),
         "placement": placement,

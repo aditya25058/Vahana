@@ -105,7 +105,7 @@ def inv_rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tens
 
 # --------------------------------------------------------------------------- MLA attention
 @triton.jit
-def _mla_kernel(ql, qp, lat, kpe, out, first, Q, H, T, scale,
+def _mla_kernel(ql, qp, lat, kpe, out, first, basep, Q, H, T, scale,
                 sqb, sqq, sqh, spb, spq, sph, slb, slt, skb, skt, sob, soq, soh,
                 R: tl.constexpr, RP: tl.constexpr, BH: tl.constexpr, BT: tl.constexpr):
     bq = tl.program_id(0)
@@ -119,7 +119,7 @@ def _mla_kernel(ql, qp, lat, kpe, out, first, Q, H, T, scale,
     qlat = tl.load(ql + b * sqb + q * sqq + hs[:, None] * sqh + rr[None, :], mask=hm[:, None], other=0.0)
     qpe = tl.load(qp + b * spb + q * spq + hs[:, None] * sph + rp[None, :], mask=hm[:, None], other=0.0)
     start = tl.load(first + b)
-    end = T - Q + q                     # causal: last key this query may see (inclusive)
+    end = tl.load(basep + b) + q        # causal: last key this query may see (inclusive)
     m_i = tl.full((BH,), float("-inf"), dtype=tl.float32)
     l_i = tl.zeros((BH,), dtype=tl.float32)
     acc = tl.zeros((BH, R), dtype=tl.float32)
@@ -138,12 +138,13 @@ def _mla_kernel(ql, qp, lat, kpe, out, first, Q, H, T, scale,
         l_i = l_i * alpha + tl.sum(p, axis=1)
         acc = acc * alpha[:, None] + tl.dot(p.to(kl.dtype), kl)
         m_i = m_new
+    l_i = tl.where(l_i > 0, l_i, 1.0)     # pad-only query (no real key yet): output 0, not NaN
     o = acc / l_i[:, None]
     tl.store(out + b * sob + q * soq + hs[:, None] * soh + rr[None, :], o.to(out.dtype.element_ty),
              mask=hm[:, None])
 
 
-def inv_mla_attention(q_lat, q_pe, latent, kpe, first_valid, softmax_scale):
+def inv_mla_attention(q_lat, q_pe, latent, kpe, first_valid, softmax_scale, base=None):
     """q_lat [B, Q, H, R], q_pe [B, Q, H, RP], latent [B, T, R], kpe [B, T, RP], first_valid [B]
     (int32 index of each row's first real key). Query q sits at key index T-Q+q (causal).
     Returns ctx [B, Q, H, R] = softmax(q.k) @ latent, per query independent of B, Q and padding."""
@@ -153,9 +154,12 @@ def inv_mla_attention(q_lat, q_pe, latent, kpe, first_valid, softmax_scale):
     q_lat, q_pe = q_lat.contiguous(), q_pe.contiguous()
     latent, kpe = latent.contiguous(), kpe.contiguous()
     out = torch.empty((B, Q, H, R), dtype=latent.dtype, device=latent.device)
+    if base is None:                     # right-aligned cache: query 0 sits at key T-Q
+        base = torch.full((B,), T - Q, dtype=torch.int32, device=latent.device)
     BH, BT = 16, 32
     grid = (B * Q, triton.cdiv(H, BH))
     _mla_kernel[grid](q_lat, q_pe, latent, kpe, out, first_valid.to(torch.int32).contiguous(),
+                      base.to(torch.int32).contiguous(),
                       Q, H, T, softmax_scale,
                       q_lat.stride(0), q_lat.stride(1), q_lat.stride(2),
                       q_pe.stride(0), q_pe.stride(1), q_pe.stride(2),

@@ -92,6 +92,23 @@ def _latent_forward(self, hidden_states, attention_mask=None, position_ids=None,
     cos, sin = self.rotary_emb(latent, seq_len=kv_seq_len)  # x only sets dtype/device
     q_pe, k_pe = rope_fn(q_pe, k_pe, cos, sin, position_ids)
 
+    if getattr(past_key_value, "append_ragged", None) is not None:
+        # Ragged cache (speculative decoding, invariant mode only): rows write at their own
+        # offsets; attention reads [first_b, length_b + q]. No mask, no shifting.
+        if not _inv_on():
+            raise ValueError("ragged latent cache requires COLOSSUS_INVARIANT=1")
+        from .invariant import inv_bmm, inv_mla_attention
+        lat_buf, kpe_buf, first, base = past_key_value.append_ragged(self.layer_idx, latent, k_pe)
+        wuk, wuvT = _absorb_weights(self)
+        H, r = self.num_heads, self.kv_lora_rank
+        qn = q_nope.permute(1, 0, 2, 3).reshape(H, bsz * q_len, nope).contiguous()
+        q_lat = inv_bmm(qn, wuk).view(H, bsz, q_len, r).permute(1, 2, 0, 3)
+        ctx = inv_mla_attention(q_lat, q_pe.permute(0, 2, 1, 3), lat_buf, kpe_buf, first,
+                                self.softmax_scale, base=base)
+        c = ctx.permute(2, 0, 1, 3).reshape(H, bsz * q_len, r).contiguous()
+        o = inv_bmm(c, wuvT).view(H, bsz, q_len, vdim).permute(1, 2, 0, 3).reshape(bsz, q_len, H * vdim)
+        return self.o_proj(o), None, past_key_value
+
     # -- cache the latent, re-expand K/V for every cached token -------------
     latent_all, kpe_all, _ = past_key_value.append(self.layer_idx, latent, k_pe)
     t_all = latent_all.shape[1]
