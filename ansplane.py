@@ -37,8 +37,9 @@ def _nvcomp():
     # The venv's nvidia namespace can be shadowed by another 'nvidia' package; add
     # the site-packages copy next to torch (same fix as rudra/encode_ans_store.py).
     import nvidia
+    import sys
     site = os.environ.get("COLOSSUS_NVCOMP_SITE") or os.path.join(
-        os.path.dirname(os.path.dirname(torch.__file__)), "nvidia")
+        sys.prefix, "lib", "python%d.%d" % sys.version_info[:2], "site-packages", "nvidia")
     if os.path.isdir(site) and site not in list(nvidia.__path__):
         nvidia.__path__.append(site)
     import nvidia.nvcomp as nvcomp
@@ -74,6 +75,7 @@ class AnsPlane:
         self._slots: list[dict | None] = [None] * self.ring
         self._next = 0
         self._staged: dict[tuple[int, int], int] = {}
+        self._cfg: dict[int, Any] = {}
         self.stats = {"staged": 0, "decoded": 0, "wire_bytes": 0, "raw_bytes": 0}
 
     # -- mapping / pinning -------------------------------------------------
@@ -136,8 +138,9 @@ class AnsPlane:
         if e is None or e["comp"].numel() < comp_total or [t.numel() for t in e["lo"]] != sizes:
             old_ev = e["free"] if e else None
             e = {"lo": [torch.empty(n, dtype=torch.uint8, device=self.device) for n in sizes],
+                 "hi": [torch.empty(n, dtype=torch.uint8, device=self.device) for n in sizes],
                  "comp": torch.empty(max(comp_total, 16 << 20), dtype=torch.uint8, device=self.device),
-                 "free": old_ev, "keep": None}
+                 "free": old_ev}
             self._slots[i] = e
         return i
 
@@ -147,7 +150,7 @@ class AnsPlane:
             return
         los = [self.lidx[k] for k in keys]
         cps = [self.idx[k] for k in keys]
-        i = self._entry([m["len"] for m in los], sum(m["comp_len"] for m in cps))
+        i = self._entry([m["len"] for m in los], sum(m["comp_len"] for m in cps) + 256 * len(cps))
         e = self._slots[i]
         with torch.cuda.stream(dma_stream):
             if e["free"] is not None:
@@ -159,13 +162,13 @@ class AnsPlane:
                 seg = e["comp"][off:off + n]
                 seg.copy_(self._view(cm["blob"], cm["offset"], n), non_blocking=True)
                 segs.append(seg)
-                off += n
+                off = (off + n + 255) // 256 * 256      # nvCOMP ANS needs aligned input
             ev = torch.cuda.Event()
             ev.record(dma_stream)
         e["segs"], e["copied"], e["tag"] = segs, ev, tag
         self._staged[tag] = i
         self.stats["staged"] += 1
-        self.stats["wire_bytes"] += sum(m["len"] for m in los) + off
+        self.stats["wire_bytes"] += sum(m["len"] for m in los) + sum(m["comp_len"] for m in cps)
 
     def drop_layer(self, layer: int, keep: set[int]) -> None:
         """Forget staged copies of `layer` that this forward will not decode (their ring
@@ -183,14 +186,24 @@ class AnsPlane:
         d.wait_event(e["copied"])
         if slot_free is not None:
             d.wait_event(slot_free)
+        srcs = [self._nv.as_array(s) for s in e["segs"]]
+        outs = [self._nv.as_array(h) for h in e["hi"]]
+        n = len(srcs)
+        if n not in self._cfg:
+            # One DecompressConfig per batch size, built once from real blobs (one host sync).
+            # Every high-byte blob decodes to the same size per projection shape, so later
+            # decodes reuse it and never sync (nvCOMP otherwise parses headers per call).
+            e["copied"].synchronize()
+            self._cfg[n] = self.codec.decompression_config(srcs)
         with torch.cuda.stream(d):
-            dec = self.codec.decode([self._nv.as_array(s) for s in e["segs"]])
-            his = [torch.utils.dlpack.from_dlpack(x) for x in dec]
-            for lo, hi, w in zip(e["lo"], his, dsts):
-                torch.stack((lo, hi.view(-1)), dim=-1, out=w.view(torch.uint8).view(-1, 2))
+            # Decode into our own buffers (out=): avoids nvCOMP-owned outputs and the dlpack
+            # conversion that segfaulted in Phase 13a attempt 2.
+            self.codec.decode(srcs, out=outs, decompression_config=self._cfg[n])
+            for lo, hi, w in zip(e["lo"], e["hi"], dsts):
+                torch.stack((lo, hi), dim=-1, out=w.view(torch.uint8).view(-1, 2))
             ev = torch.cuda.Event()
             ev.record(d)
-        e["free"], e["keep"] = ev, (dec, his)        # keep decode outputs alive until reuse
+        e["free"] = ev
         self.stats["decoded"] += 1
         self.stats["raw_bytes"] += sum(w.numel() * w.element_size() for w in dsts)
         return ev
