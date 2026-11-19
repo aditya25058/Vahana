@@ -190,6 +190,28 @@ def enabled() -> bool:
     return os.environ.get("VAHANA_INVARIANT", "0") == "1"
 
 
+def _rmsnorm_equivalent(m: torch.nn.Module) -> bool:
+    """True if `m` takes one input and inv_rmsnorm reproduces its output bit for bit (random input, m's device)."""
+    import inspect as _insp
+    try:
+        params = [p for p in _insp.signature(type(m).forward).parameters.values()][1:]
+    except (TypeError, ValueError):
+        return False
+    if len(params) != 1:                           # gated / extra-argument norms are not plain RMSNorm
+        return False
+    w = m.weight
+    if w.device.type == "meta" or w.dim() != 1:
+        return False
+    g = torch.Generator(device=w.device).manual_seed(0)
+    x = torch.randn(5, w.shape[0], generator=g, device=w.device).to(w.dtype)
+    with torch.no_grad():
+        try:
+            ref = m(x)
+        except Exception:  # noqa: BLE001
+            return False
+        return ref.shape == x.shape and torch.equal(ref, inv_rmsnorm(x, w, m.variance_epsilon))
+
+
 def install(model: torch.nn.Module) -> dict:
     """Route linears, RMSNorms and the MoE gate's F.linear through invariant kernels.
     Structural: nn.Linear (class-level, so expert slots / pools created later are covered),
@@ -204,10 +226,18 @@ def install(model: torch.nn.Module) -> dict:
             return inv_linear(x, self.weight, self.bias)
         torch.nn.Linear.forward = _lin_forward
         _INSTALLED = True
+    verdict: dict[type, bool] = {}
+    kept = set()
     for m in model.modules():
         if hasattr(m, "variance_epsilon") and isinstance(getattr(m, "weight", None), torch.Tensor):
-            m.forward = types.MethodType(lambda self, x: inv_rmsnorm(x, self.weight, self.variance_epsilon), m)
-            n_norm += 1
+            cls = type(m)
+            if cls not in verdict:
+                verdict[cls] = _rmsnorm_equivalent(m)
+            if verdict[cls]:
+                m.forward = types.MethodType(lambda self, x: inv_rmsnorm(x, self.weight, self.variance_epsilon), m)
+                n_norm += 1
+            else:
+                kept.add(cls.__name__)
         mods.add(type(m).__module__)
     shimmed = 0
     for name in mods:
@@ -217,7 +247,8 @@ def install(model: torch.nn.Module) -> dict:
             shim.linear = lambda x, w, b=None: inv_linear(x, w, b)
             mod.F = shim
             shimmed += 1
-    return {"rmsnorm": n_norm, "f_shimmed_modules": shimmed, "linear": "class-level"}
+    return {"rmsnorm": n_norm, "norms_kept_stock": sorted(kept), "f_shimmed_modules": shimmed,
+            "linear": "class-level"}
 
 
 def fast_gates(model: torch.nn.Module) -> dict:

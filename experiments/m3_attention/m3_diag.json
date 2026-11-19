@@ -1,0 +1,83 @@
+{
+ "gpt_oss": {
+  "norm_classes": [
+   "GptOssRMSNorm(self, hidden_states) -> torch.Tensor"
+  ],
+  "attn": 0.345679012345679,
+  "experts": 0.2839506172839506,
+  "norms": 0.0,
+  "linear": 0.0
+ },
+ "deepseek_v3": {
+  "norm_classes": [
+   "DeepseekV3RMSNorm(self, hidden_states: torch.Tensor) -> torch.Tensor"
+  ],
+  "attn": 0.4957142857142857,
+  "experts": 0.007678571428571429,
+  "norms": 0.0,
+  "linear": 0.45571428571428574
+ },
+ "afmoe": {
+  "norm_classes": [
+   "AfmoeRMSNorm(self, hidden_states) -> torch.Tensor"
+  ],
+  "attn": 0.1858626497005988,
+  "experts": 0.005988023952095809,
+  "norms": 0.0,
+  "linear": 0.005988023952095809
+ },
+ "cohere2_moe": {
+  "norm_classes": [
+   "Cohere2MoeLayerNorm(self, hidden_states)"
+  ],
+  "attn": 0.027858345808383235,
+  "experts": 0.019461077844311378,
+  "norms": 0.08832335329341318,
+  "linear": 0.0
+ },
+ "hunyuan_v1_moe": {
+  "norm_classes": [
+   "HunYuanMoEV1RMSNorm(self, hidden_states: torch.Tensor) -> torch.Tensor"
+  ],
+  "attn": 0.009554140127388535,
+  "experts": 0.007066082802547771,
+  "norms": 0.0,
+  "linear": 0.006369426751592357
+ },
+ "mixtral": {
+  "norm_classes": [
+   "MixtralRMSNorm(self, hidden_states: torch.Tensor) -> torch.Tensor"
+  ],
+  "attn": 0.12531459731543623,
+  "experts": 0.11409395973154363,
+  "norms": 0.0,
+  "linear": 0.12426593959731544
+ },
+ "olmoe": {
+  "norm_classes": [
+   "OlmoeRMSNorm(self, hidden_states: torch.Tensor) -> torch.Tensor"
+  ],
+  "attn": 0.006532485875706214,
+  "experts": 0.005649717514124294,
+  "norms": 0.005649717514124294,
+  "linear": 0.005649717514124294
+ },
+ "qwen3_5_moe_text": {
+  "norm_classes": [
+   "Qwen3_5MoeRMSNormGated(self, hidden_states, gate=None)"
+  ],
+  "attn": 0.006024096385542169,
+  "experts": 0.20990210843373494,
+  "norms": "TypeError: norms_only.<locals>.<lambda>() takes 2 positional arguments but 3 were given",
+  "linear": 0.009036144578313253
+ },
+ "minimax": {
+  "norm_classes": [
+   "MiniMaxRMSNorm(self, hidden_states: torch.Tensor) -> torch.Tensor"
+  ],
+  "attn": 0.006134969325153374,
+  "experts": 0.006134969325153374,
+  "norms": 0.0,
+  "linear": 0.0
+ }
+}
