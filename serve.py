@@ -115,6 +115,12 @@ def prepare_model(model: torch.nn.Module, profile: Any, handles: ShardHandles,
         if model_dir:
             prefault_shards(handles.weight_map, model_dir, verbose=True)
     resident, _ = split_routed(handles.weight_map)
+    from . import twinlin as _tw
+    cpu_keys = [k for k in resident if _tw.on_cpu(k)]
+    if cpu_keys:
+        # Phase 30: budgeted placement; these stay in host memory (in place) and run on the CPU.
+        materialize(model, cpu_keys, handles, torch.device("cpu"), dtype)
+        resident = [k for k in resident if k not in set(cpu_keys)]
     materialize(model, resident, handles, device, dtype)
     model.eval()
     # Tied LM head: indexes omit tied weights (no lm_head entry when tied to
@@ -270,6 +276,14 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         if device.type != "cuda" or kv_layout != "latent":
             raise ValueError("COLOSSUS_INVARIANT=1 needs CUDA and --kv-layout latent")
         print("invariant mode:", _inv.install(model), flush=True)
+    from . import twinlin as _twl
+    _twin_info = None
+    if _twl.enabled():
+        if not _inv.enabled():
+            raise ValueError("COLOSSUS_TWIN=1 needs COLOSSUS_INVARIANT=1")
+        _twin_info = _twl.install(model, device)
+        print("twin mode: %d CPU linears, embedding on CPU: %s"
+              % (len(_twin_info["cpu_linears"]), _twin_info["embedding_on_cpu"]), flush=True)
     if sync_loads:
         for w in wrappers:
             w.sync_loads = True  # diagnostic: honest per-load copy timing
@@ -357,6 +371,26 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
     if _spec_k > 0 and not (os.environ.get("COLOSSUS_INVARIANT") == "1" and kv_layout == "latent"
                             and use_cache and teacher_tokens is None):
         raise ValueError("COLOSSUS_SPEC needs COLOSSUS_INVARIANT=1, --kv-layout latent, cache on")
+    _budget = os.environ.get("COLOSSUS_GPU_BUDGET_GB")
+    _budget_info = None
+    if _budget and device.type == "cuda":
+        # Phase 30: emulate a small card. Everything resident must already fit; later allocations are capped.
+        torch.cuda.synchronize(device)
+        torch.cuda.empty_cache()
+        _tot = torch.cuda.get_device_properties(device).total_memory
+        _alloc = torch.cuda.memory_allocated(device)
+        if _alloc > float(_budget) * 1e9:
+            import collections as _co
+            _by = _co.Counter()
+            for _n, _p in list(model.named_parameters()) + list(model.named_buffers()):
+                if _p.is_cuda:
+                    _by[".".join(x for x in _n.split(".") if not x.isdigit())[:60]] += _p.numel() * _p.element_size()
+            for _k, _v in _by.most_common(12):
+                print(f"  GPU {_v / 1e9:7.3f} GB  {_k}", flush=True)
+            raise RuntimeError(f"resident weights {_alloc / 1e9:.2f} GB exceed the {_budget} GB budget")
+        torch.cuda.set_per_process_memory_fraction(float(_budget) * 1e9 / _tot, device)
+        torch.cuda.reset_peak_memory_stats(device)
+        _budget_info = {"budget_gb": float(_budget), "resident_gb_at_cap": _alloc / 1e9}
     t_prefill = time.perf_counter()
     if use_cache and kv_layout == "latent":
         from .mla_cache import LatentKVCache
@@ -621,6 +655,11 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         "kv_layout": kv_layout,
         "spec_stats": _spec_stats,
         "graph_stats": _graph_stats,
+        "twin_info": (None if _twin_info is None else {"cpu_linears": len(_twin_info["cpu_linears"]),
+                                                       "embedding_on_cpu": _twin_info["embedding_on_cpu"]}),
+        "budget_info": (None if _budget_info is None else dict(_budget_info,
+                        peak_allocated_gb=torch.cuda.max_memory_allocated(device) / 1e9,
+                        peak_reserved_gb=torch.cuda.max_memory_reserved(device) / 1e9)),
         "mla_layers_patched": mla_patched,
         "kv_cache_mb": None if kv_bytes is None else kv_bytes / (1024 ** 2),
         "placement": placement,

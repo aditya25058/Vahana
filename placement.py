@@ -133,6 +133,7 @@ class TieredMoEWrapper(nn.Module):
         self._cpu_cache: dict[int, dict[str, torch.Tensor]] = {}
         self._cpu_fifo: list[int] = []
 
+        import os as _os
         self.gate = spec.gate
         self.shared_experts = spec.shared
         # Streaming floor (capacity 0): one transient slot, bindings cleared
@@ -141,9 +142,12 @@ class TieredMoEWrapper(nn.Module):
         if self.streaming:
             capacity = 1
         self.capacity = capacity
+        # Phase 30: with every routed expert on the CPU (fast path) the HBM slots are never used.
+        _no_slots = (_os.environ.get("COLOSSUS_HYBRID") == "1" and _os.environ.get("COLOSSUS_HYBRID_FAST") == "1"
+                     and _os.environ.get("COLOSSUS_GPU_BUDGET_GB"))
         self.slots: list[nn.Module] = nn.ModuleList([
             FastSlot(spec.hidden, spec.inter, device, spec.dtype, spec.activation)
-            for _ in range(capacity)
+            for _ in range(0 if _no_slots else capacity)
         ])
         self.slot_to_expert: dict[int, int] = {}
         self.expert_to_slot: dict[int, int] = {}
@@ -512,6 +516,11 @@ class TieredMoEWrapper(nn.Module):
                 u.append(tu)
                 d.append(td)
             hy.ext().register_layer(self.layer_idx, g, u, d)
+            from . import twinlin as _tw
+            if _tw.enabled() and _tw.shared_on_cpu(self):
+                se = self.shared_experts
+                hy.ext().register_shared(self.layer_idx, se.gate_proj.weight, se.up_proj.weight,
+                                         se.down_proj.weight)
             self._hy_registered = True
         hy.pool()                                   # one-time main-thread setup (torch threads)
         K = self.spec.top_k if hasattr(self.spec, "top_k") else None
@@ -532,7 +541,13 @@ class TieredMoEWrapper(nn.Module):
         ev.synchronize()
         hy.STATS["route_wait_s"] = hy.STATS.get("route_wait_s", 0.0) + time.perf_counter() - _t0
         hy.ext().submit_moe(self.layer_idx, xb, tib, twb, ob, int(__import__("os").environ.get("COLOSSUS_HYBRID_NUMA", "1")))
-        shared_out = self.shared_experts(hidden_states) if self.shared_experts is not None             else torch.zeros_like(hidden_states)
+        from . import twinlin as _tw
+        if _tw.enabled() and _tw.shared_on_cpu(self):
+            shared_out = None                        # added by the CPU job
+        elif _tw.enabled() and self.shared_experts is not None:
+            shared_out = _tw.shared_gpu(self, flat).view(*orig_shape)
+        else:
+            shared_out = self.shared_experts(hidden_states) if self.shared_experts is not None                 else torch.zeros_like(hidden_states)
         _t1 = time.perf_counter()
         hy.ext().wait_done()
         hy.STATS["cpu_wait_s"] += time.perf_counter() - _t1
@@ -540,6 +555,8 @@ class TieredMoEWrapper(nn.Module):
         hy.STATS["layers"] += 1
         hy.STATS["fast_layers"] = hy.STATS.get("fast_layers", 0) + 1
         out_d = ob.to(self.device, non_blocking=True)
+        if shared_out is None:
+            return out_d.view(*orig_shape)
         return shared_out + out_d.view(*orig_shape)
 
     # -- Phase 26: exact CPU/GPU split ----------------------------------
