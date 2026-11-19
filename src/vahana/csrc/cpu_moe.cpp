@@ -820,7 +820,49 @@ double read_bw(std::vector<torch::Tensor> packs, int64_t numa) {
   return tot / ms / 1e6;
 }
 
+// ============================================================================ M0: host-node jobs
+#include <dlfcn.h>
+namespace {
+typedef int (*LaunchHostFn)(void* stream, void (*fn)(void*), void* data);
+LaunchHostFn g_launch_host = nullptr;
+struct HostJob { int64_t layer; torch::Tensor x, ti, tw, out; int64_t numa; bool noop; };
+std::vector<HostJob*>* HOST_JOBS = new std::vector<HostJob*>();
+std::atomic<long long> g_host_calls{0};
+void host_cb(void* p) {
+  HostJob* j = static_cast<HostJob*>(p);
+  g_host_calls++;
+  if (j->noop) return;
+  submit_moe(j->layer, j->x, j->ti, j->tw, j->out, j->numa);
+  wait_done();
+}
+LaunchHostFn launch_host() {
+  if (!g_launch_host) {
+    for (const char* lib : {"libcudart.so.12", "libcudart.so"}) {
+      void* h = dlopen(lib, RTLD_NOW | RTLD_NOLOAD);
+      if (h) { g_launch_host = (LaunchHostFn)dlsym(h, "cudaLaunchHostFunc"); if (g_launch_host) break; }
+    }
+    TORCH_CHECK(g_launch_host, "cudaLaunchHostFunc not found (is torch.cuda initialised?)");
+  }
+  return g_launch_host;
+}
+}
+// Register a job on fixed pinned buffers; returns its id. noop=true makes an empty host node (overhead probe).
+int64_t make_host_job(int64_t layer, torch::Tensor x, torch::Tensor ti, torch::Tensor tw, torch::Tensor out,
+                      int64_t numa, bool noop) {
+  HOST_JOBS->push_back(new HostJob{layer, x, ti, tw, out, numa, noop});
+  return (int64_t)HOST_JOBS->size() - 1;
+}
+// Enqueue job `id` on a CUDA stream (torch.cuda.current_stream().cuda_stream); capturable.
+void enqueue_host_job(int64_t stream, int64_t id) {
+  const int rc = launch_host()((void*)stream, host_cb, HOST_JOBS->at(id));
+  TORCH_CHECK(rc == 0, "cudaLaunchHostFunc failed: ", rc);
+}
+int64_t host_calls() { return g_host_calls.load(); }
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("make_host_job", &make_host_job);
+  m.def("enqueue_host_job", &enqueue_host_job);
+  m.def("host_calls", &host_calls);
   m.def("read_bw", &read_bw, py::call_guard<py::gil_scoped_release>());
   m.def("register_linear_nx", &register_linear_nx);
   m.def("register_shared_nx", &register_shared_nx);
