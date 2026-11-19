@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 
 from . import hybrid as _hy
-from .spec import ExpertsSpec, inspect, parent_of
+from .modelspec import ExpertsSpec, inspect, parent_of
 
 
 def _split(gate_up: torch.Tensor, down: torch.Tensor, I: int):

@@ -12,7 +12,7 @@ import torch
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 import m1_families as M  # noqa: E402  (reuses build / tiny_config; its module body only runs under __main__ guard)
 from vahana import experts as vx  # noqa: E402
-from vahana.spec import inspect, parent_of  # noqa: E402
+from vahana.modelspec import inspect, parent_of  # noqa: E402
 
 OUT = sys.argv[1]
 FAMS = sys.argv[2:] or M.TIER1

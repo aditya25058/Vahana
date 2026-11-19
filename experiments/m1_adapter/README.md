@@ -3,7 +3,7 @@
 Pre-registered 2026-11-20, before any GPU run. (tests/test_spec.py already passed: 20/20, CPU only.)
 
 **Code:**
-- `vahana/spec.py`: finds every experts module by structure (the `experts(hidden_states, top_k_index, top_k_weights)` seam, `gate_up_proj [E, 2I, H]` / `down_proj [E, H, I]`, SiLU-GLU). Anything else raises UnsupportedModel with the class name.
+- `vahana/modelspec.py`: finds every experts module by structure (the `experts(hidden_states, top_k_index, top_k_weights)` seam, `gate_up_proj [E, 2I, H]` / `down_proj [E, H, I]`, SiLU-GLU). Anything else raises UnsupportedModel with the class name.
 - `vahana/experts.py`, `VahanaExperts`: the drop-in module; CPU kernel, weights in CPU RAM, NX12 for single-token calls.
 - `vahana/experts.py`, `TwinGPUExperts`: the same arithmetic on the GPU, used as the reference.
 - `install(model, mode)` replaces every experts module.

@@ -3,7 +3,7 @@ import pytest
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM
 
-from vahana.spec import UnsupportedModel, inspect
+from vahana.modelspec import UnsupportedModel, inspect
 
 SMALL = dict(hidden_size=256, intermediate_size=512, moe_intermediate_size=128, num_hidden_layers=2,
              num_attention_heads=4, num_key_value_heads=2, head_dim=64, vocab_size=512, num_local_experts=8,

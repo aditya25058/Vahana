@@ -17,7 +17,7 @@ import torch
 from transformers import AutoConfig, AutoModelForCausalLM
 
 from vahana import experts as vx
-from vahana.spec import inspect, parent_of
+from vahana.modelspec import inspect, parent_of
 
 TIER1 = ["mixtral", "qwen2_moe", "qwen3_moe", "olmoe", "deepseek_v2", "deepseek_v3", "glm4_moe", "glm4_moe_lite",
          "minimax", "minimax_m2", "hunyuan_v1_moe", "ernie4_5_moe", "cohere2_moe", "exaone_moe", "afmoe", "phimoe",
