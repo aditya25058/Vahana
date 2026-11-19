@@ -280,6 +280,8 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         if device.type != "cuda" or kv_layout != "latent":
             raise ValueError("COLOSSUS_INVARIANT=1 needs CUDA and --kv-layout latent")
         print("invariant mode:", _inv.install(model), flush=True)
+        if __import__("os").environ.get("COLOSSUS_FAST_GATE") == "1":
+            print("fast gates:", _inv.fast_gates(model), flush=True)     # Phase 41
     from . import twinlin as _twl
     _twin_info = None
     if _twl.enabled():

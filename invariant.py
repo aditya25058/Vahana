@@ -16,9 +16,13 @@ This defines a new reference (not bit-equal to cuBLAS), deterministic and invari
 """
 from __future__ import annotations
 
+import os as _os
+
 import torch
 import triton
 import triton.language as tl
+
+_FAST_GATE = _os.environ.get("COLOSSUS_FAST_GATE") == "1"
 
 
 # --------------------------------------------------------------------------- matmul
@@ -59,11 +63,14 @@ def inv_bmm(a: torch.Tensor, b: torch.Tensor, out_dtype=None) -> torch.Tensor:
         return c
     ieee = a.dtype == torch.float32
     BM, BN, BK = (32, 64, 32) if ieee else (64, 128, 64)
+    ns = 3
+    if ieee and _FAST_GATE and N <= 256:        # Phase 41: same BK / FMA order, more programs in flight
+        BN, ns = 16, 6
     grid = (triton.cdiv(M, BM), triton.cdiv(N, BN), G)
     _bmm_kernel[grid](a, b, c, M, N, K,
                       a.stride(0), a.stride(1), a.stride(2), b.stride(0), b.stride(1), b.stride(2),
                       c.stride(0), c.stride(1), c.stride(2),
-                      BM=BM, BN=BN, BK=BK, IEEE=ieee, num_warps=4, num_stages=3)
+                      BM=BM, BN=BN, BK=BK, IEEE=ieee, num_warps=4, num_stages=ns)
     return c
 
 
@@ -211,3 +218,20 @@ def install(model: torch.nn.Module) -> dict:
             mod.F = shim
             shimmed += 1
     return {"rmsnorm": n_norm, "f_shimmed_modules": shimmed, "linear": "class-level"}
+
+
+def fast_gates(model: torch.nn.Module) -> dict:
+    """Phase 41: MoEGate weights -> bf16 views of contiguous W^T (same values, same memory)."""
+    n, nbytes = 0, 0
+    for m in model.modules():
+        if type(m).__name__ != "MoEGate":
+            continue
+        w = getattr(m, "weight", None)
+        if not isinstance(w, torch.Tensor) or not w.is_cuda or w.dim() != 2:
+            continue
+        # bf16 view of a contiguous W^T: no extra memory (no room for fp32 copies in a 16 GB budget).
+        # weight.type(float32) in the gate preserves strides, so inv_linear still gets a contiguous [K, N].
+        w.data = w.detach().t().contiguous().t()
+        n += 1
+        nbytes += w.numel() * w.element_size()
+    return {"gates": n, "mb": nbytes / 2**20}

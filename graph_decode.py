@@ -200,7 +200,15 @@ def graph_decode(model, wrappers, cache, next_token, max_new: int, eos_id, devic
                 else:
                     it[1]()
             elif it[2] is not None:
-                it[2].replay()
+                if timing:
+                    t_h = time.perf_counter()
+                    it[2].replay()
+                    torch.cuda.synchronize()
+                    h_ = HT.setdefault("gpu", [0.0, 0.0, 0])
+                    h_[0] += time.perf_counter() - t_h
+                    h_[2] += 1
+                else:
+                    it[2].replay()
             else:
                 for fn in it[1]:
                     fn()
@@ -222,6 +230,9 @@ def graph_decode(model, wrappers, cache, next_token, max_new: int, eos_id, devic
 
     out = [cur[0]]
     lat = []
+    _mc = os.environ.get("COLOSSUS_MAIN_CPUS")
+    if _mc:                                       # Phase 41: main thread off the worker's core
+        os.sched_setaffinity(0, {int(c_) for c_ in _mc.split(",")})
     stats = {"graph": use_graph, "capture_s": None, "moe_layers": len(wmap),
              "graphs": sum(1 for it in items if it[0] == "gpu"), "host_items": sum(1 for it in items if it[0] == "host"),
              "cpu_oproj_layers": len(grabs), "embedding_on_cpu": emb_cpu}
@@ -232,7 +243,16 @@ def graph_decode(model, wrappers, cache, next_token, max_new: int, eos_id, devic
                     break
                 torch.cuda.synchronize()
                 t0 = time.perf_counter()
-                step()
+                prof_out = os.environ.get("COLOSSUS_GRAPH_PROF")
+                if prof_out and i == 4 and use_graph:      # Phase 41: step 4 runs under the profiler (diag only)
+                    from torch.profiler import profile, ProfilerActivity
+                    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof_:
+                        step()
+                        torch.cuda.synchronize()
+                    with open(prof_out, "w") as f_:
+                        f_.write(prof_.key_averages().table(sort_by="cuda_time_total", row_limit=60))
+                else:
+                    step()
                 nt = int(tok.item())
                 lat.append(time.perf_counter() - t0)
                 out.append(nt)
