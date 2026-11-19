@@ -85,7 +85,9 @@ _POOL = None
 def ext():
     global _EXT
     if _EXT is None:
-        sys.path.insert(0, os.environ["VAHANA_HYBRID_EXT"])
+        # VAHANA_HYBRID_EXT overrides; default is the in-package build (csrc/build_kernel.sh)
+        sys.path.insert(0, os.environ.get("VAHANA_HYBRID_EXT") or
+                        os.path.join(os.path.dirname(os.path.abspath(__file__)), "_build"))
         import cpu_moe  # noqa: E402
         _EXT = cpu_moe
     return _EXT
