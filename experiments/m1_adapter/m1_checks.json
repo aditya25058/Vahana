@@ -1,0 +1,87 @@
+{
+ "mixtral": {
+  "experts_matter": 0.29193548387096774,
+  "call_rel": 0.0035460992907801418,
+  "stock_out_maxabs": 0.06884765625
+ },
+ "qwen2_moe": {
+  "experts_matter": 0.06766917293233082,
+  "call_rel": 0.00684931506849315,
+  "stock_out_maxabs": 0.03564453125
+ },
+ "qwen3_moe": {
+  "experts_matter": 0.04976851851851852,
+  "call_rel": 0.00684931506849315,
+  "stock_out_maxabs": 0.03564453125
+ },
+ "olmoe": {
+  "experts_matter": 0.09193548387096774,
+  "call_rel": 0.0035460992907801418,
+  "stock_out_maxabs": 0.06884765625
+ },
+ "deepseek_v2": {
+  "experts_matter": 0.12573099415204678,
+  "call_rel": 0.00684931506849315,
+  "stock_out_maxabs": 0.03564453125
+ },
+ "deepseek_v3": {
+  "experts_matter": 0.8233333333333334,
+  "call_rel": 0.00684931506849315,
+  "stock_out_maxabs": 0.03564453125
+ },
+ "glm4_moe": {
+  "experts_matter": 0.177007299270073,
+  "call_rel": 0.00684931506849315,
+  "stock_out_maxabs": 0.03564453125
+ },
+ "glm4_moe_lite": {
+  "experts_matter": 0.4202586206896552,
+  "call_rel": 0.00684931506849315,
+  "stock_out_maxabs": 0.03564453125
+ },
+ "minimax": {
+  "experts_matter": 0.034023668639053255,
+  "call_rel": 0.0035460992907801418,
+  "stock_out_maxabs": 0.06884765625
+ },
+ "minimax_m2": {
+  "experts_matter": 0.19765625,
+  "call_rel": 0.0035460992907801418,
+  "stock_out_maxabs": 0.06884765625
+ },
+ "hunyuan_v1_moe": {
+  "experts_matter": 0.2703313253012048,
+  "call_rel": 0.0035460992907801418,
+  "stock_out_maxabs": 0.06884765625
+ },
+ "ernie4_5_moe": {
+  "experts_matter": 0.11935483870967742,
+  "call_rel": 0.00684931506849315,
+  "stock_out_maxabs": 0.03564453125
+ },
+ "cohere2_moe": {
+  "experts_matter": 0.09134615384615384,
+  "call_rel": 0.0035460992907801418,
+  "stock_out_maxabs": 0.06884765625
+ },
+ "exaone_moe": {
+  "experts_matter": 0.4175750968992248,
+  "call_rel": 0.00684931506849315,
+  "stock_out_maxabs": 0.03564453125
+ },
+ "afmoe": {
+  "experts_matter": 0.5517241379310345,
+  "call_rel": 0.00684931506849315,
+  "stock_out_maxabs": 0.03564453125
+ },
+ "phimoe": {
+  "experts_matter": 0.5852649006622517,
+  "call_rel": 0.0035460992907801418,
+  "stock_out_maxabs": 0.06884765625
+ },
+ "qwen3_5_moe_text": {
+  "experts_matter": 0.9216417910447762,
+  "call_rel": 0.00684931506849315,
+  "stock_out_maxabs": 0.03564453125
+ }
+}

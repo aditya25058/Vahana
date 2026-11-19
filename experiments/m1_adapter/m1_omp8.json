@@ -1,0 +1,246 @@
+{
+ "omp": "8",
+ "mixtral": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   512,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.0064516129032258064,
+  "stock_ids_agree": 8
+ },
+ "qwen2_moe": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   128,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.007518796992481203,
+  "stock_ids_agree": 8
+ },
+ "qwen3_moe": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   128,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.006172839506172839,
+  "stock_ids_agree": 8
+ },
+ "olmoe": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   512,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.006493506493506494,
+  "stock_ids_agree": 8
+ },
+ "deepseek_v2": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   128,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.007309941520467836,
+  "stock_ids_agree": 6
+ },
+ "deepseek_v3": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   128,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.010208333333333333,
+  "stock_ids_agree": 8
+ },
+ "glm4_moe": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   128,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.007246376811594203,
+  "stock_ids_agree": 8
+ },
+ "glm4_moe_lite": {
+  "experts_modules": 3,
+  "E_I_H": [
+   8,
+   128,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.005747126436781609,
+  "stock_ids_agree": 8
+ },
+ "minimax": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   512,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.005917159763313609,
+  "stock_ids_agree": 8
+ },
+ "minimax_m2": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   512,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.00625,
+  "stock_ids_agree": 8
+ },
+ "hunyuan_v1_moe": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   512,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.007530120481927711,
+  "stock_ids_agree": 8
+ },
+ "ernie4_5_moe": {
+  "experts_modules": 3,
+  "E_I_H": [
+   8,
+   128,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.0064516129032258064,
+  "stock_ids_agree": 8
+ },
+ "cohere2_moe": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   512,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.00641025641025641,
+  "stock_ids_agree": 8
+ },
+ "exaone_moe": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   128,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.010096153846153847,
+  "stock_ids_agree": 8
+ },
+ "afmoe": {
+  "experts_modules": 3,
+  "E_I_H": [
+   8,
+   128,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.0,
+  "stock_ids_agree": 8
+ },
+ "phimoe": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   512,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.006622516556291391,
+  "stock_ids_agree": 8
+ },
+ "qwen3_5_moe_text": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   128,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.1166044776119403,
+  "stock_ids_agree": 8
+ },
+ "summary": {
+  "families": 17,
+  "exact": 17,
+  "errors": []
+ }
+}
