@@ -78,7 +78,7 @@ def prefault_shards(weight_map: dict[str, str], model_dir: str,
     """
     import logging as _logging
     import time as _time
-    log = _logging.getLogger("bhaskera.loading")
+    log = _logging.getLogger("vahana.loading")
     shards = sorted(set(weight_map.values()))
     total = 0
     t0 = _time.perf_counter()

@@ -173,7 +173,7 @@ def prepare_model(model: torch.nn.Module, profile: Any, handles: ShardHandles,
                     pass
         if n_recomputed:
             import logging as _logging
-            _logging.getLogger("bhaskera.serve").warning(
+            _logging.getLogger("vahana.serve").warning(
                 "recomputed %d meta rope tables (verify output!), model=%s",
                 n_recomputed, getattr(config, "model_type", "?"))
     if os.environ.get("VAHANA_FUSED_CPU_MOE") == "1":
