@@ -37,6 +37,8 @@ class CPUExpertsMoE(nn.Module):
         self.copy_s = 0.0
         self.forward_s = 0.0
         self.cpu_ms = 0.0
+        self.place = None
+        self.dec = [0, 0.0, 0.0, 0.0]   # decode (N == 1) calls: n, forward_s, cpu_ms, submit->done wall s
 
     def _w(self, e):
         g, u, d = self.keys[e]
@@ -49,6 +51,16 @@ class CPUExpertsMoE(nn.Module):
             G.append(g)
             U.append(u)
             D.append(d)
+        if os.environ.get("COLOSSUS_NUMA_PLACE") == "1":
+            # Phase 35: rows [0, R/2) of every expert matrix on node 0, [R/2, R) on node 1, moved in place
+            # (move_pages; page cache or anonymous, no second copy). Pairs with COLOSSUS_HYBRID_NUMA=2.
+            t = time.perf_counter()
+            pages = ok = 0
+            for W in G + U + D:
+                p, o = _hy.ext().place_rows(W)
+                pages += p
+                ok += o
+            self.place = (pages, ok, time.perf_counter() - t)
         _hy.ext().register_layer(self.layer_idx, G, U, D)
         self.registered = True
 
@@ -75,9 +87,16 @@ class CPUExpertsMoE(nn.Module):
             ev = torch.cuda.Event()
             ev.record()
             ev.synchronize()
+            t_s = time.perf_counter()
             _hy.ext().submit_moe(self.layer_idx, xb, tib, twb, ob, int(os.environ.get("COLOSSUS_HYBRID_NUMA", "1")))
             _hy.ext().wait_done()
-            self.cpu_ms += _hy.ext().kernel_ms()
+            t_w = time.perf_counter() - t_s
+            km = _hy.ext().kernel_ms()
+            self.cpu_ms += km
+            if N == 1:
+                self.dec[0] += 1
+                self.dec[2] += km
+                self.dec[3] += t_w
             out = ob.to(self.device, non_blocking=True)
         else:
             TIl = ti.reshape(N, K).tolist()
@@ -110,6 +129,8 @@ class CPUExpertsMoE(nn.Module):
                 acc = acc + v[:, j].float() * wv[:, j:j + 1]
             out = acc.to(flat.dtype)
         self.forward_s += time.perf_counter() - t_0
+        if N == 1:
+            self.dec[1] += time.perf_counter() - t_0
         return out.view(*shp)
 
 
@@ -124,4 +145,20 @@ def install_cpu_moe(model, handles, device) -> list:
         w = CPUExpertsMoE(li, mlp.gate, n, keys, handles, device)
         layer.mlp = w
         wrappers.append(w)
+    if os.environ.get("COLOSSUS_MOE_STATS") == "1":
+        import atexit
+        import json
+
+        def _dump():
+            st = {"layers": len(wrappers), "moe_forward_s": sum(w.forward_s for w in wrappers),
+                  "cpu_kernel_ms": sum(w.cpu_ms for w in wrappers),
+                  "decode_calls": sum(w.dec[0] for w in wrappers),
+                  "decode_moe_forward_s": sum(w.dec[1] for w in wrappers),
+                  "decode_cpu_kernel_ms": sum(w.dec[2] for w in wrappers),
+                  "decode_submit_wait_s": sum(w.dec[3] for w in wrappers),
+                  "place_pages": sum(w.place[0] for w in wrappers if w.place),
+                  "place_on_target": sum(w.place[1] for w in wrappers if w.place),
+                  "place_s": sum(w.place[2] for w in wrappers if w.place)}
+            print("COLOSSUS_MOE_STATS " + json.dumps(st), flush=True)
+        atexit.register(_dump)
     return wrappers
