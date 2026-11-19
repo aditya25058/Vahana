@@ -241,8 +241,9 @@ def load(model_dir: str, gpu_budget_gb: float | None = None, device: str = "cuda
 
     budget = (gpu_budget_gb - reserve_gb) * 2**30 if gpu_budget_gb else float("inf")
     cpu, folded, total = _plan(model, specs, budget, force_cpu)
-    log(f"vahana: {cfg.model_type}, {len(specs)} MoE layers, non-expert {total / 2**30:.1f} GB, "
-        f"{len(cpu)} modules in CPU RAM ({len(folded)} shared experts folded)")
+    if log:
+        log(f"vahana: {cfg.model_type}, {len(specs)} MoE layers, non-expert {total / 2**30:.1f} GB, "
+            f"{len(cpu)} modules in CPU RAM ({len(folded)} shared experts folded)")
     info = _assemble(model, specs, get_param, get_experts, dev, cpu, folded, numa, nx, place, log, experts)
     if getattr(cfg, "tie_word_embeddings", False):
         model.tie_weights()

@@ -1,0 +1,47 @@
+{
+ "model": "../models/Qwen3-30B-A3B",
+ "prompts": 50,
+ "positions": 590,
+ "fp32_s": 157.58764219284058,
+ "bf16_s": 17.465959548950195,
+ "cpu": {
+  "load_s": 28.919731378555298,
+  "gpu_gb": 2.9018077850341797,
+  "graph_used": [
+   true,
+   true,
+   true,
+   true,
+   true
+  ],
+  "wall_s": 78.43993616104126
+ },
+ "twin": {
+  "load_s": 4.430978775024414,
+  "gpu_gb": 57.19390153884888,
+  "graph_used": [
+   false,
+   false,
+   false,
+   false,
+   false
+  ],
+  "wall_s": 64.39075660705566
+ },
+ "exact": {
+  "gen_ids_equal": true,
+  "gen_logits_equal": true,
+  "prefill_logits_equal": true
+ },
+ "quality_vs_fp32": {
+  "vahana": {
+   "top1_agree": 0.9677966101694915,
+   "max_rel": 0.14926806092262268
+  },
+  "stock_bf16": {
+   "top1_agree": 0.964406779661017,
+   "max_rel": 0.14083485305309296
+  }
+ },
+ "gen_text_0": " The function should take an integer n as input and return the corresponding Fibonacci number. The Fibonacci sequence is defined as F(0) = 0, F(1) = 1, and F(n) = F(n-1)"
+}

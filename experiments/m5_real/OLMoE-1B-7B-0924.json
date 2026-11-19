@@ -1,0 +1,47 @@
+{
+ "model": "../models/OLMoE-1B-7B-0924",
+ "prompts": 50,
+ "positions": 603,
+ "fp32_s": 6.311866044998169,
+ "bf16_s": 5.146884441375732,
+ "cpu": {
+  "load_s": 4.850664854049683,
+  "gpu_gb": 0.9192180633544922,
+  "graph_used": [
+   true,
+   true,
+   true,
+   true,
+   true
+  ],
+  "wall_s": 24.53777575492859
+ },
+ "twin": {
+  "load_s": 0.8877956867218018,
+  "gpu_gb": 13.120445728302002,
+  "graph_used": [
+   false,
+   false,
+   false,
+   false,
+   false
+  ],
+  "wall_s": 21.204782009124756
+ },
+ "exact": {
+  "gen_ids_equal": true,
+  "gen_logits_equal": true,
+  "prefill_logits_equal": true
+ },
+ "quality_vs_fp32": {
+  "vahana": {
+   "top1_agree": 0.9800995024875622,
+   "max_rel": 0.14356602728366852
+  },
+  "stock_bf16": {
+   "top1_agree": 0.9850746268656716,
+   "max_rel": 0.18094854056835175
+  }
+ },
+ "gen_text_0": "\n\nThe Fibonacci sequence is defined as follows:\n\nF(0) = 0\nF(1) = 1\nF(n) = F(n-1) + F(n-2)\n\n"
+}

@@ -1,0 +1,47 @@
+{
+ "model": "../models/Qwen1.5-MoE-A2.7B",
+ "prompts": 50,
+ "positions": 590,
+ "fp32_s": 10.35100769996643,
+ "bf16_s": 8.339807987213135,
+ "cpu": {
+  "load_s": 7.88518762588501,
+  "gpu_gb": 3.493375778198242,
+  "graph_used": [
+   true,
+   true,
+   true,
+   true,
+   true
+  ],
+  "wall_s": 28.16848111152649
+ },
+ "twin": {
+  "load_s": 1.6959819793701172,
+  "gpu_gb": 26.98859453201294,
+  "graph_used": [
+   false,
+   false,
+   false,
+   false,
+   false
+  ],
+  "wall_s": 23.556633234024048
+ },
+ "exact": {
+  "gen_ids_equal": true,
+  "gen_logits_equal": true,
+  "prefill_logits_equal": true
+ },
+ "quality_vs_fp32": {
+  "vahana": {
+   "top1_agree": 0.9728813559322034,
+   "max_rel": 0.13781683146953583
+  },
+  "stock_bf16": {
+   "top1_agree": 0.9627118644067797,
+   "max_rel": 0.11837306618690491
+  }
+ },
+ "gen_text_0": " The function should not use recursion. Additionally, the function should be able to handle large values of n (up to 10^6) efficiently. The time complexity of the function should be O(n) and the space complexity should be"
+}

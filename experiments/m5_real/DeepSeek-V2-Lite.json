@@ -1,0 +1,47 @@
+{
+ "model": "../models/DeepSeek-V2-Lite",
+ "prompts": 50,
+ "positions": 594,
+ "fp32_s": 10.740296363830566,
+ "bf16_s": 8.851261854171753,
+ "cpu": {
+  "load_s": 8.75405478477478,
+  "gpu_gb": 2.474381446838379,
+  "graph_used": [
+   true,
+   true,
+   true,
+   true,
+   true
+  ],
+  "wall_s": 37.6979398727417
+ },
+ "twin": {
+  "load_s": 1.875932216644287,
+  "gpu_gb": 29.53468656539917,
+  "graph_used": [
+   false,
+   false,
+   false,
+   false,
+   false
+  ],
+  "wall_s": 30.595735788345337
+ },
+ "exact": {
+  "gen_ids_equal": true,
+  "gen_logits_equal": true,
+  "prefill_logits_equal": true
+ },
+ "quality_vs_fp32": {
+  "vahana": {
+   "top1_agree": 0.9797979797979798,
+   "max_rel": 0.04457017034292221
+  },
+  "stock_bf16": {
+   "top1_agree": 0.9797979797979798,
+   "max_rel": 0.05025440454483032
+  }
+ },
+ "gen_text_0": "\n\n## Fibonacci Sequence\n\nThe Fibonacci sequence is a sequence of numbers where each number is the sum of the two numbers before it. The first two numbers in the sequence are 0 and 1. The next number in"
+}
