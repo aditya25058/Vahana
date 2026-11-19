@@ -18,6 +18,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from . import timing as _timing
+from . import hybrid as _hybrid
 
 # Phase 17b: one decode pool per device shared by all MoE layers (only one layer runs at a
 # time). Entries: [modules], [free events], next index.
@@ -493,6 +494,109 @@ class TieredMoEWrapper(nn.Module):
         self.cpu_n += 1
         return ret
 
+    # -- Phase 26: exact CPU/GPU split ----------------------------------
+    def _hybrid_forward(self, hidden_states, shared_out, topk_indices, topk_weights, orig_shape):
+        """Every routed expert in twin arithmetic, on the CPU (in place) or the GPU (HBM slot).
+        Same bits on both devices, so the split never changes values. Combine: each row's experts
+        in ascending id order, fp32 accumulation (as in invariant mode)."""
+        assert self.ans is None and not self.streaming, "hybrid: raw slot path only"
+        hy = _hybrid
+        dev = self.device
+        N, K = topk_indices.shape
+        H = hidden_states.shape[-1]
+        flat = hidden_states.reshape(-1, H)
+        TIl = topk_indices.tolist()
+        rows: dict[int, list[int]] = {}
+        for b in range(N):
+            for k in range(K):
+                rows.setdefault(TIl[b][k], []).append(b)
+        needed = sorted(rows)
+        hits = [e for e in needed if e in self.expert_to_slot]
+        miss = [e for e in needed if e not in self.expert_to_slot]
+        cand = [e for e in miss if len(rows[e]) <= 16]
+        c = hy.split_count(len(cand))
+        cpu_e = cand[:c]
+        cpu_set = set(cpu_e)
+        link_e = [e for e in miss if e not in cpu_set]
+        fut = None
+        _t0 = time.perf_counter()
+        if cpu_e:
+            nmax = max(len(rows[e]) for e in cpu_e)
+            _tx = time.perf_counter()
+            xc = flat.to("cpu")
+            hy.STATS["x_to_cpu_s"] = hy.STATS.get("x_to_cpu_s", 0.0) + time.perf_counter() - _tx
+            X = torch.zeros((len(cpu_e), nmax, H), dtype=xc.dtype)
+            for j, e in enumerate(cpu_e):
+                X[j, :len(rows[e])] = xc[rows[e]]
+            _tw = time.perf_counter()
+            hc = self.__dict__.setdefault("_hy_w", {})     # all experts: views only, never evicted
+            W = []
+            for e in cpu_e:
+                w = hc.get(e)
+                if w is None:
+                    tg, tu, td = self._expert_tensors(e)
+                    w = hc[e] = {"gate": tg, "up": tu, "down": td}
+                W.append(w)
+            hy.STATS["weights_s"] = hy.STATS.get("weights_s", 0.0) + time.perf_counter() - _tw
+            fut = hy.cpu_submit(X, W)
+        for e in hits:
+            self.hits += 1
+            si = self.expert_to_slot[e]
+            self.slot_lru.remove(si)
+            self.slot_lru.append(si)
+        pre = len(hits) + len(link_e) <= self.capacity
+        if pre:
+            for e in link_e:
+                self.misses += 1
+                si = self.slot_lru.pop(0)
+                self._load_expert_to_slot(e, si)
+                self.slot_lru.append(si)
+            self._sync_dma()
+        ys: dict[int, torch.Tensor] = {}
+        _t1 = time.perf_counter()
+        hy.STATS["prep_s"] += _t1 - _t0
+        with torch.no_grad():
+            for e in hits + link_e:
+                if e not in self.expert_to_slot:
+                    self.misses += 1
+                    si = self.slot_lru.pop(0)
+                    self._load_expert_to_slot(e, si)
+                    self.slot_lru.append(si)
+                    self._sync_dma()
+                slot = self.slots[self.expert_to_slot[e]]
+                xe = flat.index_select(0, torch.tensor(rows[e], device=dev))
+                ys[e] = hy.twin_one(xe, slot.gate_proj.weight, slot.up_proj.weight,
+                                    slot.down_proj.weight)
+            hy.STATS["gpu_issue_s"] += time.perf_counter() - _t1
+            if fut is not None:
+                t0 = time.perf_counter()
+                Y = fut.result()[0]
+                hy.STATS["cpu_wait_s"] += time.perf_counter() - t0
+                Yg = Y.to(dev)
+                for j, e in enumerate(cpu_e):
+                    ys[e] = Yg[j, :len(rows[e])]
+            hy.STATS["cpu_experts"] += len(cpu_e)
+            hy.STATS["gpu_hit_experts"] += len(hits)
+            hy.STATS["gpu_link_experts"] += len(link_e)
+            hy.STATS["layers"] += 1
+            pos = []
+            for e in needed:
+                for b in rows[e]:
+                    pos.append(b * K + TIl[b].index(e))
+            new_x = torch.empty((N * K, H), dtype=flat.dtype, device=dev)
+            new_x[torch.tensor(pos, device=dev)] = torch.cat([ys[e] for e in needed], dim=0)
+            order = topk_indices.argsort(dim=1)
+            v = torch.take_along_dim(new_x.view(N, K, H), order.unsqueeze(-1), dim=1)
+            wv = torch.take_along_dim(topk_weights, order, dim=1).float()
+            acc = v[:, 0].float() * wv[:, 0:1]
+            for j in range(1, K):
+                acc = acc + v[:, j].float() * wv[:, j:j + 1]
+            final_out = acc.type(flat.dtype)
+            _t3 = time.perf_counter()
+            out = shared_out + final_out.view(*orig_shape)
+        hy.STATS["tail_s"] += time.perf_counter() - _t3
+        return out
+
     # -- forward -------------------------------------------------------
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         t0 = time.perf_counter()
@@ -548,6 +652,12 @@ class TieredMoEWrapper(nn.Module):
 
         shared_out = self.shared_experts(identity) if self.shared_experts is not None \
             else torch.zeros_like(identity)
+        if _hybrid.enabled():
+            out = self._hybrid_forward(hidden_states, shared_out, topk_indices, topk_weights,
+                                       orig_shape)
+            if self.tupled:
+                return out, None
+            return out
         if self.cpu_exec:
             out = self._cpu_moe_forward(hidden_states, shared_out,
                                         topk_indices, topk_weights, orig_shape)

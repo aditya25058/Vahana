@@ -638,4 +638,5 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         "seed_loads": seed_loads,
         "routing_log_steps": routing_steps,
         "flip_audit": flip_audit,
+        "hybrid_stats": (dict(__import__("bhaskera.inference.colossus.hybrid", fromlist=["STATS"]).STATS) if os.environ.get("COLOSSUS_HYBRID", "") != "" else None),
     }
