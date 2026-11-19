@@ -176,6 +176,10 @@ def prepare_model(model: torch.nn.Module, profile: Any, handles: ShardHandles,
             _logging.getLogger("bhaskera.serve").warning(
                 "recomputed %d meta rope tables (verify output!), model=%s",
                 n_recomputed, getattr(config, "model_type", "?"))
+    if os.environ.get("COLOSSUS_FUSED_CPU_MOE") == "1":
+        # Phase 31: fused-expert MoE blocks (transformers-5 Mixtral) with routed experts on the CPU
+        from .cpu_moe_block import install_cpu_moe
+        return install_cpu_moe(model, handles, device)
     wrappers = wrap_moe_layers(
         model, profile, handles, device, capacity, dma_stream,
         zssr_prefetch=zssr, prefetch_topk=prefetch_topk,
