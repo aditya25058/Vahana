@@ -345,6 +345,14 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
             return None
         model.lm_head.register_forward_pre_hook(_last_only)
     _spec_k = int(os.environ.get("COLOSSUS_SPEC", "0") or 0)
+    _graph = os.environ.get("COLOSSUS_GRAPH", "0") == "1"
+    if _graph and not (os.environ.get("COLOSSUS_INVARIANT") == "1" and kv_layout == "latent" and B == 1
+                       and use_cache and teacher_tokens is None and _spec_k == 0
+                       and os.environ.get("COLOSSUS_HYBRID") == "1"
+                       and os.environ.get("COLOSSUS_HYBRID_FAST") == "1"):
+        raise ValueError("COLOSSUS_GRAPH needs COLOSSUS_INVARIANT=1, --kv-layout latent, B=1, "
+                         "COLOSSUS_HYBRID=1 + COLOSSUS_HYBRID_FAST=1, no spec / teacher")
+    _ragged = _spec_k > 0 or _graph
     _spec_stats = None
     if _spec_k > 0 and not (os.environ.get("COLOSSUS_INVARIANT") == "1" and kv_layout == "latent"
                             and use_cache and teacher_tokens is None):
@@ -352,7 +360,7 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
     t_prefill = time.perf_counter()
     if use_cache and kv_layout == "latent":
         from .mla_cache import LatentKVCache
-        if _spec_k > 0:
+        if _ragged:
             from .spec import RaggedLatentCache
             past = RaggedLatentCache((attn_mask == 0).sum(dim=-1),
                                      cap=input_ids.shape[1] + max_new_tokens + _spec_k + 1)
@@ -372,14 +380,14 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
                             past_key_values=past, use_cache=use_cache, **extra)
                 logits = out.logits
                 past = getattr(out, "past_key_values", None)
-                if _spec_k > 0:
+                if _ragged:
                     past.commit([chunk.shape[1]] * B)
         else:
             extra = {"position_ids": pos_ids} if padded else {}
             out = model(input_ids=generated_ids, attention_mask=attn_mask,
                         past_key_values=past, use_cache=use_cache, **extra)
             logits = out.logits
-            if _spec_k > 0:
+            if _ragged:
                 getattr(out, "past_key_values", past).commit([generated_ids.shape[1]] * B)
         next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
         past = getattr(out, "past_key_values", None)
@@ -456,7 +464,15 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         gen = torch.tensor([n + [pad_tok] * (width - len(n)) for n in _new], device=device)
         generated_ids = torch.cat([input_ids, gen], dim=1)
         finished = [True] * B
-    for step in range(0 if _spec_k > 0 else max_new_tokens - 1):
+    _graph_stats = None
+    if _graph:
+        from .graph_decode import graph_decode
+        _new, latencies, _graph_stats = graph_decode(model, wrappers, past, next_token, max_new_tokens,
+                                                     eos_id, device)
+        new_counts = [len(_new)]
+        generated_ids = torch.cat([input_ids, torch.tensor([_new], device=device)], dim=1)
+        finished = [True] * B
+    for step in range(0 if (_spec_k > 0 or _graph) else max_new_tokens - 1):
         if all(finished):
             break
         if device.type == "cuda":
@@ -604,6 +620,7 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         "row_split_events": detector.events if detector is not None else None,
         "kv_layout": kv_layout,
         "spec_stats": _spec_stats,
+        "graph_stats": _graph_stats,
         "mla_layers_patched": mla_patched,
         "kv_cache_mb": None if kv_bytes is None else kv_bytes / (1024 ** 2),
         "placement": placement,
