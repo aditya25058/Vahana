@@ -36,7 +36,7 @@ Attempt 1 (logs in attempt1/) produced no results, for two harness / loader bugs
 ## Result: EXACT PASS (4/4), QUALITY PASS (4/4)
 | Model | Experts × top-k | Positions | CPU == twin (5 × 48 gen ids + logits, 50 prefills) | Vahana vs fp32: top-1 / max rel | Stock bf16 vs fp32: top-1 / max rel | Vahana GPU | Load |
 |---|---|---|---|---|---|---|---|
-| OLMoE-1B-7B-0924 | 64 × 8 | 402 | **✓** | 98.01% / 14.4% | 98.51% / 18.1% | 0.92 GB | 4.9 s |
+| OLMoE-1B-7B-0924 | 64 × 8 | 603 | **✓** | 98.01% / 14.4% | 98.51% / 18.1% | 0.92 GB | 4.9 s |
 | Qwen1.5-MoE-A2.7B (gated shared expert) | 60 × 4 | 590 | **✓** | **97.29%** / 13.8% | 96.27% / 11.8% | 3.49 GB | 7.9 s |
 | DeepSeek-V2-Lite (MLA, 2 shared) | 64 × 6 | 594 | **✓** | 97.98% / 4.5% | 97.98% / 5.0% | 2.47 GB | 8.8 s |
 | Qwen3-30B-A3B | 128 × 8 | 590 | **✓** | **96.78%** / 14.9% | 96.44% / 14.1% | 2.90 GB | 28.9 s |
