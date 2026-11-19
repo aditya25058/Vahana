@@ -510,6 +510,15 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         new_counts = [len(_new)]
         generated_ids = torch.cat([input_ids, torch.tensor([_new], device=device)], dim=1)
         finished = [True] * B
+    if os.environ.get("COLOSSUS_MIXTRAL_GRAPH", "0") == "1" and not _graph and _spec_k == 0:
+        # Phase 36: batch-1 graphed decode for fused-expert (Mixtral-style) MoE on the CPU worker
+        from .mixtral_graph import mixtral_graph_decode
+        _new, latencies, _graph_stats = mixtral_graph_decode(model, past, next_token, max_new_tokens,
+                                                             eos_id, device)
+        new_counts = [len(_new)]
+        generated_ids = torch.cat([input_ids, torch.tensor([_new], device=device)], dim=1)
+        finished = [True] * B
+        _graph = True
     for step in range(0 if (_spec_k > 0 or _graph) else max_new_tokens - 1):
         if all(finished):
             break
