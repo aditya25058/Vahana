@@ -97,6 +97,7 @@ def cpu_linear(x2: torch.Tensor, W: torch.Tensor) -> torch.Tensor:
 
 
 _ORIG = None
+_NX_KEEP = []
 
 
 def _twin_forward(self, x):
@@ -125,6 +126,13 @@ def install(model: nn.Module, device: torch.device) -> dict:
     for n, m in model.named_modules():
         if isinstance(m, nn.Linear) and m.weight.device.type == "cpu":
             info["cpu_linears"].append(n)
+            if "shared_experts" not in n and m.weight.is_contiguous() and m.weight.shape[1] % 64 == 0 \
+                    and os.environ.get("COLOSSUS_NX12") == "1":
+                pk = _hy.nx_pack(m.weight, os.environ.get("COLOSSUS_NUMA_PLACE") == "1")   # Phase 40
+                _hy.ext().register_linear_nx(m.weight, pk)
+                _NX_KEEP.append(pk)
+            elif os.environ.get("COLOSSUS_NUMA_PLACE") == "1" and m.weight.is_contiguous() and "shared_experts" not in n:
+                _hy.ext().place_rows(m.weight)              # Phase 40: pairs with COLOSSUS_LIN_NUMA=2
     # Rotary tables: every layer holds an identical cos/sin table for max_position_embeddings positions
     # (5 GB on V2). Keep the first COLOSSUS_ROPE_ROWS rows of one table and share it: each row depends only
     # on its own position, so every value the model reads is unchanged.

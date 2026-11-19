@@ -215,3 +215,60 @@ def cpu_submit(X: torch.Tensor, W: list):
         fut = _Pending(X.shape[0])
     STATS["cpu_submit_s"] += time.perf_counter() - t0
     return fut
+
+
+# ---- Phase 40: socket placement and NX12 registration (shared by the fast paths)
+NX_STATS = {"layers_nx": 0, "layers_raw_guard": 0, "nx_bytes": 0, "encode_s": 0.0, "place_s": 0.0}
+
+
+def mem_available_gb() -> float:
+    for line in open("/proc/meminfo"):
+        if line.startswith("MemAvailable:"):
+            return int(line.split()[1]) / 1048576
+    return 0.0
+
+
+def nx_pack(W, place: bool) -> list:
+    """NX12-encode one [R, K] matrix (lossless) and place its buffers by row half."""
+    p = ext().encode_nx(W.contiguous())
+    if place:
+        R, K = W.shape
+        for t_, sp_ in ((p[0], (R // 2) * K), (p[1], (R // 2) * K // 2), (p[3], int(p[4][R // 2]))):
+            n_, ok_ = ext().place_split(t_, sp_)
+            NX_STATS["pages"] = NX_STATS.get("pages", 0) + int(n_)
+            NX_STATS["on_target"] = NX_STATS.get("on_target", 0) + int(ok_)
+    return list(p)
+
+
+def setup_layer(layer_idx: int, g: list, u: list, d: list, shared=None, margin_gb: float = 64.0):
+    """After register_layer / register_shared: COLOSSUS_NUMA_PLACE=1 places raw rows (when NX12 is off);
+    COLOSSUS_NX12=1 registers NX12 copies for decode, unless that would cut MemAvailable below the margin."""
+    place = os.environ.get("COLOSSUS_NUMA_PLACE") == "1"
+    nx = os.environ.get("COLOSSUS_NX12") == "1"
+    t = time.perf_counter()
+    mats = [w for trip in zip(g, u, d) for w in trip] + (list(shared) if shared else [])
+    need = sum(w.numel() * w.element_size() for w in mats) * 0.76 / 2**30
+    if nx and mem_available_gb() - need >= margin_gb + 8:
+        packs = []
+        for e in range(len(g)):
+            for W in (g[e], u[e], d[e]):
+                packs += nx_pack(W, place)
+        ext().register_layer_nx(layer_idx, packs)
+        keep = [packs]
+        if shared:
+            sp = []
+            for W in shared:
+                sp += nx_pack(W, place)
+            ext().register_shared_nx(layer_idx, sp)
+            keep.append(sp)
+        NX_STATS["layers_nx"] += 1
+        NX_STATS["nx_bytes"] += sum(x.numel() * x.element_size() for pk in keep for x in pk)
+        NX_STATS["encode_s"] += time.perf_counter() - t
+        return keep
+    if nx:
+        NX_STATS["layers_raw_guard"] += 1
+    if place:
+        for W in mats:
+            ext().place_rows(W)
+        NX_STATS["place_s"] += time.perf_counter() - t
+    return None

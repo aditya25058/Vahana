@@ -157,36 +157,48 @@ def graph_decode(model, wrappers, cache, next_token, max_new: int, eos_id, devic
     # ---- the step as a fixed sequence --------------------------------------------------------------
     seq = []
     if emb_cpu:
-        seq.append(("host", host_embed))
+        seq.append(("host", host_embed, "embed"))
     seq.append(("gpu", embed))
     for li in range(len(layers)):
         seq.append(("gpu", lambda li=li: attn(li)))
         if li in grabs:
-            seq.append(("host", lambda li=li: host_oproj(li)))
+            seq.append(("host", lambda li=li: host_oproj(li), "oproj"))
             seq.append(("gpu", lambda li=li: after_oproj(li)))
         if li in wmap:
             seq.append(("gpu", lambda li=li: moe_pre(li)))
-            seq.append(("host", lambda li=li: host_submit(li)))
+            seq.append(("host", lambda li=li: host_submit(li), "submit"))
             if not (twin and _tw.shared_on_cpu(wmap[li])):
                 seq.append(("gpu", lambda li=li: shared(li)))
-            seq.append(("host", lambda: _hy.ext().wait_done()))
+            seq.append(("host", lambda: _hy.ext().wait_done(), "wait"))
             seq.append(("gpu", lambda li=li: moe_post(li)))
         else:
             seq.append(("gpu", lambda li=li: dense(li)))
     seq.append(("gpu", final))
     items = []                                   # merge consecutive GPU work: ["gpu", [fns], graph] / ["host", fn]
-    for kind, fn in seq:
+    for ent in seq:
+        kind, fn = ent[0], ent[1]
         if kind == "gpu" and items and items[-1][0] == "gpu":
             items[-1][1].append(fn)
         elif kind == "gpu":
             items.append(["gpu", [fn], None])
         else:
-            items.append(["host", fn])
+            items.append(["host", fn, ent[2] if len(ent) > 2 else "host"])
+    HT = {}                                   # Phase 40 timing: label -> [wall s, kernel ms, n]
+    timing = os.environ.get("COLOSSUS_GRAPH_TIMING") == "1"
 
     def step():
         for it in items:
             if it[0] == "host":
-                it[1]()
+                if timing:
+                    t_h = time.perf_counter()
+                    it[1]()
+                    h_ = HT.setdefault(it[2], [0.0, 0.0, 0])
+                    h_[0] += time.perf_counter() - t_h
+                    if it[2] in ("wait", "oproj"):
+                        h_[1] += _hy.ext().kernel_ms()
+                    h_[2] += 1
+                else:
+                    it[1]()
             elif it[2] is not None:
                 it[2].replay()
             else:
@@ -232,7 +244,11 @@ def graph_decode(model, wrappers, cache, next_token, max_new: int, eos_id, devic
                     capture()
                     torch.cuda.synchronize()
                     stats["capture_s"] = time.perf_counter() - tc
+                    HT.clear()                           # timing: steady-state steps only
     finally:
         for li, (op, _, _) in grabs.items():
             layers[li].self_attn.o_proj = op
+    if timing:
+        stats["host_timing"] = {k: {"wall_s": v[0], "kernel_ms": v[1], "n": v[2]} for k, v in HT.items()}
+    stats["nx"] = dict(getattr(_hy, "NX_STATS", {}))
     return out, lat, stats

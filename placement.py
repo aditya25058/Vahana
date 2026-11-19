@@ -517,10 +517,13 @@ class TieredMoEWrapper(nn.Module):
                 d.append(td)
             hy.ext().register_layer(self.layer_idx, g, u, d)
             from . import twinlin as _tw
+            shared = None
             if _tw.enabled() and _tw.shared_on_cpu(self):
                 se = self.shared_experts
                 hy.ext().register_shared(self.layer_idx, se.gate_proj.weight, se.up_proj.weight,
                                          se.down_proj.weight)
+                shared = (se.gate_proj.weight, se.up_proj.weight, se.down_proj.weight)
+            self._hy_nx = hy.setup_layer(self.layer_idx, g, u, d, shared)     # Phase 40
             self._hy_registered = True
         hy.pool()                                   # one-time main-thread setup (torch threads)
         K = self.spec.top_k if hasattr(self.spec, "top_k") else None
