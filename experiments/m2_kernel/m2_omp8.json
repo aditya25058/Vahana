@@ -1,0 +1,274 @@
+{
+ "omp": "8",
+ "mixtral": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   512,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.006060606060606061,
+  "stock_ids_agree": 8
+ },
+ "qwen2_moe": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   128,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.006896551724137931,
+  "stock_ids_agree": 8
+ },
+ "qwen3_moe": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   128,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.012345679012345678,
+  "stock_ids_agree": 8
+ },
+ "olmoe": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   512,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.022928994082840236,
+  "stock_ids_agree": 8
+ },
+ "deepseek_v2": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   128,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.005847953216374269,
+  "stock_ids_agree": 8
+ },
+ "deepseek_v3": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   128,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.008021390374331552,
+  "stock_ids_agree": 8
+ },
+ "glm4_moe": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   128,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.007194244604316547,
+  "stock_ids_agree": 8
+ },
+ "glm4_moe_lite": {
+  "experts_modules": 3,
+  "E_I_H": [
+   8,
+   128,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.005747126436781609,
+  "stock_ids_agree": 8
+ },
+ "minimax": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   512,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.005917159763313609,
+  "stock_ids_agree": 8
+ },
+ "minimax_m2": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   512,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.006097560975609756,
+  "stock_ids_agree": 8
+ },
+ "hunyuan_v1_moe": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   512,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.006736526946107785,
+  "stock_ids_agree": 8
+ },
+ "ernie4_5_moe": {
+  "experts_modules": 3,
+  "E_I_H": [
+   8,
+   128,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.0064516129032258064,
+  "stock_ids_agree": 8
+ },
+ "cohere2_moe": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   512,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.02710843373493976,
+  "stock_ids_agree": 8
+ },
+ "exaone_moe": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   128,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.005597014925373134,
+  "stock_ids_agree": 6
+ },
+ "afmoe": {
+  "experts_modules": 3,
+  "E_I_H": [
+   8,
+   128,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.005128205128205128,
+  "stock_ids_agree": 0
+ },
+ "phimoe": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   512,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.08771929824561403,
+  "stock_ids_agree": 8
+ },
+ "qwen3_5_moe_text": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   128,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.1571327683615819,
+  "stock_ids_agree": 8
+ },
+ "gpt_oss": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   512,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.00974025974025974,
+  "stock_ids_agree": 8
+ },
+ "mixtral@intermediate_size=96": {
+  "experts_modules": 4,
+  "E_I_H": [
+   8,
+   96,
+   256
+  ],
+  "prefill_equal": true,
+  "decode_logits_equal": true,
+  "ids_equal": true,
+  "exact": true,
+  "stock_vs_ref_max_rel": 0.0034482758620689655,
+  "stock_ids_agree": 8
+ },
+ "summary": {
+  "families": 19,
+  "exact": 19,
+  "errors": []
+ }
+}

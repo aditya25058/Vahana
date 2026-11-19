@@ -93,9 +93,36 @@ static int node_of(const void* p) {
 
 // x: [E, n, H] bf16; gate/up: E tensors [I, H]; down: E tensors [H, I]. Returns y [E, n, H] bf16
 // and the node of each expert. numa=1: tasks run on threads of the expert's node.
-std::vector<torch::Tensor> expert_mlps(torch::Tensor x, std::vector<torch::Tensor> gate,
+// M2: per-expert activation / bias context (index j = the expert's position in the call).
+// nullptr or empty = SiLU-GLU without biases: exactly the original arithmetic.
+struct ActCtx { std::vector<int> act; std::vector<const float*> bg, bu, bd; float alpha = 1.702f, limit = 7.0f; };
+static inline float act_h(const ActCtx* c, int j, int r, float gdot, float udot) {
+  if (!c || c->act.empty()) {
+    float gb = bf2f(f2bf(gdot)), ub = bf2f(f2bf(udot));
+    float s = bf2f(f2bf(gb / (1.0f + dexp(-gb))));
+    return bf2f(f2bf(s * ub));
+  }
+  float gb = bf2f(f2bf(gdot)), ub = bf2f(f2bf(udot));
+  if (c->bg[j]) gb = bf2f(f2bf(gb + c->bg[j][r]));
+  if (c->bu[j]) ub = bf2f(f2bf(ub + c->bu[j][r]));
+  if (c->act[j] == 1) {                       // gpt-oss: clamp, g * sigmoid(alpha g), (u + 1) * glu
+    gb = std::fmin(gb, c->limit);
+    ub = std::fmin(std::fmax(ub, -c->limit), c->limit);
+    const float z = bf2f(f2bf(gb * c->alpha));
+    const float sg = bf2f(f2bf(1.0f / (1.0f + dexp(-z))));
+    const float glu = bf2f(f2bf(gb * sg));
+    return bf2f(f2bf(bf2f(f2bf(ub + 1.0f)) * glu));
+  }
+  float s = bf2f(f2bf(gb / (1.0f + dexp(-gb))));
+  return bf2f(f2bf(s * ub));
+}
+static inline uint16_t down_o(const ActCtx* c, int j, int r, float dot) {
+  if (!c || c->act.empty() || !c->bd[j]) return f2bf(dot);
+  return f2bf(bf2f(f2bf(dot)) + c->bd[j][r]);
+}
+std::vector<torch::Tensor> expert_mlps_ctx(torch::Tensor x, std::vector<torch::Tensor> gate,
                                        std::vector<torch::Tensor> up, std::vector<torch::Tensor> down,
-                                       int64_t numa) {
+                                       int64_t numa, const ActCtx* ctx) {
   const double T0 = now_ms();
   // The team size is fixed from OMP_NUM_THREADS at first use: torch ops on this thread (or
   // torch.set_num_threads on the main thread) must not shrink it.
@@ -147,9 +174,7 @@ std::vector<torch::Tensor> expert_mlps(torch::Tensor x, std::vector<torch::Tenso
               for (int r = b * 16; r < b * 16 + 16; r += 2) {
                 row_dots4_n1(G + (size_t)r * H, G + (size_t)(r + 1) * H, U + (size_t)r * H, U + (size_t)(r + 1) * H, xe, H, o);
                 for (int q = 0; q < 2; q++) {
-                  float gb = bf2f(f2bf(o[q])), ub = bf2f(f2bf(o[2 + q]));
-                  float s = bf2f(f2bf(gb / (1.0f + dexp(-gb))));
-                  hf[(size_t)e * I + r + q] = bf2f(f2bf(s * ub));
+                  hf[(size_t)e * I + r + q] = act_h(ctx, e, r + q, o[q], o[2 + q]);
                 }
               }
             } else {
@@ -157,7 +182,7 @@ std::vector<torch::Tensor> expert_mlps(torch::Tensor x, std::vector<torch::Tenso
               const float* he = &hf[(size_t)e * I];
               for (int r = b * 16; r < b * 16 + 16; r += 4) {
                 row_dots4_n1(Dw + (size_t)r * I, Dw + (size_t)(r + 1) * I, Dw + (size_t)(r + 2) * I, Dw + (size_t)(r + 3) * I, he, I, o);
-                for (int q = 0; q < 4; q++) yp[(size_t)e * H + r + q] = f2bf(o[q]);
+                for (int q = 0; q < 4; q++) yp[(size_t)e * H + r + q] = down_o(ctx, e, r + q, o[q]);
               }
             }
             continue;
@@ -167,13 +192,11 @@ std::vector<torch::Tensor> expert_mlps(torch::Tensor x, std::vector<torch::Tenso
               row_dots((const uint16_t*)gate[e].data_ptr() + (size_t)r * H, &xf[(size_t)e * n * H], n, H, g);
               row_dots((const uint16_t*)up[e].data_ptr() + (size_t)r * H, &xf[(size_t)e * n * H], n, H, u);
               for (int t = 0; t < n; t++) {
-                float gb = bf2f(f2bf(g[t])), ub = bf2f(f2bf(u[t]));
-                float s = bf2f(f2bf(gb / (1.0f + dexp(-gb))));
-                hf[((size_t)e * n + t) * I + r] = bf2f(f2bf(s * ub));
+                hf[((size_t)e * n + t) * I + r] = act_h(ctx, e, r, g[t], u[t]);
               }
             } else {
               row_dots((const uint16_t*)down[e].data_ptr() + (size_t)r * I, &hf[(size_t)e * n * I], n, I, d);
-              for (int t = 0; t < n; t++) yp[((size_t)e * n + t) * H + r] = f2bf(d[t]);
+              for (int t = 0; t < n; t++) yp[((size_t)e * n + t) * H + r] = down_o(ctx, e, r, d[t]);
             }
           }
         }
@@ -190,6 +213,10 @@ std::vector<torch::Tensor> expert_mlps(torch::Tensor x, std::vector<torch::Tenso
   g_ph[0] += T1 - T0; g_ph[1] += Tp0 - T1; g_ph[2] += T2 - Tp0; g_ph[3] += now_ms() - T2; g_ph[4] += 1;
   return {y, nodes};
 }
+std::vector<torch::Tensor> expert_mlps(torch::Tensor x, std::vector<torch::Tensor> gate,
+                                       std::vector<torch::Tensor> up, std::vector<torch::Tensor> down, int64_t numa) {
+  return expert_mlps_ctx(x, gate, up, down, numa, nullptr);
+}
 std::vector<double> phase_ms() { return std::vector<double>(g_ph, g_ph + 5); }
 
 
@@ -203,12 +230,29 @@ std::vector<double> phase_ms() { return std::vector<double>(g_ph, g_ph + 5); }
 #include <algorithm>
 #include <map>
 namespace {
-struct LayerW { std::vector<torch::Tensor> g, u, d; std::vector<torch::Tensor> sg, su, sd; std::vector<torch::Tensor> nx, snx; };
+struct LayerW { std::vector<torch::Tensor> g, u, d; std::vector<torch::Tensor> sg, su, sd; std::vector<torch::Tensor> nx, snx;
+                int act = 0; float alpha = 1.702f, limit = 7.0f; std::vector<torch::Tensor> bg, bu, bd; };
 std::map<int64_t, LayerW>* LAYERS = new std::map<int64_t, LayerW>();
 }
 void register_layer(int64_t layer, std::vector<torch::Tensor> g, std::vector<torch::Tensor> u,
                     std::vector<torch::Tensor> d) {
   (*LAYERS)[layer] = LayerW{std::move(g), std::move(u), std::move(d), {}, {}, {}, {}, {}};
+}
+// M2: activation (0 SiLU-GLU, 1 gpt-oss clamped SwiGLU) and optional per-expert biases (lists may be empty).
+void register_layer_act(int64_t layer, int64_t act, double alpha, double limit, std::vector<torch::Tensor> bg,
+                        std::vector<torch::Tensor> bu, std::vector<torch::Tensor> bd) {
+  LayerW& L = LAYERS->at(layer);
+  L.act = (int)act; L.alpha = (float)alpha; L.limit = (float)limit;
+  auto f32 = [](std::vector<torch::Tensor> v) { for (auto& t : v) t = t.to(torch::kFloat).contiguous(); return v; };
+  L.bg = f32(bg); L.bu = f32(bu); L.bd = f32(bd);
+}
+static bool layer_has_ctx(const LayerW& L) { return L.act != 0 || !L.bg.empty() || !L.bu.empty() || !L.bd.empty(); }
+static void build_ctx(const LayerW& L, const std::vector<int64_t>& ids, bool shared_first, ActCtx& c) {
+  c.alpha = L.alpha; c.limit = L.limit;
+  auto ptr = [](const std::vector<torch::Tensor>& v, int64_t e) -> const float* {
+    return v.empty() ? nullptr : v[e].data_ptr<float>(); };
+  if (shared_first) { c.act.push_back(0); c.bg.push_back(nullptr); c.bu.push_back(nullptr); c.bd.push_back(nullptr); }
+  for (int64_t e : ids) { c.act.push_back(L.act); c.bg.push_back(ptr(L.bg, e)); c.bu.push_back(ptr(L.bu, e)); c.bd.push_back(ptr(L.bd, e)); }
 }
 // Phase 30: shared experts of a layer, computed in the same job and added (bf16 add) to the routed sum.
 void register_shared(int64_t layer, torch::Tensor g, torch::Tensor u, torch::Tensor d) {
@@ -216,14 +260,18 @@ void register_shared(int64_t layer, torch::Tensor g, torch::Tensor u, torch::Ten
   L.sg = {g}; L.su = {u}; L.sd = {d};
 }
 torch::Tensor expert_mlps_nx(torch::Tensor x, std::vector<torch::Tensor> packs, int64_t I_, int64_t numa);
+torch::Tensor expert_mlps_nx_ctx(torch::Tensor x, std::vector<torch::Tensor> packs, int64_t I_, int64_t numa,
+                                 const ActCtx* ctx);
 static void experts_nx_fused(const std::vector<const torch::Tensor*>& P, const std::vector<int>& Is, const float* xf,
-                             int H, const std::vector<uint16_t*>& y, int numa);
+                             int H, const std::vector<uint16_t*>& y, int numa, const ActCtx* ctx);
 static std::vector<torch::Tensor> moe_fused(int64_t layer, torch::Tensor x, torch::Tensor ti, torch::Tensor tw,
                                             torch::Tensor out, int64_t numa) {
   const LayerW& L = LAYERS->at(layer);
   const int N = x.size(0), H = x.size(1), K = ti.size(1);
   const int64_t* tip = ti.data_ptr<int64_t>();
   const uint16_t* twp = (const uint16_t*)tw.data_ptr();
+  const bool twf = tw.scalar_type() == torch::kFloat;          // M2: fp32 routing weights used as given
+  const float* twfp = twf ? tw.data_ptr<float>() : nullptr;
   const uint16_t* xp = (const uint16_t*)x.data_ptr();
   static const bool fuse = [] { const char* v = std::getenv("VAHANA_FUSE"); return !(v && v[0] == '0'); }();
   if (fuse && N == 1 && !L.nx.empty() && (L.sg.empty() || !L.snx.empty()) && H % 64 == 0) {
@@ -241,13 +289,18 @@ static std::vector<torch::Tensor> moe_fused(int64_t layer, torch::Tensor x, torc
     for (int h = 0; h < H; h++) xf[h] = bf2f(xp[h]);
     std::vector<uint16_t*> yv(E);
     for (int j = 0; j < E; j++) yv[j] = yb.data() + (size_t)j * H;
-    experts_nx_fused(P, Is, xf.data(), H, yv, (int)numa);
+    ActCtx fc; const ActCtx* fcp = nullptr;
+    if (layer_has_ctx(L)) {
+      std::vector<int64_t> v; for (int q = 0; q < K; q++) v.push_back(ek[q].first);
+      build_ctx(L, v, sh, fc); fcp = &fc;
+    }
+    experts_nx_fused(P, Is, xf.data(), H, yv, (int)numa, fcp);
     uint16_t* op = (uint16_t*)out.data_ptr();
     const int r0 = sh ? 1 : 0;
     std::vector<float> acc(H);
     for (int q = 0; q < K; q++) {
       const uint16_t* yr = yv[r0 + q];
-      const float w = bf2f(twp[ek[q].second]);
+      const float w = twf ? twfp[ek[q].second] : bf2f(twp[ek[q].second]);
       if (q == 0) { for (int h = 0; h < H; h++) acc[h] = bf2f(yr[h]) * w; }
       else { for (int h = 0; h < H; h++) { float p = bf2f(yr[h]) * w; acc[h] = acc[h] + p; } }
     }
@@ -273,12 +326,14 @@ static std::vector<torch::Tensor> moe_fused(int64_t layer, torch::Tensor x, torc
     j++;
   }
   torch::Tensor Y;
+  ActCtx gc; const ActCtx* gcp = nullptr;
+  if (layer_has_ctx(L)) { build_ctx(L, ids, false, gc); gcp = &gc; }
   if (nmax == 1 && !L.nx.empty()) {          // Phase 38: decode reads NX12 (lossless, same arithmetic)
     std::vector<torch::Tensor> pk;
     for (int64_t id : ids) for (int q = 0; q < 15; q++) pk.push_back(L.nx[15 * id + q]);
-    Y = expert_mlps_nx(X, pk, L.g[0].size(0), numa);
+    Y = expert_mlps_nx_ctx(X, pk, L.g[0].size(0), numa, gcp);
   } else {
-    Y = expert_mlps(X, g, u, d, numa)[0];
+    Y = expert_mlps_ctx(X, g, u, d, numa, gcp)[0];
   }
   const uint16_t* Yp = (const uint16_t*)Y.data_ptr();
   // per token: its K (expert, weight, row-in-expert) in ascending expert id
@@ -294,7 +349,7 @@ static std::vector<torch::Tensor> moe_fused(int64_t layer, torch::Tensor x, torc
       const std::vector<int>& rl = rows[e];
       int t = (int)(std::lower_bound(rl.begin(), rl.end(), b) - rl.begin());
       const uint16_t* yr = Yp + ((size_t)ei * nmax + t) * H;
-      const float w = bf2f(twp[b * K + ek[q].second]);
+      const float w = twf ? twfp[b * K + ek[q].second] : bf2f(twp[b * K + ek[q].second]);
       if (q == 0) { for (int h = 0; h < H; h++) acc[h] = bf2f(yr[h]) * w; }
       else { for (int h = 0; h < H; h++) { float p = bf2f(yr[h]) * w; acc[h] = acc[h] + p; } }
     }
@@ -549,7 +604,13 @@ static inline void dots4_nx(const NXm* const* m4, const int* r4, const float* X,
   for (int q = 0; q < 4; q++) out[q] = tree16(a[q]);
 }
 // x [E, 1, H] bf16; packs: 15 tensors per expert (gate lo,nib,lut,esc,off; up ...; down ...); numa as expert_mlps.
+torch::Tensor expert_mlps_nx_ctx(torch::Tensor x, std::vector<torch::Tensor> packs, int64_t I_, int64_t numa,
+                                 const ActCtx* ctx);
 torch::Tensor expert_mlps_nx(torch::Tensor x, std::vector<torch::Tensor> packs, int64_t I_, int64_t numa) {
+  return expert_mlps_nx_ctx(x, packs, I_, numa, nullptr);
+}
+torch::Tensor expert_mlps_nx_ctx(torch::Tensor x, std::vector<torch::Tensor> packs, int64_t I_, int64_t numa,
+                                 const ActCtx* ctx) {
   static const int nthr = [] { const char* v = std::getenv("OMP_NUM_THREADS"); int t = v ? std::atoi(v) : 0;
                                init_perm(); return t > 0 ? t : omp_get_num_procs(); }();
   omp_set_num_threads(nthr);
@@ -589,9 +650,7 @@ torch::Tensor expert_mlps_nx(torch::Tensor x, std::vector<torch::Tensor> packs, 
               const NXm* m4[4] = {&G[e], &G[e], &U[e], &U[e]}; const int r4[4] = {r, r + 1, r, r + 1};
               dots4_nx(m4, r4, xe, o);
               for (int q = 0; q < 2; q++) {
-                float gb = bf2f(f2bf(o[q])), ub = bf2f(f2bf(o[2 + q]));
-                float sv = bf2f(f2bf(gb / (1.0f + dexp(-gb))));
-                hf[(size_t)e * I + r + q] = bf2f(f2bf(sv * ub));
+                hf[(size_t)e * I + r + q] = act_h(ctx, e, r + q, o[q], o[2 + q]);
               }
             }
           } else {
@@ -599,7 +658,7 @@ torch::Tensor expert_mlps_nx(torch::Tensor x, std::vector<torch::Tensor> packs, 
             for (int r = b * 16; r < b * 16 + 16; r += 4) {
               const NXm* m4[4] = {&D[e], &D[e], &D[e], &D[e]}; const int r4[4] = {r, r + 1, r + 2, r + 3};
               dots4_nx(m4, r4, he, o);
-              for (int q = 0; q < 4; q++) yp[(size_t)e * H + r + q] = f2bf(o[q]);
+              for (int q = 0; q < 4; q++) yp[(size_t)e * H + r + q] = down_o(ctx, e, r + q, o[q]);
             }
           }
         }
@@ -721,7 +780,7 @@ torch::Tensor linear_nx(const float* xf, const std::vector<torch::Tensor>& pk, i
 // matrix go to node-0 threads first (placement split), with local-first stealing. A down block of expert j
 // starts once all gate/up blocks of j are done (per-expert counter), so there is no global barrier.
 static void experts_nx_fused(const std::vector<const torch::Tensor*>& P, const std::vector<int>& Is, const float* xf,
-                             int H, const std::vector<uint16_t*>& y, int numa) {
+                             int H, const std::vector<uint16_t*>& y, int numa, const ActCtx* ctx) {
   static const int nthr = [] { const char* v = std::getenv("OMP_NUM_THREADS"); int t = v ? std::atoi(v) : 0;
                                init_perm(); return t > 0 ? t : omp_get_num_procs(); }();
   omp_set_num_threads(nthr);
@@ -757,9 +816,7 @@ static void experts_nx_fused(const std::vector<const torch::Tensor*>& P, const s
           const NXm* m4[4] = {&G[j], &G[j], &U[j], &U[j]}; const int r4[4] = {r, r + 1, r, r + 1};
           dots4_nx(m4, r4, xf, o);
           for (int q = 0; q < 2; q++) {
-            float gb = bf2f(f2bf(o[q])), ub = bf2f(f2bf(o[2 + q]));
-            float sv = bf2f(f2bf(gb / (1.0f + dexp(-gb))));
-            hj[r + q] = bf2f(f2bf(sv * ub));
+            hj[r + q] = act_h(ctx, j, r + q, o[q], o[2 + q]);
           }
         }
         done[j].v.fetch_add(1, std::memory_order_release);
@@ -775,7 +832,7 @@ static void experts_nx_fused(const std::vector<const torch::Tensor*>& P, const s
         for (int r = b * 16; r < b * 16 + 16; r += 4) {
           const NXm* m4[4] = {&D[j], &D[j], &D[j], &D[j]}; const int r4[4] = {r, r + 1, r + 2, r + 3};
           dots4_nx(m4, r4, hj, o);
-          for (int q = 0; q < 4; q++) y[j][r + q] = f2bf(o[q]);
+          for (int q = 0; q < 4; q++) y[j][r + q] = down_o(ctx, j, r + q, o[q]);
         }
       }
     }
@@ -860,6 +917,7 @@ void enqueue_host_job(int64_t stream, int64_t id) {
 int64_t host_calls() { return g_host_calls.load(); }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("register_layer_act", &register_layer_act);
   m.def("make_host_job", &make_host_job);
   m.def("enqueue_host_job", &enqueue_host_job);
   m.def("host_calls", &host_calls);

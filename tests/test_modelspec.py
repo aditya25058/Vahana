@@ -14,7 +14,7 @@ SMALL = dict(hidden_size=256, intermediate_size=512, moe_intermediate_size=128, 
 TIER1 = ["mixtral", "qwen2_moe", "qwen3_moe", "olmoe", "deepseek_v2", "deepseek_v3", "glm4_moe", "glm4_moe_lite",
          "minimax", "minimax_m2", "hunyuan_v1_moe", "ernie4_5_moe", "cohere2_moe", "exaone_moe", "afmoe", "phimoe",
          "qwen3_5_moe_text"]
-NOT_YET = ["gpt_oss", "llama4_text", "granitemoe"]
+NOT_YET = ["llama4_text", "granitemoe"]
 
 
 def meta_model(fam):
@@ -46,3 +46,10 @@ def test_unsupported_layouts_fail_loudly(fam):
     with pytest.raises(UnsupportedModel) as e:
         inspect(meta_model(fam))
     assert "experts" in str(e.value) or "Experts" in str(e.value)
+
+
+def test_gpt_oss_layout():
+    specs = inspect(meta_model("gpt_oss"))
+    s = specs[0]
+    assert s.layout == "fused_interleaved_t" and s.act == "swiglu_oai" and s.bias
+    assert (s.E, s.H) == (8, 256) and s.alpha == 1.702 and s.limit == 7.0

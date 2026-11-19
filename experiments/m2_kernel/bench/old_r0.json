@@ -1,0 +1,60 @@
+{
+ "ext": "../vahana_work/cpu_moe_pre_m2.so",
+ "omp": "24",
+ "load_s": 12.970230102539062,
+ "place": {
+  "pages": 1022480,
+  "on_target": 1022480
+ },
+ "bytes": {
+  "moe_call": 283288415.75,
+  "oproj_nx": 125883008,
+  "oproj_raw": 167772160
+ },
+ "moe_r0": {
+  "wall_ms": 3.3767127824830823,
+  "GBps_wall": 83.89473253975794,
+  "kernel_ms_median": 1.6787459999999998
+ },
+ "moe_r1": {
+  "wall_ms": 1.9074291049037129,
+  "GBps_wall": 148.5184508413488,
+  "kernel_ms_median": 1.6496015000000002
+ },
+ "moe_r2": {
+  "wall_ms": 1.6639567038509995,
+  "GBps_wall": 170.24987194340324,
+  "kernel_ms_median": 1.6363015
+ },
+ "oproj_nx_r0": {
+  "wall_ms": 0.6762613411410712,
+  "GBps_wall": 186.14550373025128,
+  "kernel_ms_median": null
+ },
+ "oproj_nx_r1": {
+  "wall_ms": 0.6747550942236558,
+  "GBps_wall": 186.561033888652,
+  "kernel_ms_median": null
+ },
+ "oproj_nx_r2": {
+  "wall_ms": 0.6602474313694984,
+  "GBps_wall": 190.6603524967768,
+  "kernel_ms_median": null
+ },
+ "oproj_raw_r0": {
+  "wall_ms": 1.3088502528262325,
+  "GBps_wall": 128.18285333843613,
+  "kernel_ms_median": null
+ },
+ "oproj_raw_r1": {
+  "wall_ms": 1.3018679674132727,
+  "GBps_wall": 128.8703341655701,
+  "kernel_ms_median": null
+ },
+ "oproj_raw_r2": {
+  "wall_ms": 1.2963197950739413,
+  "GBps_wall": 129.421891602319,
+  "kernel_ms_median": null
+ },
+ "oproj_nx_eq_raw": true
+}
