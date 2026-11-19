@@ -38,6 +38,8 @@ class CPUExpertsMoE(nn.Module):
         self.forward_s = 0.0
         self.cpu_ms = 0.0
         self.place = None
+        self.nx = None
+        self.nx_s = 0.0
         self.dec = [0, 0.0, 0.0, 0.0]   # decode (N == 1) calls: n, forward_s, cpu_ms, submit->done wall s
 
     def _w(self, e):
@@ -62,6 +64,24 @@ class CPUExpertsMoE(nn.Module):
                 ok += o
             self.place = (pages, ok, time.perf_counter() - t)
         _hy.ext().register_layer(self.layer_idx, G, U, D)
+        if os.environ.get("COLOSSUS_NX12") == "1":
+            # Phase 38: NX12 (lossless 12-bit BF16) copies of every expert for single-token (decode) calls;
+            # same bits after decode, same arithmetic. Prefill keeps the raw weights.
+            t = time.perf_counter()
+            packs = []
+            place = os.environ.get("COLOSSUS_NUMA_PLACE") == "1"
+            for e in range(self.n_experts):
+                for W in (G[e], U[e], D[e]):
+                    p = _hy.ext().encode_nx(W)
+                    if place:
+                        R, K = W.shape
+                        _hy.ext().place_split(p[0], (R // 2) * K)
+                        _hy.ext().place_split(p[1], (R // 2) * K // 2)
+                        _hy.ext().place_split(p[3], int(p[4][R // 2]))
+                    packs += list(p)
+            _hy.ext().register_layer_nx(self.layer_idx, packs)
+            self.nx = packs
+            self.nx_s = time.perf_counter() - t
         self.registered = True
 
     def forward(self, hidden_states):
@@ -158,7 +178,9 @@ def install_cpu_moe(model, handles, device) -> list:
                   "decode_submit_wait_s": sum(w.dec[3] for w in wrappers),
                   "place_pages": sum(w.place[0] for w in wrappers if w.place),
                   "place_on_target": sum(w.place[1] for w in wrappers if w.place),
-                  "place_s": sum(w.place[2] for w in wrappers if w.place)}
+                  "place_s": sum(w.place[2] for w in wrappers if w.place),
+                  "nx_encode_s": sum(w.nx_s for w in wrappers),
+                  "nx_bytes": sum(t.numel() * t.element_size() for w in wrappers if w.nx for t in w.nx)}
             print("COLOSSUS_MOE_STATS " + json.dumps(st), flush=True)
         atexit.register(_dump)
     return wrappers
