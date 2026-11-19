@@ -10,8 +10,8 @@ from torch import nn
 
 from vahana.interface import MoELayerSpec
 from vahana.matrix import MatrixTieredMoEWrapper
-from vahana.tests.test_interface import FakeDeepSeekBlock
-from vahana.tests.test_placement import DictHandles
+from tests.test_interface import FakeDeepSeekBlock
+from tests.test_placement import DictHandles
 
 
 def _setup(n_exp=6, hidden=8, inter=10, top_k=2, seed=0):

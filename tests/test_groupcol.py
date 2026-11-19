@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 from vahana.groupcol import GroupedColumnWrapper
 from vahana.grouped import GroupedTieredMoEWrapper
-from vahana.tests.test_grouped import (
+from tests.test_grouped import (
     DictHandles,
     _reference,
 )

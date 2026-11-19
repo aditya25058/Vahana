@@ -13,8 +13,8 @@ from torch import nn
 
 from vahana.placement import TieredMoEWrapper
 from vahana.serve import prepare_model, serve_huge_moe
-from vahana.tests.test_interface import FakeDeepSeekBlock
-from vahana.tests.test_placement import DictHandles
+from tests.test_interface import FakeDeepSeekBlock
+from tests.test_placement import DictHandles
 
 
 class FakeDecoderLayer(nn.Module):

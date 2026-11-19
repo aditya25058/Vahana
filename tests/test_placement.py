@@ -12,7 +12,7 @@ from torch import nn
 
 from vahana.interface import MoELayerSpec
 from vahana.placement import TieredMoEWrapper, wrap_moe_layers
-from vahana.tests.test_interface import (
+from tests.test_interface import (
     FakeDeepSeekBlock,
     FakeMixtralBlock,
 )

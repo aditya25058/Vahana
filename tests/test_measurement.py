@@ -10,14 +10,14 @@ import torch
 
 from vahana.runinfo import snapshot
 from vahana.serve import serve_huge_moe
-from vahana.tests.test_serve import (
+from tests.test_serve import (
     FakeCausalMoE,
     FakeProfile,
     FakeTokenizer,
     _stub_handles,
 )
 
-_RUDRA = os.path.join(os.path.dirname(__file__), *[".."] * 5, "rudra")
+_RUDRA = os.path.join(os.path.dirname(__file__), "..", "tools")
 
 
 def test_decode_tps_excludes_prefill_token():

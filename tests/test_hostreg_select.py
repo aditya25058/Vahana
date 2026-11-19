@@ -4,7 +4,7 @@ from collections import Counter
 
 from vahana.hostreg import RegisteredHandles, merge_page_spans
 
-_SEL = os.path.join(os.path.dirname(__file__), "../../../../../rudra/select_pin_experts.py")
+_SEL = os.path.join(os.path.dirname(__file__), "../tools/select_pin_experts.py")
 
 
 def _sel_mod():
