@@ -184,6 +184,7 @@ def graph_decode(model, wrappers, cache, next_token, max_new: int, eos_id, devic
         else:
             items.append(["host", fn, ent[2] if len(ent) > 2 else "host"])
     HT = {}                                   # Phase 40 timing: label -> [wall s, kernel ms, n]
+    KL = {}                                   # Phase 41: label -> every kernel ms (steady steps)
     timing = os.environ.get("COLOSSUS_GRAPH_TIMING") == "1"
 
     def step():
@@ -195,7 +196,9 @@ def graph_decode(model, wrappers, cache, next_token, max_new: int, eos_id, devic
                     h_ = HT.setdefault(it[2], [0.0, 0.0, 0])
                     h_[0] += time.perf_counter() - t_h
                     if it[2] in ("wait", "oproj"):
-                        h_[1] += _hy.ext().kernel_ms()
+                        km_ = _hy.ext().kernel_ms()
+                        h_[1] += km_
+                        KL.setdefault(it[2], []).append(km_)
                     h_[2] += 1
                 else:
                     it[1]()
@@ -265,10 +268,15 @@ def graph_decode(model, wrappers, cache, next_token, max_new: int, eos_id, devic
                     torch.cuda.synchronize()
                     stats["capture_s"] = time.perf_counter() - tc
                     HT.clear()                           # timing: steady-state steps only
+                    KL.clear()
     finally:
         for li, (op, _, _) in grabs.items():
             layers[li].self_attn.o_proj = op
     if timing:
         stats["host_timing"] = {k: {"wall_s": v[0], "kernel_ms": v[1], "n": v[2]} for k, v in HT.items()}
+        for k_, v_ in KL.items():
+            q_ = sorted(v_)
+            stats["host_timing"][k_]["kernel_p50_p90_max"] = [q_[len(q_) // 2], q_[int(len(q_) * 0.9)], q_[-1]]
+            stats["host_timing"][k_]["kernel_all"] = v_
     stats["nx"] = dict(getattr(_hy, "NX_STATS", {}))
     return out, lat, stats
