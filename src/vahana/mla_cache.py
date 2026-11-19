@@ -69,11 +69,11 @@ def _latent_forward(self, hidden_states, attention_mask=None, position_ids=None,
                     past_key_value=None, output_attentions=False, use_cache=False,
                     **kwargs):
     if not isinstance(past_key_value, LatentKVCache):
-        return self._colossus_stock_forward(
+        return self._vahana_stock_forward(
             hidden_states, attention_mask=attention_mask, position_ids=position_ids,
             past_key_value=past_key_value, output_attentions=output_attentions,
             use_cache=use_cache, **kwargs)
-    rope_fn = self._colossus_apply_rope
+    rope_fn = self._vahana_apply_rope
     nope, rope, vdim = self.qk_nope_head_dim, self.qk_rope_head_dim, self.v_head_dim
     bsz, q_len, _ = hidden_states.size()
 
@@ -96,7 +96,7 @@ def _latent_forward(self, hidden_states, attention_mask=None, position_ids=None,
         # Ragged cache (speculative decoding, invariant mode only): rows write at their own
         # offsets; attention reads [first_b, length_b + q]. No mask, no shifting.
         if not _inv_on():
-            raise ValueError("ragged latent cache requires COLOSSUS_INVARIANT=1")
+            raise ValueError("ragged latent cache requires VAHANA_INVARIANT=1")
         from .invariant import inv_bmm, inv_mla_attention
         lat_buf, kpe_buf, first, base, slot_rows = past_key_value.append_ragged(self.layer_idx, latent, k_pe)
         wuk, wuvT = _absorb_weights(self)
@@ -119,7 +119,7 @@ def _latent_forward(self, hidden_states, attention_mask=None, position_ids=None,
                          f"{(bsz, 1, q_len, t_all)}")
     # Rows are independent in attention, so it can run on row chunks to bound
     # the transient expanded K/V (B*T*heads*(q_head+v_head) values per layer).
-    # Off (0) by default; COLOSSUS_ATTN_ROWS=R runs R rows at a time.
+    # Off (0) by default; VAHANA_ATTN_ROWS=R runs R rows at a time.
     rows = _attn_rows()
     if _inv_on() and not output_attentions:
         # Invariant mode: absorbed latent attention for ANY query count through fixed-order
@@ -138,7 +138,7 @@ def _latent_forward(self, hidden_states, attention_mask=None, position_ids=None,
     if q_len == 1 and _absorb_on() and not output_attentions:
         # Decode step in latent space (weight absorption): no K/V expansion.
         # Same weights and the same math up to bf16 rounding order, so not
-        # bitwise-identical to the stock path; opt-in (COLOSSUS_MLA_ABSORB=1).
+        # bitwise-identical to the stock path; opt-in (VAHANA_MLA_ABSORB=1).
         attn_output = self.o_proj(_attend_absorbed(self, q_nope, q_pe, latent_all,
                                                    kpe_all, attention_mask))
         return attn_output, None, past_key_value
@@ -158,32 +158,32 @@ def _latent_forward(self, hidden_states, attention_mask=None, position_ids=None,
 def _attn_rows() -> int:
     import os
     try:
-        return int(os.environ.get("COLOSSUS_ATTN_ROWS", "0"))
+        return int(os.environ.get("VAHANA_ATTN_ROWS", "0"))
     except ValueError:
         return 0
 
 
 def _inv_on() -> bool:
     import os
-    return os.environ.get("COLOSSUS_INVARIANT", "0") == "1"
+    return os.environ.get("VAHANA_INVARIANT", "0") == "1"
 
 
 def _absorb_on() -> bool:
     import os
-    return os.environ.get("COLOSSUS_MLA_ABSORB", "0") == "1"
+    return os.environ.get("VAHANA_MLA_ABSORB", "0") == "1"
 
 
 def _absorb_weights(self):
     """Per-head W_UK [H, nope, rank] and W_UV^T [H, rank, vdim] from kv_b_proj."""
-    w = getattr(self, "_colossus_wuk", None)
+    w = getattr(self, "_vahana_wuk", None)
     if w is None:
         if getattr(self.kv_b_proj, "bias", None) is not None:
             raise ValueError("absorbed MLA assumes kv_b_proj has no bias")
         H, nope, vdim = self.num_heads, self.qk_nope_head_dim, self.v_head_dim
         W = self.kv_b_proj.weight.detach().view(H, nope + vdim, self.kv_lora_rank)
-        self._colossus_wuk = W[:, :nope, :].contiguous()
-        self._colossus_wuvT = W[:, nope:, :].transpose(1, 2).contiguous()
-    return self._colossus_wuk, self._colossus_wuvT
+        self._vahana_wuk = W[:, :nope, :].contiguous()
+        self._vahana_wuvT = W[:, nope:, :].transpose(1, 2).contiguous()
+    return self._vahana_wuk, self._vahana_wuvT
 
 
 def _attend_absorbed(self, q_nope, q_pe, latent_all, kpe_all, attention_mask):
@@ -258,13 +258,13 @@ def install_latent_kv(model: nn.Module) -> int:
         raise ValueError(f"latent KV supports eager attention only (model uses {impl!r})")
     n = 0
     for m in model.modules():
-        if not is_mla_attention(m) or hasattr(m, "_colossus_stock_forward"):
+        if not is_mla_attention(m) or hasattr(m, "_vahana_stock_forward"):
             continue
         rope_fn = getattr(sys.modules.get(type(m).__module__), "apply_rotary_pos_emb", None)
         if rope_fn is None:
             raise ValueError(f"{type(m).__name__}: no apply_rotary_pos_emb in its module")
-        m._colossus_apply_rope = rope_fn
-        m._colossus_stock_forward = m.forward
+        m._vahana_apply_rope = rope_fn
+        m._vahana_stock_forward = m.forward
         m.forward = types.MethodType(_latent_forward, m)
         n += 1
     if n == 0:

@@ -27,7 +27,7 @@ _ANS_POOL: dict = {}
 
 def _timing_inv() -> bool:
     import os
-    return os.environ.get("COLOSSUS_INVARIANT", "0") == "1"
+    return os.environ.get("VAHANA_INVARIANT", "0") == "1"
 from .interface import MoELayerSpec
 
 
@@ -143,8 +143,8 @@ class TieredMoEWrapper(nn.Module):
             capacity = 1
         self.capacity = capacity
         # Phase 30: with every routed expert on the CPU (fast path) the HBM slots are never used.
-        _no_slots = (_os.environ.get("COLOSSUS_HYBRID") == "1" and _os.environ.get("COLOSSUS_HYBRID_FAST") == "1"
-                     and _os.environ.get("COLOSSUS_GPU_BUDGET_GB"))
+        _no_slots = (_os.environ.get("VAHANA_HYBRID") == "1" and _os.environ.get("VAHANA_HYBRID_FAST") == "1"
+                     and _os.environ.get("VAHANA_GPU_BUDGET_GB"))
         self.slots: list[nn.Module] = nn.ModuleList([
             FastSlot(spec.hidden, spec.inter, device, spec.dtype, spec.activation)
             for _ in range(0 if _no_slots else capacity)
@@ -179,41 +179,41 @@ class TieredMoEWrapper(nn.Module):
         # page cached but not yet mapped; major = read from disk).
         self.load_minflt = 0
         self.load_majflt = 0
-        # Opt-in (COLOSSUS_SLOT_EVENTS=1): order each slot copy after the last
+        # Opt-in (VAHANA_SLOT_EVENTS=1): order each slot copy after the last
         # GEMM that read THAT slot (per-slot event) instead of after all queued
         # compute, so copy i+1 overlaps compute i. Scheduling only: the same
         # weights reach the same slots before the same GEMMs, so values are
         # unchanged by construction.
         import os as _os
-        self.slot_events = (_os.environ.get("COLOSSUS_SLOT_EVENTS", "0") == "1"
+        self.slot_events = (_os.environ.get("VAHANA_SLOT_EVENTS", "0") == "1"
                             and device.type == "cuda" and dma_stream is not None)
         self._slot_evt: dict[int, Any] = {}
-        # Optional lossless compressed weight source (COLOSSUS_ANS_STORE, see ansplane.py).
+        # Optional lossless compressed weight source (VAHANA_ANS_STORE, see ansplane.py).
         from .ansplane import get_plane
         self.ans = get_plane() if device.type == "cuda" and dma_stream is not None else None
-        self.ans_lookahead = int(_os.environ.get("COLOSSUS_ANS_LOOKAHEAD", "8"))
+        self.ans_lookahead = int(_os.environ.get("VAHANA_ANS_LOOKAHEAD", "8"))
         # Phase 17: decode G missing experts per nvCOMP call (1 = per-expert, as before).
-        self.ans_group = int(_os.environ.get("COLOSSUS_ANS_GROUP", "1"))
+        self.ans_group = int(_os.environ.get("VAHANA_ANS_GROUP", "1"))
         self._ans_grouped: set[int] = set()
         self._pool_bind: dict[int, int] = {}
-        # Phase 20b (COLOSSUS_SECOND_GPU=1): a second GPU is a second weight link. Alternate
+        # Phase 20b (VAHANA_SECOND_GPU=1): a second GPU is a second weight link. Alternate
         # groups of this layer's ANS misses are copied/decoded/computed there; outputs come
         # back at the end of the layer. Same bytes, same kernels: values unchanged.
         self.dev2 = None
         self._on2: set[int] = set()
         self._pend2: list = []
         if (self.ans is not None and self.ans_group > 1 and torch.cuda.device_count() > 1
-                and _os.environ.get("COLOSSUS_SECOND_GPU") == "1"):
+                and _os.environ.get("VAHANA_SECOND_GPU") == "1"):
             from .ansplane import get_peer
             self.dev2 = torch.device("cuda", 1 if (device.index or 0) == 0 else 0)
             self.ans2 = get_peer(self.dev2)
         self._ans_todo: dict[int, int] = {}
         self._ans_list: list[int] = []
-        # Opt-in (COLOSSUS_XLAYER_PREFETCH=k): at the end of this layer's MoE, load
+        # Opt-in (VAHANA_XLAYER_PREFETCH=k): at the end of this layer's MoE, load
         # up to k experts of the NEXT MoE layer into its free slots, guessed from that
         # layer's previous forward, so the link is busy during the next attention.
         # Data movement only: a slot always holds its expert's exact weights.
-        self.xlayer_k = int(_os.environ.get("COLOSSUS_XLAYER_PREFETCH", "0"))
+        self.xlayer_k = int(_os.environ.get("VAHANA_XLAYER_PREFETCH", "0"))
         self.next_wrapper = None
         self.last_needed: list[int] = []
         self.xlayer_loads = 0
@@ -503,7 +503,7 @@ class TieredMoEWrapper(nn.Module):
         """Every routed expert on the CPU; one host sync per layer. The hidden state goes to pinned host
         memory while the gate runs; routing results follow; the C++ worker groups, computes and combines
         (same arithmetic as _hybrid_forward); the GPU computes the shared experts meanwhile; one row comes
-        back. Values are identical to _hybrid_forward with COLOSSUS_HYBRID=1."""
+        back. Values are identical to _hybrid_forward with VAHANA_HYBRID=1."""
         hy = _hybrid
         H = hidden_states.shape[-1]
         flat = hidden_states.reshape(-1, H)
@@ -543,7 +543,7 @@ class TieredMoEWrapper(nn.Module):
         _t0 = time.perf_counter()
         ev.synchronize()
         hy.STATS["route_wait_s"] = hy.STATS.get("route_wait_s", 0.0) + time.perf_counter() - _t0
-        hy.ext().submit_moe(self.layer_idx, xb, tib, twb, ob, int(__import__("os").environ.get("COLOSSUS_HYBRID_NUMA", "1")))
+        hy.ext().submit_moe(self.layer_idx, xb, tib, twb, ob, int(__import__("os").environ.get("VAHANA_HYBRID_NUMA", "1")))
         from . import twinlin as _tw
         if _tw.enabled() and _tw.shared_on_cpu(self):
             shared_out = None                        # added by the CPU job

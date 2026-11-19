@@ -1,4 +1,4 @@
-"""Opt-in step timeline (COLOSSUS_TIMING=1): CUDA events, no syncs inside the step.
+"""Opt-in step timeline (VAHANA_TIMING=1): CUDA events, no syncs inside the step.
 
 Records, per decode step:
   - compute-stream events around every attention module and every MoE wrapper,
@@ -67,12 +67,12 @@ def install(model, wrappers) -> Recorder:
 
     def pre(name):
         def _hook(m, _a):
-            m._colossus_t = (REC.ev(), time.perf_counter())   # returns None
+            m._vahana_t = (REC.ev(), time.perf_counter())   # returns None
         return _hook
 
     def post(name):
         def _hook(m, _a, _o):
-            a, h = m._colossus_t
+            a, h = m._vahana_t
             REC.span(name, a, REC.ev())
             REC.add_host(name, time.perf_counter() - h)
         return _hook

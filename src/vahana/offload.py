@@ -1,4 +1,4 @@
-"""Expert weight offload manager for COLOSSUS active-mode serving.
+"""Expert weight offload manager for VAHANA active-mode serving.
 
 Pre-generation strategy: profile the input prompt via ZSSR to determine
 which experts are consistently hot across MoE layers, then offload cold
@@ -87,19 +87,19 @@ class ExpertOffloadManager:
             return out
 
         expert_module.forward = _jit_forward
-        expert_module._colossus_original_forward = original_forward
+        expert_module._vahana_original_forward = original_forward
         self._jit_wrapped.append(expert_module)
 
     def _uninstall_all_jit_wrappers(self) -> None:
         """Restore original forward methods on all JIT-wrapped experts."""
         for mod in self._jit_wrapped:
-            orig = getattr(mod, "_colossus_original_forward", None)
+            orig = getattr(mod, "_vahana_original_forward", None)
             if orig is not None:
                 mod.forward = orig
-                del mod._colossus_original_forward
+                del mod._vahana_original_forward
         if self._jit_fetches > 0:
             logger.info(
-                f"[Colossus] JIT fetched {self._jit_fetches} cold experts "
+                f"[Vahana] JIT fetched {self._jit_fetches} cold experts "
                 f"to GPU during generation"
             )
         self._jit_wrapped.clear()
@@ -145,7 +145,7 @@ class ExpertOffloadManager:
 
         self._profiled = True
         logger.info(
-            f"[Colossus] Profiled prompt → hot experts for {len(hot_map)} layers "
+            f"[Vahana] Profiled prompt → hot experts for {len(hot_map)} layers "
             f"(top-{self.hot_expert_topk} per layer)"
         )
         return hot_map
@@ -169,7 +169,7 @@ class ExpertOffloadManager:
         layers_container = getattr(model, "model", model)
         model_layers = getattr(layers_container, "layers", None)
         if model_layers is None:
-            logger.warning("[Colossus] Cannot find model.layers — skipping offload")
+            logger.warning("[Vahana] Cannot find model.layers — skipping offload")
             return {"status": "no_layers"}
 
         total_offloaded = 0
@@ -221,7 +221,7 @@ class ExpertOffloadManager:
 
         vram_saved_gb = self._bytes_offloaded / (1024 ** 3)
         logger.info(
-            f"[Colossus] Offloaded {total_offloaded} cold experts to CPU "
+            f"[Vahana] Offloaded {total_offloaded} cold experts to CPU "
             f"(kept {total_kept} hot), freed {vram_saved_gb:.2f} GB VRAM"
         )
 
@@ -264,7 +264,7 @@ class ExpertOffloadManager:
                     experts[e_idx].to(device)
                     restored += 1
 
-        logger.info(f"[Colossus] Restored {restored} experts to {device}")
+        logger.info(f"[Vahana] Restored {restored} experts to {device}")
         self._offloaded.clear()
         self._bytes_offloaded = 0
 

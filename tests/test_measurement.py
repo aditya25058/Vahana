@@ -8,9 +8,9 @@ import sys
 import pytest
 import torch
 
-from bhaskera.inference.colossus.runinfo import snapshot
-from bhaskera.inference.colossus.serve import serve_huge_moe
-from bhaskera.inference.colossus.tests.test_serve import (
+from vahana.runinfo import snapshot
+from vahana.serve import serve_huge_moe
+from vahana.tests.test_serve import (
     FakeCausalMoE,
     FakeProfile,
     FakeTokenizer,

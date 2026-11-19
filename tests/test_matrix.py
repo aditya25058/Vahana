@@ -8,10 +8,10 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from bhaskera.inference.colossus.interface import MoELayerSpec
-from bhaskera.inference.colossus.matrix import MatrixTieredMoEWrapper
-from bhaskera.inference.colossus.tests.test_interface import FakeDeepSeekBlock
-from bhaskera.inference.colossus.tests.test_placement import DictHandles
+from vahana.interface import MoELayerSpec
+from vahana.matrix import MatrixTieredMoEWrapper
+from vahana.tests.test_interface import FakeDeepSeekBlock
+from vahana.tests.test_placement import DictHandles
 
 
 def _setup(n_exp=6, hidden=8, inter=10, top_k=2, seed=0):
@@ -39,7 +39,7 @@ def _setup(n_exp=6, hidden=8, inter=10, top_k=2, seed=0):
 
 
 def _native_ref(spec, handles, keys, x):
-    from bhaskera.inference.colossus.placement import apply_gate
+    from vahana.placement import apply_gate
     flat = x.reshape(-1, x.shape[-1])
     K = spec.top_k
     idx, w = spec.route(x)

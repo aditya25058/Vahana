@@ -225,7 +225,7 @@ static std::vector<torch::Tensor> moe_fused(int64_t layer, torch::Tensor x, torc
   const int64_t* tip = ti.data_ptr<int64_t>();
   const uint16_t* twp = (const uint16_t*)tw.data_ptr();
   const uint16_t* xp = (const uint16_t*)x.data_ptr();
-  static const bool fuse = [] { const char* v = std::getenv("COLOSSUS_FUSE"); return !(v && v[0] == '0'); }();
+  static const bool fuse = [] { const char* v = std::getenv("VAHANA_FUSE"); return !(v && v[0] == '0'); }();
   if (fuse && N == 1 && !L.nx.empty() && (L.sg.empty() || !L.snx.empty()) && H % 64 == 0) {
     // Phase 41: routed + shared in one region; same per-row arithmetic and the same combine as below.
     std::vector<std::pair<int64_t, int>> ek;                  // (expert, k) ascending expert id
@@ -334,7 +334,7 @@ torch::Tensor linear_twin(torch::Tensor x, torch::Tensor W) {
     auto it = LIN_NX->find(W.data_ptr());
     if (it != LIN_NX->end()) return linear_nx(xf.data(), it->second, R, K, x.options());
   }
-  static const bool lin_numa = [] { const char* v = std::getenv("COLOSSUS_LIN_NUMA"); return v && v[0] == '2'; }();
+  static const bool lin_numa = [] { const char* v = std::getenv("VAHANA_LIN_NUMA"); return v && v[0] == '2'; }();
   if (lin_numa && n == 1 && R % 8 == 0) {
     // Phase 40: rows [0, R/2) computed by node-0 threads, [R/2, R) by node-1 threads, local-first stealing.
     std::atomic<int> cur[2]; cur[0] = 0; cur[1] = R / 2;
@@ -499,7 +499,7 @@ static NXm make_nxm(const torch::Tensor* t, int K) {
 static __m512i g_plo, g_phi;
 static int g_pf = 0;
 static void init_perm() {
-  { const char* v = std::getenv("COLOSSUS_PF"); g_pf = v ? std::atoi(v) : 0; }
+  { const char* v = std::getenv("VAHANA_PF"); g_pf = v ? std::atoi(v) : 0; }
   alignas(64) uint8_t a[64], b[64];
   for (int i = 0; i < 32; i++) { a[2 * i] = i; a[2 * i + 1] = 64 + i; b[2 * i] = 32 + i; b[2 * i + 1] = 96 + i; }
   g_plo = _mm512_load_si512(a); g_phi = _mm512_load_si512(b);

@@ -1,13 +1,13 @@
-"""Exact continuous refill with speculative decoding (COLOSSUS_REFILL=1, needs COLOSSUS_INVARIANT=1).
+"""Exact continuous refill with speculative decoding (VAHANA_REFILL=1, needs VAHANA_INVARIANT=1).
 
 A pool of S slots serves a queue of prompts. Each step is ONE pass over the layers that carries two
 row groups:
-  - decode rows: [last token + k n-gram drafts] (k = COLOSSUS_SPEC, 0 = plain decode),
+  - decode rows: [last token + k n-gram drafts] (k = VAHANA_SPEC, 0 = plain decode),
   - refill rows: the next chunk of newly admitted prompts (chunked prefill).
 Attention runs per group (each row reads only its own slot of the ragged latent cache); the MoE
 layer runs ONCE on both groups' tokens concatenated, so every expert's weights cross the link once
 per step for decode and prefill together. When a row finishes, its slot is freed; free slots are
-refilled from the queue in groups (>= COLOSSUS_REFILL_MIN rows, or what the queue has left).
+refilled from the queue in groups (>= VAHANA_REFILL_MIN rows, or what the queue has left).
 
 Exactness: every kernel is invariant to batch companions, padding and query count (Phase 22/23),
 and the layer arithmetic below is the decoder layer's own (norm, attention, residual, norm, MLP,
@@ -172,4 +172,4 @@ def refill_generate(model, tokenizer, prompts: list[str], slots: int, max_new: i
 
 
 def enabled() -> bool:
-    return os.environ.get("COLOSSUS_REFILL", "0") == "1"
+    return os.environ.get("VAHANA_REFILL", "0") == "1"

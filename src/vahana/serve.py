@@ -1,4 +1,4 @@
-"""Huge-model serving loop for COLOSSUS tiers (chunk 2c).
+"""Huge-model serving loop for VAHANA tiers (chunk 2c).
 
 `serve_huge_moe`: prefill (optionally chunked) -> lockstep greedy decode
 over a wrapped (TieredMoEWrapper) model with per-step ledger.
@@ -79,10 +79,10 @@ def install_cache_compat(model_type: str | None = None) -> None:
 
     _DC.get_usable_length = _get_usable_length
     want_mask_patch = bool(model_type and "deepseek" in model_type)
-    has_mask_patch = bool(getattr(_AMC.to_causal_4d, "_colossus_patched", False))
+    has_mask_patch = bool(getattr(_AMC.to_causal_4d, "_vahana_patched", False))
     if want_mask_patch and not has_mask_patch:
         _orig = _AMC.to_causal_4d
-        _AMC._colossus_orig = _orig
+        _AMC._vahana_orig = _orig
 
         def _patched_to_causal_4d(self, batch_size, query_length, key_value_length,
                                   dtype, device="cpu"):
@@ -92,10 +92,10 @@ def install_cache_compat(model_type: str | None = None) -> None:
                                     dtype=dtype, device=device)
             return mask
 
-        _patched_to_causal_4d._colossus_patched = True
+        _patched_to_causal_4d._vahana_patched = True
         _AMC.to_causal_4d = _patched_to_causal_4d
     elif not want_mask_patch and has_mask_patch:
-        _AMC.to_causal_4d = _AMC._colossus_orig
+        _AMC.to_causal_4d = _AMC._vahana_orig
     _compat_installed = True
 
 
@@ -176,7 +176,7 @@ def prepare_model(model: torch.nn.Module, profile: Any, handles: ShardHandles,
             _logging.getLogger("bhaskera.serve").warning(
                 "recomputed %d meta rope tables (verify output!), model=%s",
                 n_recomputed, getattr(config, "model_type", "?"))
-    if os.environ.get("COLOSSUS_FUSED_CPU_MOE") == "1":
+    if os.environ.get("VAHANA_FUSED_CPU_MOE") == "1":
         # Phase 31: fused-expert MoE blocks (transformers-5 Mixtral) with routed experts on the CPU
         from .cpu_moe_block import install_cpu_moe
         return install_cpu_moe(model, handles, device)
@@ -243,13 +243,13 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
     elif matrix_tiers:
         from .matrix import MatrixTieredMoEWrapper
         _wrap_opts = {"wrapper_cls": MatrixTieredMoEWrapper}
-    ans_store = os.environ.get("COLOSSUS_ANS_STORE")
+    ans_store = os.environ.get("VAHANA_ANS_STORE")
     if ans_store and device.type == "cuda":
         # Lossless compressed expert plane (ansplane.py): pinned in place with the
         # same RAM margin as --host-register-margin-gb (default 64 GB).
         from .ansplane import init_plane
         init_plane(ans_store, device,
-                   margin_gb=float(os.environ.get("COLOSSUS_ANS_MARGIN_GB", "64")))
+                   margin_gb=float(os.environ.get("VAHANA_ANS_MARGIN_GB", "64")))
     wrappers = prepare_model(model, profile, handles, device, capacity,
                              placement=placement,
                              dma_stream=(torch.cuda.Stream(device=device)
@@ -278,15 +278,15 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
     from . import invariant as _inv
     if _inv.enabled():
         if device.type != "cuda" or kv_layout != "latent":
-            raise ValueError("COLOSSUS_INVARIANT=1 needs CUDA and --kv-layout latent")
+            raise ValueError("VAHANA_INVARIANT=1 needs CUDA and --kv-layout latent")
         print("invariant mode:", _inv.install(model), flush=True)
-        if __import__("os").environ.get("COLOSSUS_FAST_GATE") == "1":
+        if __import__("os").environ.get("VAHANA_FAST_GATE") == "1":
             print("fast gates:", _inv.fast_gates(model), flush=True)     # Phase 41
     from . import twinlin as _twl
     _twin_info = None
     if _twl.enabled():
         if not _inv.enabled():
-            raise ValueError("COLOSSUS_TWIN=1 needs COLOSSUS_INVARIANT=1")
+            raise ValueError("VAHANA_TWIN=1 needs VAHANA_INVARIANT=1")
         _twin_info = _twl.install(model, device)
         print("twin mode: %d CPU linears, embedding on CPU: %s"
               % (len(_twin_info["cpu_linears"]), _twin_info["embedding_on_cpu"]), flush=True)
@@ -304,13 +304,13 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
     from . import refill as _refill
     if _refill.enabled():
         # Continuous refill + (optional) exact speculation; see refill.py.
-        if os.environ.get("COLOSSUS_INVARIANT") != "1" or kv_layout != "latent" or device.type != "cuda":
-            raise ValueError("COLOSSUS_REFILL needs COLOSSUS_INVARIANT=1, --kv-layout latent, CUDA")
+        if os.environ.get("VAHANA_INVARIANT") != "1" or kv_layout != "latent" or device.type != "cuda":
+            raise ValueError("VAHANA_REFILL needs VAHANA_INVARIANT=1, --kv-layout latent, CUDA")
         torch.cuda.reset_peak_memory_stats(device)
         _outs, _lat, _wall, _st = _refill.refill_generate(
-            model, tokenizer, prompts, int(os.environ.get("COLOSSUS_REFILL_SLOTS", "512")),
-            max_new_tokens, int(os.environ.get("COLOSSUS_SPEC", "0") or 0), device,
-            tokenizer.eos_token_id, refill_min=int(os.environ.get("COLOSSUS_REFILL_MIN", "32")))
+            model, tokenizer, prompts, int(os.environ.get("VAHANA_REFILL_SLOTS", "512")),
+            max_new_tokens, int(os.environ.get("VAHANA_SPEC", "0") or 0), device,
+            tokenizer.eos_token_id, refill_min=int(os.environ.get("VAHANA_REFILL_MIN", "32")))
         _tot = sum(len(o) for o in _outs)
         if dump_ids:
             with open(dump_ids, "w") as f:
@@ -353,10 +353,10 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
     if device.type == "cuda":
         torch.cuda.synchronize(device)
         torch.cuda.reset_peak_memory_stats(device)
-    # Every caller reads logits[:, -1] only. COLOSSUS_LAST_LOGITS=1 feeds the LM head the last
+    # Every caller reads logits[:, -1] only. VAHANA_LAST_LOGITS=1 feeds the LM head the last
     # position alone, so prefill does not materialise B x S x vocab fp32 logits (40 GB at
     # B=4096). Off by default.
-    if os.environ.get("COLOSSUS_LAST_LOGITS") == "1" and getattr(model, "lm_head", None) is not None:
+    if os.environ.get("VAHANA_LAST_LOGITS") == "1" and getattr(model, "lm_head", None) is not None:
         def _last_only(_mod, args):
             h = args[0]
             keep = _KEEP[0]                      # 1, or k+1 during speculative verify steps
@@ -364,20 +364,20 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
                 return (h[:, -keep:, :],) + tuple(args[1:])
             return None
         model.lm_head.register_forward_pre_hook(_last_only)
-    _spec_k = int(os.environ.get("COLOSSUS_SPEC", "0") or 0)
-    _graph = os.environ.get("COLOSSUS_GRAPH", "0") == "1"
-    if _graph and not (os.environ.get("COLOSSUS_INVARIANT") == "1" and kv_layout == "latent" and B == 1
+    _spec_k = int(os.environ.get("VAHANA_SPEC", "0") or 0)
+    _graph = os.environ.get("VAHANA_GRAPH", "0") == "1"
+    if _graph and not (os.environ.get("VAHANA_INVARIANT") == "1" and kv_layout == "latent" and B == 1
                        and use_cache and teacher_tokens is None and _spec_k == 0
-                       and os.environ.get("COLOSSUS_HYBRID") == "1"
-                       and os.environ.get("COLOSSUS_HYBRID_FAST") == "1"):
-        raise ValueError("COLOSSUS_GRAPH needs COLOSSUS_INVARIANT=1, --kv-layout latent, B=1, "
-                         "COLOSSUS_HYBRID=1 + COLOSSUS_HYBRID_FAST=1, no spec / teacher")
+                       and os.environ.get("VAHANA_HYBRID") == "1"
+                       and os.environ.get("VAHANA_HYBRID_FAST") == "1"):
+        raise ValueError("VAHANA_GRAPH needs VAHANA_INVARIANT=1, --kv-layout latent, B=1, "
+                         "VAHANA_HYBRID=1 + VAHANA_HYBRID_FAST=1, no spec / teacher")
     _ragged = _spec_k > 0 or _graph
     _spec_stats = None
-    if _spec_k > 0 and not (os.environ.get("COLOSSUS_INVARIANT") == "1" and kv_layout == "latent"
+    if _spec_k > 0 and not (os.environ.get("VAHANA_INVARIANT") == "1" and kv_layout == "latent"
                             and use_cache and teacher_tokens is None):
-        raise ValueError("COLOSSUS_SPEC needs COLOSSUS_INVARIANT=1, --kv-layout latent, cache on")
-    _budget = os.environ.get("COLOSSUS_GPU_BUDGET_GB")
+        raise ValueError("VAHANA_SPEC needs VAHANA_INVARIANT=1, --kv-layout latent, cache on")
+    _budget = os.environ.get("VAHANA_GPU_BUDGET_GB")
     _budget_info = None
     if _budget and device.type == "cuda":
         # Phase 30: emulate a small card. Everything resident must already fit; later allocations are capped.
@@ -480,15 +480,15 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
             w.routing_log = []
     if all(finished):
         latencies = []
-    # Opt-in profiling (COLOSSUS_PROFILE_STEPS="a,b"): cudaProfilerStart before decode step a,
+    # Opt-in profiling (VAHANA_PROFILE_STEPS="a,b"): cudaProfilerStart before decode step a,
     # Stop after step b (for nsys --capture-range=cudaProfilerApi), with NVTX ranges on every
     # attention and MoE module. Diagnostics only; no effect on values.
-    _prof = os.environ.get("COLOSSUS_PROFILE_STEPS")
+    _prof = os.environ.get("VAHANA_PROFILE_STEPS")
     _prof_a, _prof_b = (int(x) for x in _prof.split(",")) if _prof else (-1, -1)
     if _prof and device.type == "cuda":
         _install_nvtx(model, wrappers)
     _trec = None
-    if os.environ.get("COLOSSUS_TIMING") == "1" and device.type == "cuda":
+    if os.environ.get("VAHANA_TIMING") == "1" and device.type == "cuda":
         from . import timing as _timing
         _trec = _timing.install(model, wrappers)
     timing_steps: list[dict] = []
@@ -512,7 +512,7 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         new_counts = [len(_new)]
         generated_ids = torch.cat([input_ids, torch.tensor([_new], device=device)], dim=1)
         finished = [True] * B
-    if os.environ.get("COLOSSUS_MIXTRAL_GRAPH", "0") == "1" and not _graph and _spec_k == 0:
+    if os.environ.get("VAHANA_MIXTRAL_GRAPH", "0") == "1" and not _graph and _spec_k == 0:
         # Phase 36: batch-1 graphed decode for fused-expert (Mixtral-style) MoE on the CPU worker
         from .mixtral_graph import mixtral_graph_decode
         _new, latencies, _graph_stats = mixtral_graph_decode(model, past, next_token, max_new_tokens,
@@ -656,7 +656,7 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
             "batch_decode_tps": "decode_tokens / decode_s (prefill token excluded)",
             "e2e_tps": "generated_tokens_total / (prefill_s + decode_s)",
             "legacy_batch_decode_tps": "generated_tokens_total / decode_s "
-                                        "(definition used in COLOSSUS_REPORT up to section 36)",
+                                        "(definition used in VAHANA_REPORT up to section 36)",
             "decode_s": "sum of per-step wall times, each bracketed by device syncs",
             "stall_ms": "GPU-event time cold copies finished after their expert's "
                         "hot GEMMs (column slots only; 0 = fully hidden)",
@@ -709,5 +709,5 @@ def serve_huge_moe(model, tokenizer, profile, handles: ShardHandles,
         "seed_loads": seed_loads,
         "routing_log_steps": routing_steps,
         "flip_audit": flip_audit,
-        "hybrid_stats": (dict(__import__("bhaskera.inference.colossus.hybrid", fromlist=["STATS"]).STATS) if os.environ.get("COLOSSUS_HYBRID", "") != "" else None),
+        "hybrid_stats": (dict(__import__("vahana.hybrid", fromlist=["STATS"]).STATS) if os.environ.get("VAHANA_HYBRID", "") != "" else None),
     }

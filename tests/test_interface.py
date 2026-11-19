@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from bhaskera.inference.colossus.interface import (
+from vahana.interface import (
     GATE_DEEPSEEK_3TUPLE,
     GATE_LOGITS,
     MoELayerSpec,
@@ -171,7 +171,7 @@ def test_missing_gate_raises():
 
 
 def test_normalize_activation():
-    from bhaskera.inference.colossus.interface import normalize_activation
+    from vahana.interface import normalize_activation
     assert normalize_activation("silu") == "silu"
     assert normalize_activation("SiGLU") == "silu"
     assert normalize_activation("gelu_new") == "gelu"
@@ -191,7 +191,7 @@ def test_spec_activation_from_config():
 
 
 def test_fastslot_gelu_matches_manual():
-    from bhaskera.inference.colossus.placement import FastSlot, apply_gate
+    from vahana.placement import FastSlot, apply_gate
     torch.manual_seed(9)
     slot = FastSlot(16, 24, torch.device("cpu"), torch.float32, "gelu")
     x = torch.randn(2, 16)

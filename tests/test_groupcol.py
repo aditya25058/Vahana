@@ -8,9 +8,9 @@ Synthetic fused grouped weights, CPU-only:
 import torch
 import torch.nn.functional as F
 
-from bhaskera.inference.colossus.groupcol import GroupedColumnWrapper
-from bhaskera.inference.colossus.grouped import GroupedTieredMoEWrapper
-from bhaskera.inference.colossus.tests.test_grouped import (
+from vahana.groupcol import GroupedColumnWrapper
+from vahana.grouped import GroupedTieredMoEWrapper
+from vahana.tests.test_grouped import (
     DictHandles,
     _reference,
 )

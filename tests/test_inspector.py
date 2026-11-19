@@ -9,7 +9,7 @@ import json
 
 import torch
 
-from bhaskera.inference.colossus.inspector import (
+from vahana.inspector import (
     describe_model,
     inspect_weights,
     write_inspect_json,

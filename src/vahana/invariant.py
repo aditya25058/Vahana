@@ -1,4 +1,4 @@
-"""Batch-, padding- and query-length-invariant kernels (COLOSSUS_INVARIANT=1).
+"""Batch-, padding- and query-length-invariant kernels (VAHANA_INVARIANT=1).
 
 Goal: every token's computation gives the same bits no matter which other rows share the batch,
 how much left padding its row has, or how many query positions are processed at once (prefill,
@@ -22,7 +22,7 @@ import torch
 import triton
 import triton.language as tl
 
-_FAST_GATE = _os.environ.get("COLOSSUS_FAST_GATE") == "1"
+_FAST_GATE = _os.environ.get("VAHANA_FAST_GATE") == "1"
 
 
 # --------------------------------------------------------------------------- matmul
@@ -187,7 +187,7 @@ _INSTALLED = False
 
 def enabled() -> bool:
     import os
-    return os.environ.get("COLOSSUS_INVARIANT", "0") == "1"
+    return os.environ.get("VAHANA_INVARIANT", "0") == "1"
 
 
 def install(model: torch.nn.Module) -> dict:

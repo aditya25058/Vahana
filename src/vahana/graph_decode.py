@@ -1,7 +1,7 @@
-"""Batch-1 decode with CUDA graphs around the GPU work (COLOSSUS_GRAPH=1; Phase 29, generalized in 30).
+"""Batch-1 decode with CUDA graphs around the GPU work (VAHANA_GRAPH=1; Phase 29, generalized in 30).
 
-Needs COLOSSUS_INVARIANT=1 (length-agnostic Triton MLA on the ragged latent cache), --kv-layout latent,
-B=1, and the all-CPU expert path (COLOSSUS_HYBRID=1, COLOSSUS_HYBRID_FAST=1).
+Needs VAHANA_INVARIANT=1 (length-agnostic Triton MLA on the ragged latent cache), --kv-layout latent,
+B=1, and the all-CPU expert path (VAHANA_HYBRID=1, VAHANA_HYBRID_FAST=1).
 
 A decode step is a fixed sequence of GPU work and host actions:
   [embedding] -> per layer: [attention] (split around o_proj when o_proj lives on the CPU)
@@ -45,8 +45,8 @@ def graph_decode(model, wrappers, cache, next_token, max_new: int, eos_id, devic
     wmap = {li: l.mlp for li, l in enumerate(layers) if l.mlp.__class__.__name__ == "TieredMoEWrapper"}
     H = model.config.hidden_size
     dt = next(p for p in model.parameters() if p.is_floating_point()).dtype
-    use_graph = os.environ.get("COLOSSUS_GRAPH_EAGER", "0") != "1"
-    numa = int(os.environ.get("COLOSSUS_HYBRID_NUMA", "1"))
+    use_graph = os.environ.get("VAHANA_GRAPH_EAGER", "0") != "1"
+    numa = int(os.environ.get("VAHANA_HYBRID_NUMA", "1"))
     for w in wrappers:
         if not getattr(w, "_hy_registered", False):
             raise RuntimeError("graph decode: experts not registered (prefill must use the fast path)")
@@ -185,7 +185,7 @@ def graph_decode(model, wrappers, cache, next_token, max_new: int, eos_id, devic
             items.append(["host", fn, ent[2] if len(ent) > 2 else "host"])
     HT = {}                                   # Phase 40 timing: label -> [wall s, kernel ms, n]
     KL = {}                                   # Phase 41: label -> every kernel ms (steady steps)
-    timing = os.environ.get("COLOSSUS_GRAPH_TIMING") == "1"
+    timing = os.environ.get("VAHANA_GRAPH_TIMING") == "1"
 
     def step():
         for it in items:
@@ -233,7 +233,7 @@ def graph_decode(model, wrappers, cache, next_token, max_new: int, eos_id, devic
 
     out = [cur[0]]
     lat = []
-    _mc = os.environ.get("COLOSSUS_MAIN_CPUS")
+    _mc = os.environ.get("VAHANA_MAIN_CPUS")
     if _mc:                                       # Phase 41: main thread off the worker's core
         os.sched_setaffinity(0, {int(c_) for c_ in _mc.split(",")})
     stats = {"graph": use_graph, "capture_s": None, "moe_layers": len(wmap),
@@ -246,7 +246,7 @@ def graph_decode(model, wrappers, cache, next_token, max_new: int, eos_id, devic
                     break
                 torch.cuda.synchronize()
                 t0 = time.perf_counter()
-                prof_out = os.environ.get("COLOSSUS_GRAPH_PROF")
+                prof_out = os.environ.get("VAHANA_GRAPH_PROF")
                 if prof_out and i == 4 and use_graph:      # Phase 41: step 4 runs under the profiler (diag only)
                     from torch.profiler import profile, ProfilerActivity
                     with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof_:

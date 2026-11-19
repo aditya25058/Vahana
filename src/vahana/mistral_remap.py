@@ -1,6 +1,6 @@
 """Phase 31: serve Mistral "consolidated" checkpoints (e.g. Mixtral-8x7B) through the HF model classes.
 
-COLOSSUS_REMAP=mistral_consolidated wraps the shard handles. Every HF key maps to a lossless view or
+VAHANA_REMAP=mistral_consolidated wraps the shard handles. Every HF key maps to a lossless view or
 reordering of a consolidated tensor (the same transformations as transformers'
 convert_mixtral_weights_to_hf), done at load time instead of writing a converted copy:
   tok_embeddings -> model.embed_tokens; norm -> model.norm; output -> lm_head

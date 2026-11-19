@@ -40,7 +40,7 @@ def _nvcomp():
     # the site-packages copy next to torch (same fix as rudra/encode_ans_store.py).
     import nvidia
     import sys
-    site = os.environ.get("COLOSSUS_NVCOMP_SITE") or os.path.join(
+    site = os.environ.get("VAHANA_NVCOMP_SITE") or os.path.join(
         sys.prefix, "lib", "python%d.%d" % sys.version_info[:2], "site-packages", "nvidia")
     if os.path.isdir(site) and site not in list(nvidia.__path__):
         nvidia.__path__.append(site)
@@ -68,7 +68,7 @@ class AnsPlane:
         self.avail_start = mem_available_bytes()
         self.margin = int(margin_gb * (1 << 30))
         self._reg_flags = _REGISTER_READ_ONLY | (
-            _REGISTER_PORTABLE if os.environ.get("COLOSSUS_SECOND_GPU") == "1" else 0)
+            _REGISTER_PORTABLE if os.environ.get("VAHANA_SECOND_GPU") == "1" else 0)
         t0 = time.perf_counter()
         self._register()
         self.reg_s = time.perf_counter() - t0
@@ -278,7 +278,7 @@ def init_plane(store: str, device: torch.device, margin_gb: float = 64.0) -> Ans
     global _PLANE
     if _PLANE is None:
         _PLANE = AnsPlane(store, device, margin_gb=margin_gb,
-                          ring=int(os.environ.get("COLOSSUS_ANS_RING", "16")))
+                          ring=int(os.environ.get("VAHANA_ANS_RING", "16")))
     return _PLANE
 
 

@@ -1,6 +1,6 @@
-"""Batch-1 Mixtral decode with CUDA graphs (COLOSSUS_MIXTRAL_GRAPH=1; Phase 36).
+"""Batch-1 Mixtral decode with CUDA graphs (VAHANA_MIXTRAL_GRAPH=1; Phase 36).
 
-For fused-expert MoE models served with COLOSSUS_FUSED_CPU_MOE=1 (cpu_moe_block.CPUExpertsMoE).
+For fused-expert MoE models served with VAHANA_FUSED_CPU_MOE=1 (cpu_moe_block.CPUExpertsMoE).
 After the stock prefill, K/V move into a fixed-capacity static cache. A decode step is a fixed sequence:
   [embed] -> per layer: [norm, q/k/v, rotary, cache write, attention, o_proj, residual, norm, router, D2H]
              host:{sync, submit CPU experts}  host:{wait}  [H2D, residual]
@@ -9,8 +9,8 @@ Consecutive GPU work is captured as one CUDA graph; host actions run between rep
 q/k/v projections, rotary, norms, router, o_proj, lm_head are the model's own modules. Attention is a Triton
 GQA decode kernel that reads the number of valid keys from device memory and always walks key blocks
 from position 0 in fixed order (fp32 online softmax), so one graph serves every length, and replay == eager.
-COLOSSUS_GRAPH_EAGER=1 runs the same sequence without graphs (the exactness reference);
-with COLOSSUS_EXPERTS=gpu (eager only) the experts run on the GPU twin instead of the CPU worker.
+VAHANA_GRAPH_EAGER=1 runs the same sequence without graphs (the exactness reference);
+with VAHANA_EXPERTS=gpu (eager only) the experts run on the GPU twin instead of the CPU worker.
 """
 from __future__ import annotations
 
@@ -74,11 +74,11 @@ def mixtral_graph_decode(model, cache, next_token, max_new: int, eos_id, device)
     nh, nkv = cfg.num_attention_heads, cfg.num_key_value_heads
     D = getattr(cfg, "head_dim", None) or H // nh
     dt = m.embed_tokens.weight.dtype
-    use_graph = os.environ.get("COLOSSUS_GRAPH_EAGER", "0") != "1"
-    gpu_experts = os.environ.get("COLOSSUS_EXPERTS", "cpu") == "gpu"
+    use_graph = os.environ.get("VAHANA_GRAPH_EAGER", "0") != "1"
+    gpu_experts = os.environ.get("VAHANA_EXPERTS", "cpu") == "gpu"
     if gpu_experts and use_graph:
-        raise ValueError("COLOSSUS_EXPERTS=gpu is the eager reference; set COLOSSUS_GRAPH_EAGER=1")
-    numa = int(os.environ.get("COLOSSUS_HYBRID_NUMA", "1"))
+        raise ValueError("VAHANA_EXPERTS=gpu is the eager reference; set VAHANA_GRAPH_EAGER=1")
+    numa = int(os.environ.get("VAHANA_HYBRID_NUMA", "1"))
     wl = [l.mlp for l in layers]
     if not gpu_experts:
         for w in wl:

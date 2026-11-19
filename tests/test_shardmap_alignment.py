@@ -6,7 +6,7 @@ import struct
 
 import torch
 
-from bhaskera.inference.colossus.loading import ShardMap
+from vahana.loading import ShardMap
 
 
 def _write(path, header_pad):
@@ -31,7 +31,7 @@ def test_view_tensor_at_odd_offset(tmp_path):
 def test_mmap_and_safe_open_sources_return_identical_bytes(tmp_path):
     from safetensors.torch import save_file
 
-    from bhaskera.inference.colossus.loading import ShardHandles
+    from vahana.loading import ShardHandles
 
     g = torch.Generator().manual_seed(3)
     tensors = {"a.weight": torch.randn(4, 6, generator=g).to(torch.bfloat16),

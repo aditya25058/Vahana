@@ -1,4 +1,4 @@
-"""Huge-model weight loading for COLOSSUS tiers (chunk 2).
+"""Huge-model weight loading for VAHANA tiers (chunk 2).
 
 Models larger than HBM cannot be `model.to(device)` wholesale. Instead:
 
@@ -10,7 +10,7 @@ Models larger than HBM cannot be `model.to(device)` wholesale. Instead:
 3. `materialize(model, keys, ...)`: copy resident keys to GPU.
 
 Expert-key detection is structural (container leaf names + index), mirroring
-`bhaskera.introspect` conventions without importing its privates at runtime
+`vahana.introspect` conventions without importing its privates at runtime
 (a test asserts the two stay in sync).
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ from typing import Any
 
 import torch
 
-# Mirror of bhaskera.introspect._EXPERT_LEAF_NAMES / _SHARED_EXPERT_HINTS.
+# Mirror of vahana.introspect._EXPERT_LEAF_NAMES / _SHARED_EXPERT_HINTS.
 # test_loading.py::test_conventions_in_sync guards drift (import there, not here).
 EXPERT_CONTAINER_RES = tuple(
     re.compile(r"\." + name + r"\.\d+\.") for name in ("experts", "local_experts", "routed_experts")

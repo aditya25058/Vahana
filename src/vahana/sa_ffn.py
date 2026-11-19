@@ -1,10 +1,10 @@
-"""SA-FFN: lossless split execution for MoE experts (from COLOSSUS v3).
+"""SA-FFN: lossless split execution for MoE experts (from VAHANA v3).
 
 Standard SwiGLU expert (per token ``x [H]``)::
 
     y = ((silu(x @ Wg.T) * (x @ Wu.T)) @ Wd.T)   # Wg,Wu [I,H], Wd [H,I]
 
-COLOSSUS partitions columns into cached (resident in GPU LRU) and missed
+VAHANA partitions columns into cached (resident in GPU LRU) and missed
 (fetched via prefetch/demand)::
 
     y = y_cached + y_missed

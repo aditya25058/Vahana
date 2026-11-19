@@ -5,8 +5,8 @@ handles object verifies describe-without-directory. CPU-only.
 """
 from __future__ import annotations
 
-from bhaskera.inference.colossus.feasibility import plan, render_table
-from bhaskera.inference.colossus.inspector import describe_model
+from vahana.feasibility import plan, render_table
+from vahana.inspector import describe_model
 
 
 def _hw(hbm=93.1):

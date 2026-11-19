@@ -11,10 +11,10 @@ import types
 import torch
 from torch import nn
 
-from bhaskera.inference.colossus.placement import TieredMoEWrapper
-from bhaskera.inference.colossus.serve import prepare_model, serve_huge_moe
-from bhaskera.inference.colossus.tests.test_interface import FakeDeepSeekBlock
-from bhaskera.inference.colossus.tests.test_placement import DictHandles
+from vahana.placement import TieredMoEWrapper
+from vahana.serve import prepare_model, serve_huge_moe
+from vahana.tests.test_interface import FakeDeepSeekBlock
+from vahana.tests.test_placement import DictHandles
 
 
 class FakeDecoderLayer(nn.Module):
@@ -226,15 +226,15 @@ def test_unpadded_batch_keeps_original_call_path():
 
 def test_cache_compat_mask_patch_gated_by_family():
     from transformers.modeling_attn_mask_utils import AttentionMaskConverter as AMC
-    from bhaskera.inference.colossus.serve import install_cache_compat
+    from vahana.serve import install_cache_compat
     orig = AMC.to_causal_4d
     try:
         install_cache_compat("deepseek_v2")
-        assert getattr(AMC.to_causal_4d, "_colossus_patched", False) is True
+        assert getattr(AMC.to_causal_4d, "_vahana_patched", False) is True
         install_cache_compat("deepseek_v2")  # re-entrant: no stacking
         install_cache_compat("param2moe")
-        assert getattr(AMC.to_causal_4d, "_colossus_patched", False) is False
+        assert getattr(AMC.to_causal_4d, "_vahana_patched", False) is False
         install_cache_compat(None)
-        assert getattr(AMC.to_causal_4d, "_colossus_patched", False) is False
+        assert getattr(AMC.to_causal_4d, "_vahana_patched", False) is False
     finally:
         AMC.to_causal_4d = orig

@@ -1,5 +1,5 @@
 """
-bhaskera.inference.colossus
+vahana
 ============================
 Tiered exact MoE execution (PR 2): model-agnostic interface (PR 1) plus
 slot/CPU placement, mmap loading, and the huge-model serve loop.
@@ -77,9 +77,9 @@ __all__ = [
 ]
 
 try:  # torch-only legacy hook; keeps CPU-only config imports working
-    from .hook import ColossusMoEHook
+    from .hook import VahanaMoEHook
     from .offload import ExpertOffloadManager
 
-    __all__.extend(["ColossusMoEHook", "ExpertOffloadManager"])
+    __all__.extend(["VahanaMoEHook", "ExpertOffloadManager"])
 except ImportError:  # pragma: no cover
     pass

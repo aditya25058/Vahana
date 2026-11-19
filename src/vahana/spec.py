@@ -1,4 +1,4 @@
-"""Exact speculative decoding on the invariant engine (COLOSSUS_SPEC=k, needs COLOSSUS_INVARIANT=1).
+"""Exact speculative decoding on the invariant engine (VAHANA_SPEC=k, needs VAHANA_INVARIANT=1).
 
 Each step feeds [last token, k drafted tokens] per row and verifies them with ONE forward. In the
 offload regime that forward costs about the same link time as a 1-token step. Greedy acceptance:

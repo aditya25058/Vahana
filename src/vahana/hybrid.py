@@ -1,12 +1,12 @@
 """Phase 26: exact CPU/GPU expert split (device-invariant twin arithmetic).
 
-COLOSSUS_HYBRID=<f> (0..1) turns it on: every routed expert is computed with the twin arithmetic
+VAHANA_HYBRID=<f> (0..1) turns it on: every routed expert is computed with the twin arithmetic
 (16 IEEE-fma lanes in increasing k, fixed lane tree, bf16 RNE at the stock points, shared hex-exact
 exp, IEEE division), either by the CPU kernel (cpu_moe.cpp, weights read in place from host memory)
 or by the Triton twin on the GPU (weights in an HBM slot). Both give the same bits (Phase 25c), so
 WHERE an expert runs never changes the output. Per layer, a fraction f of the experts that are not
 already in an HBM slot (and serve <= 16 tokens) runs on the CPU while the rest cross the link.
-COLOSSUS_HYBRID_EXT: directory holding the built cpu_moe extension (GIL-releasing build).
+VAHANA_HYBRID_EXT: directory holding the built cpu_moe extension (GIL-releasing build).
 """
 from __future__ import annotations
 
@@ -41,11 +41,11 @@ def _timed(*a):
 
 
 def enabled() -> bool:
-    return os.environ.get("COLOSSUS_HYBRID", "") != ""
+    return os.environ.get("VAHANA_HYBRID", "") != ""
 
 
 def fast_on() -> bool:
-    return os.environ.get("COLOSSUS_HYBRID") == "1" and os.environ.get("COLOSSUS_HYBRID_FAST") == "1"
+    return os.environ.get("VAHANA_HYBRID") == "1" and os.environ.get("VAHANA_HYBRID_FAST") == "1"
 
 
 _PIN: dict = {}
@@ -61,20 +61,20 @@ def pinned(name: str, shape, dtype):
 
 
 def cpu_frac() -> float:
-    return float(os.environ.get("COLOSSUS_HYBRID", "0") or 0)
+    return float(os.environ.get("VAHANA_HYBRID", "0") or 0)
 
 
-# COLOSSUS_HYBRID=auto: balance the measured CPU time per expert (EMA over kernel calls) against
-# the link time per expert (COLOSSUS_HYBRID_LINK_MS). The split depends on timing, which is allowed
+# VAHANA_HYBRID=auto: balance the measured CPU time per expert (EMA over kernel calls) against
+# the link time per expert (VAHANA_HYBRID_LINK_MS). The split depends on timing, which is allowed
 # exactly because it cannot change the output bits.
-_EMA = {"cpu_ms": float(os.environ.get("COLOSSUS_HYBRID_CPU_MS0", "0.6"))}
+_EMA = {"cpu_ms": float(os.environ.get("VAHANA_HYBRID_CPU_MS0", "0.6"))}
 
 
 def split_count(m: int) -> int:
-    v = os.environ.get("COLOSSUS_HYBRID", "0")
+    v = os.environ.get("VAHANA_HYBRID", "0")
     if v != "auto":
         return int(round(float(v or 0) * m))
-    tl_ = float(os.environ.get("COLOSSUS_HYBRID_LINK_MS", "0.94"))
+    tl_ = float(os.environ.get("VAHANA_HYBRID_LINK_MS", "0.94"))
     return int(round(m * tl_ / (tl_ + _EMA["cpu_ms"])))
 
 
@@ -85,7 +85,7 @@ _POOL = None
 def ext():
     global _EXT
     if _EXT is None:
-        sys.path.insert(0, os.environ["COLOSSUS_HYBRID_EXT"])
+        sys.path.insert(0, os.environ["VAHANA_HYBRID_EXT"])
         import cpu_moe  # noqa: E402
         _EXT = cpu_moe
     return _EXT
@@ -94,10 +94,10 @@ def ext():
 def pool() -> ThreadPoolExecutor:
     global _POOL
     if _POOL is None:
-        _POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="colossus-cpu-experts")
+        _POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vahana-cpu-experts")
         # Main thread's torch ops are tiny here; its own OpenMP team would oversubscribe the
         # cores the expert kernel's team is bound to.
-        mt = int(os.environ.get("COLOSSUS_HYBRID_MAIN_THREADS", "1"))
+        mt = int(os.environ.get("VAHANA_HYBRID_MAIN_THREADS", "1"))
         if mt > 0:
             torch.set_num_threads(mt)
         STATS["main_threads"] = torch.get_num_threads()
@@ -203,15 +203,15 @@ class _Pending:
 
 def cpu_submit(X: torch.Tensor, W: list):
     """Start the CPU kernel on X [E, n, H] (bf16, host) on the extension's own C++ worker thread
-    (no GIL hand-off). COLOSSUS_HYBRID_PYPOOL=1 keeps the old Python-thread path for comparison."""
+    (no GIL hand-off). VAHANA_HYBRID_PYPOOL=1 keeps the old Python-thread path for comparison."""
     t0 = time.perf_counter()
-    if os.environ.get("COLOSSUS_HYBRID_PYPOOL") == "1":
+    if os.environ.get("VAHANA_HYBRID_PYPOOL") == "1":
         fut = pool().submit(_timed, X, [w["gate"] for w in W], [w["up"] for w in W],
                             [w["down"] for w in W], 1)
     else:
         pool()      # one-time main-thread setup (torch threads)
         ext().submit(X, [w["gate"] for w in W], [w["up"] for w in W], [w["down"] for w in W],
-                     int(os.environ.get("COLOSSUS_HYBRID_NUMA", "1")))
+                     int(os.environ.get("VAHANA_HYBRID_NUMA", "1")))
         fut = _Pending(X.shape[0])
     STATS["cpu_submit_s"] += time.perf_counter() - t0
     return fut
@@ -241,10 +241,10 @@ def nx_pack(W, place: bool) -> list:
 
 
 def setup_layer(layer_idx: int, g: list, u: list, d: list, shared=None, margin_gb: float = 64.0):
-    """After register_layer / register_shared: COLOSSUS_NUMA_PLACE=1 places raw rows (when NX12 is off);
-    COLOSSUS_NX12=1 registers NX12 copies for decode, unless that would cut MemAvailable below the margin."""
-    place = os.environ.get("COLOSSUS_NUMA_PLACE") == "1"
-    nx = os.environ.get("COLOSSUS_NX12") == "1"
+    """After register_layer / register_shared: VAHANA_NUMA_PLACE=1 places raw rows (when NX12 is off);
+    VAHANA_NX12=1 registers NX12 copies for decode, unless that would cut MemAvailable below the margin."""
+    place = os.environ.get("VAHANA_NUMA_PLACE") == "1"
+    nx = os.environ.get("VAHANA_NX12") == "1"
     t = time.perf_counter()
     mats = [w for trip in zip(g, u, d) for w in trip] + (list(shared) if shared else [])
     need = sum(w.numel() * w.element_size() for w in mats) * 0.76 / 2**30

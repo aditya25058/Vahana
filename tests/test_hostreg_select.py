@@ -2,7 +2,7 @@ import importlib.util
 import os
 from collections import Counter
 
-from bhaskera.inference.colossus.hostreg import RegisteredHandles, merge_page_spans
+from vahana.hostreg import RegisteredHandles, merge_page_spans
 
 _SEL = os.path.join(os.path.dirname(__file__), "../../../../../rudra/select_pin_experts.py")
 
@@ -44,7 +44,7 @@ def test_select_counts_and_ties():
 
 
 def test_margin_guard_counts_pinned_bytes():
-    from bhaskera.inference.colossus.hostreg import within_margin
+    from vahana.hostreg import within_margin
     G = 10**9
     assert within_margin(469 * G, 0, 400 * G, 64 * G)
     assert not within_margin(469 * G, 400 * G, 10 * G, 64 * G)

@@ -14,7 +14,7 @@ import torch
 from torch import nn
 from transformers.cache_utils import DynamicCache
 
-from bhaskera.inference.colossus.mla_cache import (
+from vahana.mla_cache import (
     LatentKVCache,
     cache_nbytes,
     install_latent_kv,

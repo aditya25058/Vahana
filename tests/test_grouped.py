@@ -5,7 +5,7 @@ Synthetic fused tensors only — no model downloads, CPU-runnable.
 import torch
 from torch import nn
 
-from bhaskera.inference.colossus.grouped import (
+from vahana.grouped import (
     GROUPED_KEY_RES,
     GroupedTieredMoEWrapper,
     classify_grouped_pair,

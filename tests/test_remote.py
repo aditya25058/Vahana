@@ -17,8 +17,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 import torch
 
-from bhaskera.inference.colossus.loading import ShardHandles
-from bhaskera.inference.colossus.remote import (
+from vahana.loading import ShardHandles
+from vahana.remote import (
     RangeFetcher,
     RemoteShardHandles,
     TieredHandles,

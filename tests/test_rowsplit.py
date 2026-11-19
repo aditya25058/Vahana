@@ -4,7 +4,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from bhaskera.inference.colossus.rowsplit import RowSplitDetector
+from vahana.rowsplit import RowSplitDetector
 
 
 class Layer(nn.Module):

@@ -1,4 +1,4 @@
-"""Model-agnostic MoE layer interface (chunk 1 of Bhaskera+COLOSSUS integration).
+"""Model-agnostic MoE layer interface (chunk 1 of Bhaskera+VAHANA integration).
 
 Problem: serving code assumed DeepSeek attribute layout
 (`moe_block.experts`, 3-tuple gate, `moe_infer`, `shared_experts`).

@@ -1,14 +1,14 @@
 """Phase 30: device-invariant linears and budgeted CPU placement (the small-box path).
 
-COLOSSUS_TWIN=1 (on top of COLOSSUS_INVARIANT=1): every bf16 nn.Linear runs the twin arithmetic, i.e.
+VAHANA_TWIN=1 (on top of VAHANA_INVARIANT=1): every bf16 nn.Linear runs the twin arithmetic, i.e.
 per output row 16 IEEE-fma lanes over k ascending, the fixed lane tree, and bf16 RNE. On the GPU this is a
 Triton kernel (near cuBLAS speed, Phase 30a). On the CPU it is the C++ kernel, run on the expert worker
 thread. Both give the same bits, so a weight can live on either device without changing any output.
 Shared experts use the expert twin (GPU twin_one / CPU expert kernel).
 
-COLOSSUS_CPU_PLACE=<regex>: resident (non-routed) weights whose key matches are kept in host memory
+VAHANA_CPU_PLACE=<regex>: resident (non-routed) weights whose key matches are kept in host memory
 (in place, no copy) and computed by the CPU. Norms, the router gate and MLA attention stay on the GPU.
-COLOSSUS_GPU_BUDGET_GB=<g>: caps the CUDA caching allocator at g GB (emulates a small card).
+VAHANA_GPU_BUDGET_GB=<g>: caps the CUDA caching allocator at g GB (emulates a small card).
 """
 from __future__ import annotations
 
@@ -25,11 +25,11 @@ from . import hybrid as _hy
 
 
 def enabled() -> bool:
-    return os.environ.get("COLOSSUS_TWIN", "0") == "1"
+    return os.environ.get("VAHANA_TWIN", "0") == "1"
 
 
 def on_cpu(key: str) -> bool:
-    v = os.environ.get("COLOSSUS_CPU_PLACE", "")
+    v = os.environ.get("VAHANA_CPU_PLACE", "")
     return bool(v) and re.search(v, key) is not None
 
 
@@ -127,16 +127,16 @@ def install(model: nn.Module, device: torch.device) -> dict:
         if isinstance(m, nn.Linear) and m.weight.device.type == "cpu":
             info["cpu_linears"].append(n)
             if "shared_experts" not in n and m.weight.is_contiguous() and m.weight.shape[1] % 64 == 0 \
-                    and os.environ.get("COLOSSUS_NX12") == "1":
-                pk = _hy.nx_pack(m.weight, os.environ.get("COLOSSUS_NUMA_PLACE") == "1")   # Phase 40
+                    and os.environ.get("VAHANA_NX12") == "1":
+                pk = _hy.nx_pack(m.weight, os.environ.get("VAHANA_NUMA_PLACE") == "1")   # Phase 40
                 _hy.ext().register_linear_nx(m.weight, pk)
                 _NX_KEEP.append(pk)
-            elif os.environ.get("COLOSSUS_NUMA_PLACE") == "1" and m.weight.is_contiguous() and "shared_experts" not in n:
-                _hy.ext().place_rows(m.weight)              # Phase 40: pairs with COLOSSUS_LIN_NUMA=2
+            elif os.environ.get("VAHANA_NUMA_PLACE") == "1" and m.weight.is_contiguous() and "shared_experts" not in n:
+                _hy.ext().place_rows(m.weight)              # Phase 40: pairs with VAHANA_LIN_NUMA=2
     # Rotary tables: every layer holds an identical cos/sin table for max_position_embeddings positions
-    # (5 GB on V2). Keep the first COLOSSUS_ROPE_ROWS rows of one table and share it: each row depends only
+    # (5 GB on V2). Keep the first VAHANA_ROPE_ROWS rows of one table and share it: each row depends only
     # on its own position, so every value the model reads is unchanged.
-    rows = int(os.environ.get("COLOSSUS_ROPE_ROWS", "8192"))
+    rows = int(os.environ.get("VAHANA_ROPE_ROWS", "8192"))
     shared = None
     n_rope = 0
     for mod in model.modules():

@@ -10,9 +10,9 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from bhaskera.inference.colossus.interface import MoELayerSpec
-from bhaskera.inference.colossus.placement import TieredMoEWrapper, wrap_moe_layers
-from bhaskera.inference.colossus.tests.test_interface import (
+from vahana.interface import MoELayerSpec
+from vahana.placement import TieredMoEWrapper, wrap_moe_layers
+from vahana.tests.test_interface import (
     FakeDeepSeekBlock,
     FakeMixtralBlock,
 )

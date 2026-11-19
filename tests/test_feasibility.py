@@ -5,7 +5,7 @@ streaming floor always present, unknown arch refused with reasons.
 """
 from __future__ import annotations
 
-from bhaskera.inference.colossus.feasibility import plan
+from vahana.feasibility import plan
 
 
 def _moe(routed=160, topk=6, layers=60, resident=24.0, routed_gb=415.0):

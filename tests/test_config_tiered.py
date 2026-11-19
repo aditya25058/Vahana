@@ -11,7 +11,7 @@ import os
 from bhaskera.config import load_config
 
 YAML = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "..",
-                    "configs", "inference_colossus_tiered.yaml")
+                    "configs", "inference_vahana_tiered.yaml")
 
 
 def _norm(p):
@@ -20,7 +20,7 @@ def _norm(p):
 
 def test_tiered_yaml_parses():
     cfg = load_config(_norm(YAML))
-    col = cfg.inference.colossus
+    col = cfg.inference.vahana
     assert col.placement == "slots"
     assert col.capacity == 12
     assert col.exactness_mode == "bitwise"
@@ -29,17 +29,17 @@ def test_tiered_yaml_parses():
     assert col.cpu_threads == 6
 
 
-def test_colossus_round_trip():
+def test_vahana_round_trip():
     cfg = load_config(_norm(YAML))
     d = cfg.as_dict()
-    assert d["inference"]["colossus"]["placement"] == "slots"
+    assert d["inference"]["vahana"]["placement"] == "slots"
     cfg2 = cfg.from_dict(d)
-    assert cfg2.inference.colossus.capacity == 12
-    assert cfg2.inference.colossus.exactness_mode == "bitwise"
+    assert cfg2.inference.vahana.capacity == 12
+    assert cfg2.inference.vahana.exactness_mode == "bitwise"
 
 
 def test_defaults_off():
     from bhaskera.config import Config
     cfg = Config()
-    assert cfg.inference.colossus.placement == "off"
-    assert cfg.inference.colossus.exactness_mode == "bitwise"
+    assert cfg.inference.vahana.placement == "off"
+    assert cfg.inference.vahana.exactness_mode == "bitwise"

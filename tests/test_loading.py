@@ -3,7 +3,7 @@
 Builds a tiny fake sharded safetensors model on disk, then verifies:
 mmap views are exact, partition classification matches DeepSeek-style and
 Mixtral-style layouts, shared experts stay resident, conventions track
-bhaskera.introspect. CPU-only.
+vahana.introspect. CPU-only.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import os
 import pytest
 import torch
 
-from bhaskera.inference.colossus.loading import (
+from vahana.loading import (
     ShardHandles,
     is_routed_expert_key,
     materialize,
@@ -102,7 +102,7 @@ def test_materialize_into_empty_model(fake_model_dir):
 def test_set_module_tensor_prefix_tolerant():
     from torch import nn
 
-    from bhaskera.inference.colossus.loading import set_module_tensor
+    from vahana.loading import set_module_tensor
 
     class Inner(nn.Module):
         def __init__(self):
@@ -123,9 +123,9 @@ def test_set_module_tensor_prefix_tolerant():
 
 
 def test_conventions_in_sync():
-    import bhaskera.introspect as intro
-    from bhaskera.inference.colossus import grouped as G
-    from bhaskera.inference.colossus import loading as L
+    import vahana.introspect as intro
+    from vahana import grouped as G
+    from vahana import loading as L
     assert set(intro._EXPERT_LEAF_NAMES) == {"experts", "local_experts", "routed_experts"}
     assert set(intro._SHARED_EXPERT_HINTS) == set(L.SHARED_HINTS)
     # Grouped patterns single-sourced in grouped.py (no duplicated literal).
@@ -134,7 +134,7 @@ def test_conventions_in_sync():
 
 
 def test_prefault_shards_stats_only(tmp_path):
-    from bhaskera.inference.colossus.loading import prefault_shards
+    from vahana.loading import prefault_shards
     d = tmp_path / "w"
     d.mkdir()
     (d / "a.safetensors").write_bytes(b"x" * 1000)

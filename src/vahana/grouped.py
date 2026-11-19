@@ -1,4 +1,4 @@
-"""Grouped-weight MoE adapter (COLOSSUS generality layer).
+"""Grouped-weight MoE adapter (VAHANA generality layer).
 
 Two MoE representations exist in the wild:
 

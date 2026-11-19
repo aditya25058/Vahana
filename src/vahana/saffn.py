@@ -1,10 +1,10 @@
 """
-bhaskera.inference.colossus.saffn
+vahana.saffn
 =================================
 Sparse-Aware Feed-Forward Network (SA-FFN) and
 Adaptive Dynamic Expert Tensor Reorganization (ADETR) Layout.
 
-As specified in COLOSSUS v3 (Section 5.3, Equations 30-34, and Section 7.1):
+As specified in VAHANA v3 (Section 5.3, Equations 30-34, and Section 7.1):
 1. ADETR Memory Layout: Partitions SwiGLU intermediate dimension I into:
    - Hot columns (I_hot): Permanently resident in accelerator memory.
    - Cold columns (I_cold): Stored in pinned host memory, transferred on demand/prefetch.

@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from bhaskera.inference.colossus.loading import _safetensors_dtype
+from vahana.loading import _safetensors_dtype
 
 
 def test_known_tags_map_exactly():

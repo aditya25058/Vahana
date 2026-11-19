@@ -1,4 +1,4 @@
-"""COLOSSUS hook for MoE inference (Bhaskera HF backend).
+"""VAHANA hook for MoE inference (Bhaskera HF backend).
 
 Modes of operation:
   * **Shadow mode** (default): attaches post-hooks to decoder layers,
@@ -10,7 +10,7 @@ Modes of operation:
     the fraction of experts that are cold (~80–90% for top-6/64).
 
 In both modes, dense output is always bit-identical when
-``colossus.enabled`` is ``false``.  The active-mode offload changes
+``vahana.enabled`` is ``false``.  The active-mode offload changes
 which experts are resident on GPU but does not alter the computation
 for the experts that *are* resident — the model's own ``forward()``
 handles the actual expert dispatch.
@@ -37,7 +37,7 @@ def _short_name(dotted: str) -> str:
     return dotted.split(".")[-1]
 
 
-class ColossusMoEHook:
+class VahanaMoEHook:
     """Attach ZSSR shadow prediction to a loaded MoE model."""
 
     def __init__(self, predictor, directory, budget_preset: str = "tiered_fwd"):
@@ -61,12 +61,12 @@ class ColossusMoEHook:
 
     # -- construction ----------------------------------------------------
     @classmethod
-    def build(cls, model, profile, colossus_cfg) -> ColossusMoEHook:
+    def build(cls, model, profile, vahana_cfg) -> VahanaMoEHook:
         """Best-effort router extraction. Raises with reason if unsupported."""
         from .directory import ColumnDirectory, plan_fixed_packets  # noqa: F401
         from .predictor import ZSSRPredictor
 
-        top_k = int(getattr(colossus_cfg, "top_k_experts", 8) or 8)
+        top_k = int(getattr(vahana_cfg, "top_k_experts", 8) or 8)
         pred = ZSSRPredictor(top_k_experts=top_k, top_cols=50,
                              num_col_experts=top_k)
         n_registered = 0
@@ -108,26 +108,26 @@ class ColossusMoEHook:
                 f"(router_names={list(getattr(profile, 'router_module_names', []))[:4]}); "
                 "Qwen3-fused routers stay dense"
             )
-        slots = int(getattr(colossus_cfg, "lru_slots_per_expert", 32) or 32)
+        slots = int(getattr(vahana_cfg, "lru_slots_per_expert", 32) or 32)
         num_experts = int(getattr(profile, "num_experts", 0) or 0)
         directory = ColumnDirectory(num_experts=num_experts, num_columns=0,
                                     capacity_per_expert=slots)
         hook = cls(pred, directory,
-                   budget_preset=str(getattr(colossus_cfg, "budget", "tiered_fwd")))
+                   budget_preset=str(getattr(vahana_cfg, "budget", "tiered_fwd")))
         hook._layers = sorted(pred.router.keys())
 
         # Active-mode dynamic cache
-        offload_enabled = bool(getattr(colossus_cfg, "offload_enabled", False))
+        offload_enabled = bool(getattr(vahana_cfg, "offload_enabled", False))
         if offload_enabled:
-            hot_topk = int(getattr(colossus_cfg, "hot_expert_topk", 16) or 16)
-            missing_col_ratio = float(getattr(colossus_cfg, "missing_col_ratio", 1.0) or 1.0)
+            hot_topk = int(getattr(vahana_cfg, "hot_expert_topk", 16) or 16)
+            missing_col_ratio = float(getattr(vahana_cfg, "missing_col_ratio", 1.0) or 1.0)
             hook._dynamic_cache_enabled = True
             hook._cache_capacity = hot_topk
             hook._missing_col_ratio = missing_col_ratio
-            hook._lookahead_enabled = bool(getattr(colossus_cfg, "lookahead_enabled", False))
-            hook._warmup_slots = int(getattr(colossus_cfg, "warmup_slots", 0))
+            hook._lookahead_enabled = bool(getattr(vahana_cfg, "lookahead_enabled", False))
+            hook._warmup_slots = int(getattr(vahana_cfg, "warmup_slots", 0))
             logger.info(
-                f"[Colossus] Dynamic expert cache enabled (capacity={hot_topk} experts per layer, missing_col_ratio={missing_col_ratio:.2f}, lookahead={hook._lookahead_enabled}, warmup_slots={hook._warmup_slots})"
+                f"[Vahana] Dynamic expert cache enabled (capacity={hot_topk} experts per layer, missing_col_ratio={missing_col_ratio:.2f}, lookahead={hook._lookahead_enabled}, warmup_slots={hook._warmup_slots})"
             )
 
         return hook
@@ -182,7 +182,7 @@ class ColossusMoEHook:
                             handle = layer.register_forward_pre_hook(_make_pre_hook(idx))
                             self._handles.append(handle)
             logger.info(
-                f"[Colossus] DynamicMoELayerWrapper installed on "
+                f"[Vahana] DynamicMoELayerWrapper installed on "
                 f"{len(self._wrapped_layers)} MoE layers (capacity={self._cache_capacity}, missing_col_ratio={getattr(self, '_missing_col_ratio', 1.0):.2f}, lookahead={getattr(self, '_lookahead_enabled', False)})"
             )
             return len(self._wrapped_layers)
@@ -199,7 +199,7 @@ class ColossusMoEHook:
             self._states[layer_idx] = deque(maxlen=_SHADOW_DEPTH)
             handle = mod.register_forward_hook(self._make_hook(layer_idx))
             self._handles.append(handle)
-        logger.info(f"[Colossus] hook on {len(self._handles)} decoder layers (mode=shadow)")
+        logger.info(f"[Vahana] hook on {len(self._handles)} decoder layers (mode=shadow)")
         return len(self._handles)
 
     def on_layer_pre_attention(self, layer_idx: int, hidden_states: torch.Tensor):
@@ -271,7 +271,7 @@ class ColossusMoEHook:
                 h = hidden_states[layer_idx]
                 wrapper.warmup_from_prefill(h)
                 warmed += 1
-        logger.info(f"[Colossus] Prefill warmup completed for {warmed} MoE layers")
+        logger.info(f"[Vahana] Prefill warmup completed for {warmed} MoE layers")
 
     # -- active-mode offload / dynamic cache API ------------------------
     def maybe_offload(self, model, input_ids) -> dict | None:
@@ -281,7 +281,7 @@ class ColossusMoEHook:
         if self._wrapped_layers:
             if torch.cuda.is_available():
                 vram = torch.cuda.memory_allocated() / (1024 ** 3)
-                logger.info(f"[Colossus] Dynamic cache active ({len(self._wrapped_layers)} layers) | VRAM: {vram:.2f} GB")
+                logger.info(f"[Vahana] Dynamic cache active ({len(self._wrapped_layers)} layers) | VRAM: {vram:.2f} GB")
             return {"mode": "dynamic_cache", "capacity": self._cache_capacity, "layers": len(self._wrapped_layers)}
 
         if self._offload_mgr is None:
@@ -294,7 +294,7 @@ class ColossusMoEHook:
             return stats
         except Exception as e:
             logger.warning(
-                f"[Colossus] Offload failed ({e}); continuing dense"
+                f"[Vahana] Offload failed ({e}); continuing dense"
             )
             self._offload_stats = {"status": "error", "reason": str(e)}
             return self._offload_stats
@@ -310,7 +310,7 @@ class ColossusMoEHook:
         try:
             self._offload_mgr.restore_all_experts(model)
         except Exception as e:
-            logger.warning(f"[Colossus] Restore failed ({e})")
+            logger.warning(f"[Vahana] Restore failed ({e})")
 
     # -- shadow prediction API (future SA-FFN replacement consumes this) --
     @torch.inference_mode()

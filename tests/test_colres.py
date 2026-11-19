@@ -11,11 +11,11 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from bhaskera.inference.colossus.colres import ColumnTieredMoEWrapper
-from bhaskera.inference.colossus.interface import MoELayerSpec
-from bhaskera.inference.colossus.placement import apply_gate
-from bhaskera.inference.colossus.tests.test_interface import FakeDeepSeekBlock
-from bhaskera.inference.colossus.tests.test_placement import DictHandles
+from vahana.colres import ColumnTieredMoEWrapper
+from vahana.interface import MoELayerSpec
+from vahana.placement import apply_gate
+from vahana.tests.test_interface import FakeDeepSeekBlock
+from vahana.tests.test_placement import DictHandles
 
 
 def _setup(n_exp=6, hidden=8, inter=10, top_k=2, seed=0):
@@ -126,7 +126,7 @@ def test_dma_split_and_lru():
     assert w.misses == m0  # hot resident now; cold refetched silently
     assert w.hits > 0
     # Residency is genuinely halved vs whole-expert slots.
-    from bhaskera.inference.colossus.placement import FastSlot
+    from vahana.placement import FastSlot
     full = FastSlot(spec.hidden, spec.inter, dev, spec.dtype,
                     spec.activation)
     full_bytes = sum(p.nbytes for p in full.parameters())
@@ -134,7 +134,7 @@ def test_dma_split_and_lru():
 
 
 def test_mixed_tiers_match_native():
-    from bhaskera.inference.colossus.colprofile import assign_tiers, hbm_equiv
+    from vahana.colprofile import assign_tiers, hbm_equiv
     from collections import Counter
     spec, handles, keys = _setup()
     dev = torch.device("cpu")
@@ -157,7 +157,7 @@ def test_mixed_tiers_match_native():
 
 
 def test_assign_tiers_pin_and_hbm():
-    from bhaskera.inference.colossus.colprofile import assign_tiers
+    from vahana.colprofile import assign_tiers
     from collections import Counter
     fracs = assign_tiers(Counter(), 8, pin_top=0, thin_frac=0.1)
     assert all(f == 0.1 for f in fracs)  # no pinning: all thin

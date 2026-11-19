@@ -1,10 +1,10 @@
 """Phase 31: routed experts of fused-expert MoE blocks (transformers-5 Mixtral style) on the CPU, exactly.
 
-COLOSSUS_FUSED_CPU_MOE=1 replaces each decoder layer's `mlp` (router + fused experts) with CPUExpertsMoE:
+VAHANA_FUSED_CPU_MOE=1 replaces each decoder layer's `mlp` (router + fused experts) with CPUExpertsMoE:
   routing: the model's own router on the GPU (unchanged);
-  experts: COLOSSUS_EXPERTS=cpu (default) -> the C++ worker (moe_fused: group, twin-arithmetic expert MLPs,
+  experts: VAHANA_EXPERTS=cpu (default) -> the C++ worker (moe_fused: group, twin-arithmetic expert MLPs,
            combine); weights are views of the host-resident checkpoint, never copied to the GPU.
-           COLOSSUS_EXPERTS=gpu -> the same arithmetic on the GPU (Triton twin), weights copied per use:
+           VAHANA_EXPERTS=gpu -> the same arithmetic on the GPU (Triton twin), weights copied per use:
            the reference for the placement-exactness test.
   combine (both): per token, experts in ascending id, acc = f32(y0)*f32(w0); acc = acc + f32(yj)*f32(wj)
            (no FMA), out = bf16(acc); routing weights are rounded to bf16 first (both paths).
@@ -30,7 +30,7 @@ class CPUExpertsMoE(nn.Module):
         self.handles = handles
         self.device = device
         self.registered = False
-        self.mode = os.environ.get("COLOSSUS_EXPERTS", "cpu")
+        self.mode = os.environ.get("VAHANA_EXPERTS", "cpu")
         self.misses = 0
         self.hits = 0
         self.dma_bytes = 0
@@ -53,9 +53,9 @@ class CPUExpertsMoE(nn.Module):
             G.append(g)
             U.append(u)
             D.append(d)
-        if os.environ.get("COLOSSUS_NUMA_PLACE") == "1":
+        if os.environ.get("VAHANA_NUMA_PLACE") == "1":
             # Phase 35: rows [0, R/2) of every expert matrix on node 0, [R/2, R) on node 1, moved in place
-            # (move_pages; page cache or anonymous, no second copy). Pairs with COLOSSUS_HYBRID_NUMA=2.
+            # (move_pages; page cache or anonymous, no second copy). Pairs with VAHANA_HYBRID_NUMA=2.
             t = time.perf_counter()
             pages = ok = 0
             for W in G + U + D:
@@ -64,12 +64,12 @@ class CPUExpertsMoE(nn.Module):
                 ok += o
             self.place = (pages, ok, time.perf_counter() - t)
         _hy.ext().register_layer(self.layer_idx, G, U, D)
-        if os.environ.get("COLOSSUS_NX12") == "1":
+        if os.environ.get("VAHANA_NX12") == "1":
             # Phase 38: NX12 (lossless 12-bit BF16) copies of every expert for single-token (decode) calls;
             # same bits after decode, same arithmetic. Prefill keeps the raw weights.
             t = time.perf_counter()
             packs = []
-            place = os.environ.get("COLOSSUS_NUMA_PLACE") == "1"
+            place = os.environ.get("VAHANA_NUMA_PLACE") == "1"
             for e in range(self.n_experts):
                 for W in (G[e], U[e], D[e]):
                     p = _hy.ext().encode_nx(W)
@@ -108,7 +108,7 @@ class CPUExpertsMoE(nn.Module):
             ev.record()
             ev.synchronize()
             t_s = time.perf_counter()
-            _hy.ext().submit_moe(self.layer_idx, xb, tib, twb, ob, int(os.environ.get("COLOSSUS_HYBRID_NUMA", "1")))
+            _hy.ext().submit_moe(self.layer_idx, xb, tib, twb, ob, int(os.environ.get("VAHANA_HYBRID_NUMA", "1")))
             _hy.ext().wait_done()
             t_w = time.perf_counter() - t_s
             km = _hy.ext().kernel_ms()
@@ -165,7 +165,7 @@ def install_cpu_moe(model, handles, device) -> list:
         w = CPUExpertsMoE(li, mlp.gate, n, keys, handles, device)
         layer.mlp = w
         wrappers.append(w)
-    if os.environ.get("COLOSSUS_MOE_STATS") == "1":
+    if os.environ.get("VAHANA_MOE_STATS") == "1":
         import atexit
         import json
 
@@ -181,6 +181,6 @@ def install_cpu_moe(model, handles, device) -> list:
                   "place_s": sum(w.place[2] for w in wrappers if w.place),
                   "nx_encode_s": sum(w.nx_s for w in wrappers),
                   "nx_bytes": sum(t.numel() * t.element_size() for w in wrappers if w.nx for t in w.nx)}
-            print("COLOSSUS_MOE_STATS " + json.dumps(st), flush=True)
+            print("VAHANA_MOE_STATS " + json.dumps(st), flush=True)
         atexit.register(_dump)
     return wrappers

@@ -1,5 +1,5 @@
 """
-bhaskera.introspect
+vahana.introspect
 ===================
 Auto-detect model architecture properties — MoE topology, layer classes,
 LoRA targets, dtype, aux-loss support — by walking the module tree once.

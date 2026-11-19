@@ -1,4 +1,4 @@
-"""Pre-allocated Slot-Based Dynamic MoE Expert Cache for COLOSSUS.
+"""Pre-allocated Slot-Based Dynamic MoE Expert Cache for VAHANA.
 
 Architecture:
   - Exactly C expert slots pre-allocated on GPU per layer (zero cudaMalloc in forward).
@@ -246,7 +246,7 @@ class DynamicMoELayerWrapper(nn.Module):
             top_k_indices = torch.topk(logits, k=self.top_k, dim=-1).indices  # [seq_len, top_k]
             counts = torch.bincount(top_k_indices.view(-1), minlength=self.num_experts)
             top_c = counts.topk(min(self.capacity, self.num_experts)).indices.tolist()
-        logger.info(f"[Colossus] Layer {self.layer_idx}: prefill warmup → top-{len(top_c)} experts {top_c}")
+        logger.info(f"[Vahana] Layer {self.layer_idx}: prefill warmup → top-{len(top_c)} experts {top_c}")
         self.warmup(top_c)
         return top_c
 
