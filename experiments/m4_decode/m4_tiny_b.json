@@ -1,0 +1,64 @@
+{
+ "phimoe": {
+  "cpu_modules": [
+   "model.embed_tokens",
+   "model.layers.1.self_attn.o_proj"
+  ],
+  "folded": 0,
+  "graph_eq_eager_gpu": true,
+  "graph_eq_eager_cpu": true,
+  "placement_invariant": true,
+  "graph_used": false,
+  "graph_fallback": "Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.",
+  "graph_step_ms": 5.33149391412735,
+  "eager_step_ms": 5.7764071971178055
+ },
+ "gpt_oss": {
+  "cpu_modules": [
+   "model.embed_tokens"
+  ],
+  "folded": 0,
+  "graph_eq_eager_gpu": true,
+  "graph_eq_eager_cpu": true,
+  "placement_invariant": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "graph_step_ms": 1.6111209988594055,
+  "eager_step_ms": 5.300865042954683
+ },
+ "qwen3_5_moe_text": {
+  "cpu_modules": [
+   "model.embed_tokens"
+  ],
+  "folded": 0,
+  "graph_eq_eager_gpu": true,
+  "graph_eq_eager_cpu": true,
+  "placement_invariant": true,
+  "graph_used": false,
+  "graph_fallback": "non-attention layers ['linear_attention']",
+  "graph_step_ms": 7.050896063446999,
+  "eager_step_ms": 6.9997659884393215
+ },
+ "mixtral": {
+  "cpu_modules": [
+   "model.embed_tokens",
+   "model.layers.1.self_attn.o_proj"
+  ],
+  "folded": 0,
+  "graph_eq_eager_gpu": true,
+  "graph_eq_eager_cpu": true,
+  "placement_invariant": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "graph_step_ms": 1.9978228956460953,
+  "eager_step_ms": 4.780600778758526
+ },
+ "summary": {
+  "families": 4,
+  "all_pass": 2,
+  "not": [
+   "phimoe",
+   "qwen3_5_moe_text"
+  ]
+ }
+}

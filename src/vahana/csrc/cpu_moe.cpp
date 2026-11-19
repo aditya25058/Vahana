@@ -1,3 +1,5 @@
+#include <cstdio>
+#include <string>
 // Fused, NUMA-aware, fixed-order CPU expert MLPs (Phase 25b).
 //
 // y_e = down_e( silu(gate_e x) * up_e x ) for E experts, each with n tokens (n <= 16), weights read
@@ -437,7 +439,7 @@ struct Job { torch::Tensor x; std::vector<torch::Tensor> g, u, d; int64_t numa; 
              int64_t layer = 0; torch::Tensor ti, tw, out; };
 // Heap-allocated and never freed: no static destructor runs while the worker waits at exit.
 struct State { std::mutex mu; std::condition_variable cv; bool has_job = false, done = true; Job job;
-               std::vector<torch::Tensor> result; double last_ms = 0.0; };
+               std::vector<torch::Tensor> result; double last_ms = 0.0; std::string err; };
 State* S = new State();
 std::thread* worker = nullptr;
 void loop() {
@@ -446,11 +448,14 @@ void loop() {
     { std::unique_lock<std::mutex> l(S->mu); S->cv.wait(l, [] { return S->has_job; }); j = std::move(S->job); S->has_job = false; }
     auto t0 = std::chrono::steady_clock::now();
     std::vector<torch::Tensor> r;
-    if (j.linear) { j.out.copy_(linear_twin(j.x, j.ti)); r = {j.out}; }
-    else r = j.fused ? moe_fused(j.layer, j.x, j.ti, j.tw, j.out, j.numa) : expert_mlps(j.x, j.g, j.u, j.d, j.numa);
+    std::string err;
+    try {
+      if (j.linear) { j.out.copy_(linear_twin(j.x, j.ti)); r = {j.out}; }
+      else r = j.fused ? moe_fused(j.layer, j.x, j.ti, j.tw, j.out, j.numa) : expert_mlps(j.x, j.g, j.u, j.d, j.numa);
+    } catch (const std::exception& e) { err = e.what(); }
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     j = Job();
-    { std::lock_guard<std::mutex> l(S->mu); S->result = std::move(r); S->last_ms = ms; S->done = true; }
+    { std::lock_guard<std::mutex> l(S->mu); S->result = std::move(r); S->last_ms = ms; S->err = err; S->done = true; }
     S->cv.notify_all();
   }
 }
@@ -467,6 +472,7 @@ void submit(torch::Tensor x, std::vector<torch::Tensor> g, std::vector<torch::Te
 std::vector<torch::Tensor> wait_done() {
   std::unique_lock<std::mutex> l(S->mu);
   S->cv.wait(l, [] { return S->done; });
+  if (!S->err.empty()) { std::string m = S->err; S->err.clear(); TORCH_CHECK(false, "cpu_moe worker: ", m); }
   auto r = std::move(S->result); S->result.clear();
   return r;
 }
@@ -882,15 +888,32 @@ double read_bw(std::vector<torch::Tensor> packs, int64_t numa) {
 namespace {
 typedef int (*LaunchHostFn)(void* stream, void (*fn)(void*), void* data);
 LaunchHostFn g_launch_host = nullptr;
-struct HostJob { int64_t layer; torch::Tensor x, ti, tw, out; int64_t numa; bool noop; };
+struct HostJob { int64_t layer; torch::Tensor x, ti, tw, out; int64_t numa; bool noop; int kind = 0; };
 std::vector<HostJob*>* HOST_JOBS = new std::vector<HostJob*>();
 std::atomic<long long> g_host_calls{0};
 void host_cb(void* p) {
   HostJob* j = static_cast<HostJob*>(p);
   g_host_calls++;
   if (j->noop) return;
-  submit_moe(j->layer, j->x, j->ti, j->tw, j->out, j->numa);
-  wait_done();
+  if (j->kind == 1) {                                                                  // ti holds W
+    try { submit_linear(j->x, j->ti, j->out); wait_done(); }
+    catch (const std::exception& e) { std::fprintf(stderr, "vahana host linear failed: %s\n", e.what()); std::fflush(stderr); std::abort(); }
+    return;
+  }
+  if (j->kind == 2) {                                                                  // embedding rows
+    const int64_t n = j->x.numel(), H = j->ti.size(1);
+    const int64_t* ids = j->x.data_ptr<int64_t>();
+    const char* w = (const char*)j->ti.data_ptr(); char* o = (char*)j->out.data_ptr();
+    const size_t rb = (size_t)H * j->ti.element_size();
+    for (int64_t i = 0; i < n; i++) std::memcpy(o + i * rb, w + (size_t)ids[i] * rb, rb);
+    return;
+  }
+  try {
+    submit_moe(j->layer, j->x, j->ti, j->tw, j->out, j->numa);
+    wait_done();
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "vahana host job failed: %s\n", e.what()); std::fflush(stderr); std::abort();
+  }
 }
 LaunchHostFn launch_host() {
   if (!g_launch_host) {
@@ -915,12 +938,23 @@ void enqueue_host_job(int64_t stream, int64_t id) {
   TORCH_CHECK(rc == 0, "cudaLaunchHostFunc failed: ", rc);
 }
 int64_t host_calls() { return g_host_calls.load(); }
+int64_t make_host_linear(torch::Tensor W, torch::Tensor x, torch::Tensor out) {
+  HostJob* j = new HostJob{0, x, W, torch::Tensor(), out, 0, false}; j->kind = 1;
+  HOST_JOBS->push_back(j); return (int64_t)HOST_JOBS->size() - 1;
+}
+int64_t make_host_embed(torch::Tensor W, torch::Tensor ids, torch::Tensor out) {
+  TORCH_CHECK(W.is_contiguous() && W.dim() == 2 && ids.scalar_type() == torch::kLong);
+  HostJob* j = new HostJob{0, ids, W, torch::Tensor(), out, 0, false}; j->kind = 2;
+  HOST_JOBS->push_back(j); return (int64_t)HOST_JOBS->size() - 1;
+}
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("register_layer_act", &register_layer_act);
   m.def("make_host_job", &make_host_job);
   m.def("enqueue_host_job", &enqueue_host_job);
   m.def("host_calls", &host_calls);
+  m.def("make_host_linear", &make_host_linear);
+  m.def("make_host_embed", &make_host_embed);
   m.def("read_bw", &read_bw, py::call_guard<py::gil_scoped_release>());
   m.def("register_linear_nx", &register_linear_nx);
   m.def("register_shared_nx", &register_shared_nx);

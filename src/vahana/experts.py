@@ -52,11 +52,17 @@ def _weights_arg(w: torch.Tensor) -> torch.Tensor:
 class VahanaExperts(nn.Module):
     """Routed experts in CPU RAM, computed by the CPU twin kernel through the persistent worker."""
 
-    def __init__(self, spec: ExpertsSpec, ex: nn.Module, numa: int = 2, nx: bool = True):
+    def __init__(self, spec: ExpertsSpec, ex: nn.Module | None = None, numa: int = 2, nx: bool = True,
+                 weights=None, place: bool = False, shared=None, margin_gb: float = 64.0):
+        """Weights from the HF experts module `ex`, or `weights` = (g, u, d, bg, bu, bd) lists (e.g. checkpoint
+        views). place: NX12 buffers split by row half across the two sockets. shared: (g, u, d) of a shared
+        expert folded into this layer's CPU job. NX12 is skipped (raw BF16 kept) when it would cut MemAvailable
+        below margin_gb + 8."""
         super().__init__()
         self.spec, self.numa = spec, numa
-        cpu = lambda ts: [t.to("cpu", torch.bfloat16).contiguous() for t in ts]
-        g, u, d, bg, bu, bd = expert_weights(spec, ex)
+        cpu = lambda ts: [t if (t.device.type == "cpu" and t.dtype == torch.bfloat16 and t.is_contiguous())
+                          else t.to("cpu", torch.bfloat16).contiguous() for t in ts]
+        g, u, d, bg, bu, bd = weights if weights is not None else expert_weights(spec, ex)
         self.g, self.u, self.d = cpu(g), cpu(u), cpu(d)
         k = _hy.ext()
         k.register_layer(spec.slot, self.g, self.u, self.d)
@@ -64,37 +70,36 @@ class VahanaExperts(nn.Module):
             f = lambda ts: [t.to("cpu", torch.float32).contiguous() for t in ts] if ts is not None else []
             self._b = (f(bg), f(bu), f(bd))
             k.register_layer_act(spec.slot, ACT_IDS[spec.act], spec.alpha, spec.limit, *self._b)
-        self.nx = nx and spec.H % 64 == 0 and spec.I % 64 == 0
+        self.shared = None
+        if shared is not None:
+            self.shared = cpu(list(shared))
+            k.register_shared(spec.slot, *self.shared)
+        mats = [w for trip in zip(self.g, self.u, self.d) for w in trip] + (self.shared or [])
+        need_gb = sum(w.numel() * 2 for w in mats) * 0.76 / 2**30
+        self.nx = nx and spec.H % 64 == 0 and spec.I % 64 == 0 and \
+            _hy.mem_available_gb() - need_gb >= margin_gb + 8
         if self.nx:
-            packs = []
-            for e in range(spec.E):
-                for W in (self.g[e], self.u[e], self.d[e]):
-                    packs += list(k.encode_nx(W))
-            self._packs = packs
-            k.register_layer_nx(spec.slot, packs)
+            pk = lambda W: _hy.nx_pack(W, place) if place else list(k.encode_nx(W))
+            self._packs = [t for e in range(spec.E) for W in (self.g[e], self.u[e], self.d[e]) for t in pk(W)]
+            k.register_layer_nx(spec.slot, self._packs)
+            if self.shared is not None:
+                self._spacks = [t for W in self.shared for t in pk(W)]
+                k.register_shared_nx(spec.slot, self._spacks)
 
     def forward(self, hidden_states, top_k_index, top_k_weights):
-        dev, dt = hidden_states.device, hidden_states.dtype
-        x = hidden_states.detach().to("cpu", torch.bfloat16).contiguous()
-        ti = top_k_index.detach().to("cpu", torch.int64).contiguous()
-        tw = _weights_arg(top_k_weights).to("cpu").contiguous()
-        out = torch.empty(x.shape, dtype=torch.bfloat16)
-        k = _hy.ext()
-        for s in range(0, x.shape[0], CHUNK):       # rows are independent: chunking never changes bits
-            k.submit_moe(self.spec.slot, x[s:s + CHUNK], ti[s:s + CHUNK], tw[s:s + CHUNK], out[s:s + CHUNK],
-                         self.numa)
-            k.wait_done()
-        return out.to(dev, dt)
+        from . import runtime
+        out = runtime.moe(self.spec.slot, hidden_states, top_k_index, top_k_weights, self.numa)
+        return out.to(hidden_states.dtype)
 
 
 class TwinGPUExperts(nn.Module):
     """The same arithmetic on the GPU (per expert: hybrid.twin_one or twin_act.expert; combine in torch)."""
 
-    def __init__(self, spec: ExpertsSpec, ex: nn.Module):
+    def __init__(self, spec: ExpertsSpec, ex: nn.Module | None = None, weights=None, device=None):
         super().__init__()
         self.spec = spec
-        dev = ex.gate_up_proj.device
-        g, u, d, bg, bu, bd = expert_weights(spec, ex)
+        dev = device if device is not None else ex.gate_up_proj.device
+        g, u, d, bg, bu, bd = weights if weights is not None else expert_weights(spec, ex)
         to = lambda ts, dt: [t.to(dev, dt).contiguous() for t in ts] if ts is not None else None
         self.g, self.u, self.d = to(g, torch.bfloat16), to(u, torch.bfloat16), to(d, torch.bfloat16)
         self.bg, self.bu, self.bd = to(bg, torch.float32), to(bu, torch.float32), to(bd, torch.float32)

@@ -1,0 +1,250 @@
+{
+ "mixtral": {
+  "cpu_modules": [
+   "model.embed_tokens",
+   "model.layers.1.self_attn.o_proj"
+  ],
+  "folded": 0,
+  "graph_eq_eager_gpu": true,
+  "graph_eq_eager_cpu": true,
+  "placement_invariant": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "graph_step_ms": 1.492589246481657,
+  "eager_step_ms": 4.726109094917774
+ },
+ "qwen2_moe": {
+  "cpu_modules": [
+   "model.embed_tokens",
+   "model.layers.1.self_attn.o_proj"
+  ],
+  "folded": 0,
+  "graph_eq_eager_gpu": true,
+  "graph_eq_eager_cpu": true,
+  "placement_invariant": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "graph_step_ms": 1.7294911667704582,
+  "eager_step_ms": 5.803045816719532
+ },
+ "qwen3_moe": {
+  "cpu_modules": [
+   "model.embed_tokens",
+   "model.layers.1.self_attn.o_proj"
+  ],
+  "folded": 0,
+  "graph_eq_eager_gpu": true,
+  "graph_eq_eager_cpu": true,
+  "placement_invariant": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "graph_step_ms": 1.48475868627429,
+  "eager_step_ms": 4.933170974254608
+ },
+ "olmoe": {
+  "cpu_modules": [
+   "model.embed_tokens",
+   "model.layers.1.self_attn.o_proj"
+  ],
+  "folded": 0,
+  "graph_eq_eager_gpu": true,
+  "graph_eq_eager_cpu": true,
+  "placement_invariant": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "graph_step_ms": 1.7904811538755894,
+  "eager_step_ms": 4.864980932325125
+ },
+ "deepseek_v2": {
+  "cpu_modules": [
+   "model.embed_tokens",
+   "model.layers.0.mlp.shared_experts",
+   "model.layers.1.mlp.shared_experts",
+   "model.layers.1.self_attn.o_proj",
+   "model.layers.2.mlp.shared_experts",
+   "model.layers.3.mlp.shared_experts"
+  ],
+  "folded": 4,
+  "graph_eq_eager_gpu": true,
+  "graph_eq_eager_cpu": true,
+  "placement_invariant": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "graph_step_ms": 1.5763700939714909,
+  "eager_step_ms": 5.525204818695784
+ },
+ "deepseek_v3": {
+  "cpu_modules": [
+   "model.embed_tokens",
+   "model.layers.0.mlp.shared_experts",
+   "model.layers.1.mlp.shared_experts",
+   "model.layers.1.self_attn.o_proj",
+   "model.layers.2.mlp.shared_experts",
+   "model.layers.3.mlp.shared_experts"
+  ],
+  "folded": 4,
+  "graph_eq_eager_gpu": true,
+  "graph_eq_eager_cpu": true,
+  "placement_invariant": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "graph_step_ms": 1.7577912658452988,
+  "eager_step_ms": 6.37491000816226
+ },
+ "glm4_moe": {
+  "cpu_modules": [
+   "model.embed_tokens",
+   "model.layers.0.mlp.shared_experts",
+   "model.layers.1.mlp.shared_experts",
+   "model.layers.1.self_attn.o_proj",
+   "model.layers.2.mlp.shared_experts",
+   "model.layers.3.mlp.shared_experts"
+  ],
+  "folded": 4,
+  "graph_eq_eager_gpu": true,
+  "graph_eq_eager_cpu": true,
+  "placement_invariant": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "graph_step_ms": 1.7149201594293118,
+  "eager_step_ms": 5.736637394875288
+ },
+ "glm4_moe_lite": {
+  "cpu_modules": [
+   "model.embed_tokens",
+   "model.layers.1.mlp.shared_experts",
+   "model.layers.1.self_attn.o_proj",
+   "model.layers.2.mlp.shared_experts",
+   "model.layers.3.mlp.shared_experts"
+  ],
+  "folded": 3,
+  "graph_eq_eager_gpu": true,
+  "graph_eq_eager_cpu": true,
+  "placement_invariant": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "graph_step_ms": 1.4407490380108356,
+  "eager_step_ms": 5.809776950627565
+ },
+ "minimax": {
+  "cpu_modules": [
+   "model.embed_tokens"
+  ],
+  "folded": 0,
+  "graph_eq_eager_gpu": true,
+  "graph_eq_eager_cpu": true,
+  "placement_invariant": true,
+  "graph_used": false,
+  "graph_fallback": "own cache class: MiniMax uses cache of its own and is not compatible with `past_key_values` of type <class 'transformers.cache_utils.StaticCache'>.",
+  "graph_step_ms": 4.633630160242319,
+  "eager_step_ms": 4.709550179541111
+ },
+ "minimax_m2": {
+  "cpu_modules": [
+   "model.embed_tokens",
+   "model.layers.1.self_attn.o_proj"
+  ],
+  "folded": 0,
+  "graph_eq_eager_gpu": true,
+  "graph_eq_eager_cpu": true,
+  "placement_invariant": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "graph_step_ms": 1.6013509593904018,
+  "eager_step_ms": 5.153813399374485
+ },
+ "hunyuan_v1_moe": {
+  "cpu_modules": [
+   "model.embed_tokens",
+   "model.layers.1.self_attn.o_proj"
+  ],
+  "folded": 0,
+  "graph_eq_eager_gpu": true,
+  "graph_eq_eager_cpu": true,
+  "placement_invariant": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "graph_step_ms": 1.5775603242218494,
+  "eager_step_ms": 5.21852308884263
+ },
+ "ernie4_5_moe": {
+  "cpu_modules": [
+   "model.layers.1.self_attn.o_proj"
+  ],
+  "folded": 0,
+  "graph_eq_eager_gpu": true,
+  "graph_eq_eager_cpu": true,
+  "placement_invariant": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "graph_step_ms": 1.4191800728440285,
+  "eager_step_ms": 5.1942430436611176
+ },
+ "cohere2_moe": {
+  "cpu_modules": [
+   "model.layers.1.self_attn.o_proj"
+  ],
+  "folded": 0,
+  "graph_eq_eager_gpu": true,
+  "graph_eq_eager_cpu": true,
+  "placement_invariant": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "graph_step_ms": 2.185224089771509,
+  "eager_step_ms": 5.475174635648727
+ },
+ "exaone_moe": {
+  "cpu_modules": [
+   "model.embed_tokens",
+   "model.layers.0.mlp.shared_experts",
+   "model.layers.1.mlp.shared_experts",
+   "model.layers.1.self_attn.o_proj",
+   "model.layers.2.mlp.shared_experts",
+   "model.layers.3.mlp.shared_experts"
+  ],
+  "folded": 4,
+  "graph_eq_eager_gpu": true,
+  "graph_eq_eager_cpu": true,
+  "placement_invariant": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "graph_step_ms": 1.764071173965931,
+  "eager_step_ms": 5.943717900663614
+ },
+ "afmoe": {
+  "cpu_modules": [
+   "model.embed_tokens",
+   "model.layers.1.self_attn.o_proj"
+  ],
+  "folded": 0,
+  "graph_eq_eager_gpu": true,
+  "graph_eq_eager_cpu": true,
+  "placement_invariant": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "graph_step_ms": 1.374618150293827,
+  "eager_step_ms": 5.422705318778753
+ },
+ "phimoe": {
+  "error": "RuntimeError: captures_underway.empty() INTERNAL ASSERT FAILED at \"../c10/cuda/CUDACachingAllocator.cpp\":2716, please report a bug to PyTorch. ",
+  "trace": "Traceback (most recent call last):\n  File \"<work>/vahana/experiments/m4_decode/m4_tiny.py\", line 51, in <module>\n    runs[name], info = run(fam, force, graph)\n  File \"<work>/vahana/experiments/m4_decode/m4_tiny.py\", line 40, in run\n    torch.cuda.empty_cache()\n  File \"<site-packages>/torch/cuda/memory.py\", line 170, in empty_cache\n    torch._C._cuda_emptyCache()\nRuntimeError: captures_underway.empty() INTERNAL ASSERT FAILED at \"../c10/cuda/CUDACachingAllocator.cpp\":2716, please report a bug to PyTorch. \n"
+ },
+ "qwen3_5_moe_text": {
+  "error": "RuntimeError: The size of tensor a (40) must match the size of tensor b (50) at non-singleton dimension 1",
+  "trace": "<site-packages>/transformers/modeling_layers.py\", line 93, in __call__\n    return super().__call__(*args, **kwargs)\n  File \"<site-packages>/torch/nn/modules/module.py\", line 1553, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n  File \"<site-packages>/torch/nn/modules/module.py\", line 1562, in _call_impl\n    return forward_call(*args, **kwargs)\n  File \"<site-packages>/transformers/models/qwen3_5_moe/modeling_qwen3_5_moe.py\", line 865, in forward\n    hidden_states = self.linear_attn(\n  File \"<site-packages>/torch/nn/modules/module.py\", line 1553, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n  File \"<site-packages>/torch/nn/modules/module.py\", line 1562, in _call_impl\n    return forward_call(*args, **kwargs)\n  File \"<site-packages>/transformers/models/qwen3_5_moe/modeling_qwen3_5_moe.py\", line 442, in forward\n    hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)\n  File \"<site-packages>/transformers/models/qwen3_5_moe/modeling_qwen3_5_moe.py\", line 210, in apply_mask_to_padding_states\n    hidden_states = (hidden_states * attention_mask[:, :, None]).to(dtype)\nRuntimeError: The size of tensor a (40) must match the size of tensor b (50) at non-singleton dimension 1\n"
+ },
+ "gpt_oss": {
+  "error": "RuntimeError: captures_underway.empty() INTERNAL ASSERT FAILED at \"../c10/cuda/CUDACachingAllocator.cpp\":2716, please report a bug to PyTorch. ",
+  "trace": "Traceback (most recent call last):\n  File \"<work>/vahana/experiments/m4_decode/m4_tiny.py\", line 51, in <module>\n    runs[name], info = run(fam, force, graph)\n  File \"<work>/vahana/experiments/m4_decode/m4_tiny.py\", line 40, in run\n    torch.cuda.empty_cache()\n  File \"<site-packages>/torch/cuda/memory.py\", line 170, in empty_cache\n    torch._C._cuda_emptyCache()\nRuntimeError: captures_underway.empty() INTERNAL ASSERT FAILED at \"../c10/cuda/CUDACachingAllocator.cpp\":2716, please report a bug to PyTorch. \n"
+ },
+ "summary": {
+  "families": 18,
+  "all_pass": 14,
+  "not": [
+   "minimax",
+   "phimoe",
+   "qwen3_5_moe_text",
+   "gpt_oss"
+  ]
+ }
+}
