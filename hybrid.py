@@ -44,6 +44,22 @@ def enabled() -> bool:
     return os.environ.get("COLOSSUS_HYBRID", "") != ""
 
 
+def fast_on() -> bool:
+    return os.environ.get("COLOSSUS_HYBRID") == "1" and os.environ.get("COLOSSUS_HYBRID_FAST") == "1"
+
+
+_PIN: dict = {}
+
+
+def pinned(name: str, shape, dtype):
+    """Reusable pinned host buffer (one per name/shape/dtype)."""
+    k = (name, tuple(shape), dtype)
+    b = _PIN.get(k)
+    if b is None:
+        b = _PIN[k] = torch.empty(shape, dtype=dtype, pin_memory=True)
+    return b
+
+
 def cpu_frac() -> float:
     return float(os.environ.get("COLOSSUS_HYBRID", "0") or 0)
 

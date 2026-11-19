@@ -494,6 +494,54 @@ class TieredMoEWrapper(nn.Module):
         self.cpu_n += 1
         return ret
 
+    # -- Phase 28: all-CPU fast path ----------------------------------------
+    def _hybrid_fast(self, hidden_states, orig_shape):
+        """Every routed expert on the CPU; one host sync per layer. The hidden state goes to pinned host
+        memory while the gate runs; routing results follow; the C++ worker groups, computes and combines
+        (same arithmetic as _hybrid_forward); the GPU computes the shared experts meanwhile; one row comes
+        back. Values are identical to _hybrid_forward with COLOSSUS_HYBRID=1."""
+        hy = _hybrid
+        H = hidden_states.shape[-1]
+        flat = hidden_states.reshape(-1, H)
+        N = flat.shape[0]
+        if not getattr(self, "_hy_registered", False):
+            g, u, d = [], [], []
+            for e in range(self.spec.n_routed):
+                tg, tu, td = self._expert_tensors(e)
+                g.append(tg)
+                u.append(tu)
+                d.append(td)
+            hy.ext().register_layer(self.layer_idx, g, u, d)
+            self._hy_registered = True
+        hy.pool()                                   # one-time main-thread setup (torch threads)
+        K = self.spec.top_k if hasattr(self.spec, "top_k") else None
+        xb = hy.pinned("x", (N, H), flat.dtype)
+        xb.copy_(flat, non_blocking=True)
+        topk_indices, topk_weights = self.spec.route(hidden_states)
+        K = topk_indices.shape[-1]
+        TI = topk_indices.reshape(-1, K)
+        TW = topk_weights.reshape(-1, K)
+        tib = hy.pinned("ti", (N, K), torch.int64)
+        twb = hy.pinned("tw", (N, K), TW.dtype)
+        ob = hy.pinned("out", (N, H), flat.dtype)
+        tib.copy_(TI, non_blocking=True)
+        twb.copy_(TW, non_blocking=True)
+        ev = torch.cuda.Event()
+        ev.record()
+        _t0 = time.perf_counter()
+        ev.synchronize()
+        hy.STATS["route_wait_s"] = hy.STATS.get("route_wait_s", 0.0) + time.perf_counter() - _t0
+        hy.ext().submit_moe(self.layer_idx, xb, tib, twb, ob, int(__import__("os").environ.get("COLOSSUS_HYBRID_NUMA", "1")))
+        shared_out = self.shared_experts(hidden_states) if self.shared_experts is not None             else torch.zeros_like(hidden_states)
+        _t1 = time.perf_counter()
+        hy.ext().wait_done()
+        hy.STATS["cpu_wait_s"] += time.perf_counter() - _t1
+        hy.STATS["cpu_kernel_s"] += hy.ext().kernel_ms() / 1e3
+        hy.STATS["layers"] += 1
+        hy.STATS["fast_layers"] = hy.STATS.get("fast_layers", 0) + 1
+        out_d = ob.to(self.device, non_blocking=True)
+        return shared_out + out_d.view(*orig_shape)
+
     # -- Phase 26: exact CPU/GPU split ----------------------------------
     def _hybrid_forward(self, hidden_states, shared_out, topk_indices, topk_weights, orig_shape):
         """Every routed expert in twin arithmetic, on the CPU (in place) or the GPU (HBM slot).
@@ -613,6 +661,12 @@ class TieredMoEWrapper(nn.Module):
         self._pend2 = []
         identity = hidden_states
         orig_shape = hidden_states.shape
+        if (_hybrid.fast_on() and self.ans is None and not self.streaming
+                and hidden_states.numel() // hidden_states.shape[-1] <= 16):
+            out = self._hybrid_fast(hidden_states, orig_shape)
+            if self.tupled:
+                return out, None
+            return out
         topk_indices, topk_weights = self.spec.route(hidden_states)
         # Dispatch math is 2D [N, K] regardless of gate rank conventions.
         K = topk_indices.shape[-1]
