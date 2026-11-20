@@ -2,13 +2,14 @@
 
   vahana run   MODEL_DIR --prompt "..." [--gpu-budget GB] [--max-tokens N]
   vahana serve MODEL_DIR [--gpu-budget GB] [--port 8000] [--host 127.0.0.1]
+  vahana selftest [--device cpu|cuda]        tiny models of 18 families: same bits as the reference H100?
 
 Process setup happens here, before torch is imported, because it must apply to every thread:
   - automatic NUMA balancing is turned off for the process (MPOL_BIND over all nodes; it stalls the CPU expert
     kernel by milliseconds), unless --keep-numa-balancing;
-  - OpenMP: OMP_NUM_THREADS (default: physical cores in the affinity set minus 2), OMP_PROC_BIND=true,
-    OMP_PLACES=cores, and a spin count: long with a GPU (the expert team waits for the next job), short CPU-only
-    (the main thread's own OpenMP work shares the cores, and spinning teams would starve it: 1.5 vs 18 tok/s);
+  - the kernel's thread team: VAHANA_THREADS (default: CPUs in the affinity set minus 2), bound one per core, and a
+    spin time before sleeping (10 ms with a GPU, 1 ms CPU-only); VAHANA_CPUS records the affinity set before torch's
+    OpenMP pins the main thread; torch's own OpenMP team is 1 thread CPU-only (its glue ops are small);
   - with a GPU, after loading, the main Python thread moves to the two CPUs the OpenMP team does not use.
 """
 from __future__ import annotations
@@ -37,21 +38,33 @@ def _device(args) -> str:
     """cuda or cpu, decided before torch is imported."""
     if args.device:
         return args.device
-    if os.environ.get("CUDA_VISIBLE_DEVICES") == "" or not os.path.exists("/dev/nvidiactl"):
+    if os.environ.get("CUDA_VISIBLE_DEVICES") == "":
         return "cpu"
-    return "cuda"
+    if sys.platform.startswith("linux"):
+        return "cuda" if os.path.exists("/dev/nvidiactl") else "cpu"
+    if sys.platform == "win32":                       # the NVIDIA driver installs nvcuda.dll
+        return "cuda" if os.path.exists(os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32",
+                                                     "nvcuda.dll")) else "cpu"
+    return "cpu"                                      # macOS: no CUDA
 
 
 def _setup(args) -> dict:
     args.device = _device(args)
-    cpus = sorted(os.sched_getaffinity(0))
+    from .osl import cpus as _cpus
+    cpus = _cpus()
+    os.environ.setdefault("VAHANA_CPUS", ",".join(map(str, cpus)))     # before torch's OpenMP pins this thread
     threads = args.threads or max(1, len(cpus) - 2)
-    os.environ.setdefault("OMP_NUM_THREADS", str(threads))
+    gpu = args.device == "cuda"
+    os.environ.setdefault("VAHANA_THREADS", str(threads))          # the kernel's own thread team (pool.h)
+    # torch's OpenMP team: with a GPU it barely runs; CPU-only it runs only small glue ops, and a second team of
+    # `threads` on the same cores would fight the kernel's (measured: 1 thread is fastest)
+    os.environ.setdefault("OMP_NUM_THREADS", str(threads) if gpu else "1")
     os.environ.setdefault("OMP_PROC_BIND", "true")
     os.environ.setdefault("OMP_PLACES", "cores")
-    os.environ.setdefault("GOMP_SPINCOUNT", "10000000" if args.device == "cuda" else "1000")
+    os.environ.setdefault("GOMP_SPINCOUNT", "10000000" if gpu else "1000")
+    os.environ.setdefault("VAHANA_SPIN_US", "10000" if gpu else "1000")
     os.environ.setdefault("VAHANA_FAST_GATE", "1")
-    info = {"threads": int(os.environ["OMP_NUM_THREADS"]), "cpus": len(cpus)}
+    info = {"threads": int(os.environ["VAHANA_THREADS"]), "cpus": len(cpus)}
     if not args.keep_numa_balancing and os.path.exists("/sys/devices/system/node/online"):
         info["numa"] = _numa_off()
     info["main_cpus"] = cpus[info["threads"]:][:2] if len(cpus) > info["threads"] else []
@@ -65,7 +78,8 @@ def _load(args, setup):
     model, info = loader.load(args.model, gpu_budget_gb=args.gpu_budget, reserve_gb=args.reserve, device=device,
                               log=lambda m: print(m, file=sys.stderr, flush=True))
     if setup["main_cpus"] and device != "cpu":    # CPU-only: the main thread computes too, keep every core
-        os.sched_setaffinity(0, set(setup["main_cpus"]))
+        from .osl import set_cpus
+        set_cpus(setup["main_cpus"])
     from transformers import AutoTokenizer
     tok = AutoTokenizer.from_pretrained(args.model)
     print(f"vahana: loaded {info['model_type']} on {model._vahana_device} in {info['load_s']:.0f}s, "
@@ -75,6 +89,10 @@ def _load(args, setup):
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["selftest"]:                      # same bits as the reference machine? (tiny models, no download)
+        from .selftest import main as selftest
+        return selftest(argv[1:])
     p = argparse.ArgumentParser("vahana", description="Exact inference for MoE models too big for your GPU")
     sub = p.add_subparsers(dest="cmd", required=True)
     for name in ("run", "serve"):

@@ -1,0 +1,4 @@
+cpu p2 r1: [64 tokens, 18.18 tok/s decode, prefill 0.20s, graph off: None]
+cpu p3 r1: [64 tokens, 17.31 tok/s decode, prefill 0.17s, graph off: None]
+cpu p2 r2: [64 tokens, 18.29 tok/s decode, prefill 0.20s, graph off: None]
+cpu p3 r2: [64 tokens, 17.26 tok/s decode, prefill 0.17s, graph off: None]

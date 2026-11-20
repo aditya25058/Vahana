@@ -3,7 +3,7 @@
 // Fused, NUMA-aware, fixed-order CPU expert MLPs (Phase 25b).
 //
 // y_e = down_e( silu(gate_e x) * up_e x ) for E experts, each with n tokens (n <= 16), weights read
-// IN PLACE (page cache, BF16). One OpenMP region per call: phase 1 = (expert, 16-row block) tasks for
+// IN PLACE (page cache, BF16). One thread-team region per call (pool.h): phase 1 = (expert, 16-row block) tasks for
 // gate+up (+ silu*mul), barrier, phase 2 = (expert, 16-row block) tasks for down.
 //
 // Reduction order is fully specified so a GPU twin can reproduce the bits (device invariance):
@@ -13,21 +13,24 @@
 //   g = bf16(dot), u = bf16(dot), s = bf16(silu_f32(g)), h = bf16(s * u), y = bf16(dot(down, h)).
 // Each output row is computed entirely by one thread, so results are independent of thread count,
 // NUMA placement and of which other tokens/experts share the call (batch invariance).
-#include <torch/extension.h>
+#include "vt.h"
+#include "pool.h"
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__)
 #include <immintrin.h>
 #endif
 #if defined(__ARM_NEON) || defined(__aarch64__)
 #include <arm_neon.h>
 #endif
-#include <omp.h>
-#if defined(__linux__) && defined(__has_include)
-#if __has_include(<numaif.h>)
-#include <numaif.h>
+#if defined(__linux__)
+// NUMA page placement through the move_pages system call itself (no libnuma: wheels need no system library).
+#include <sys/syscall.h>
+#include <unistd.h>
 #define VH_HAVE_NUMA 1
-#endif
-#endif
-#ifndef VH_HAVE_NUMA
+#define MPOL_MF_MOVE 2
+static inline long move_pages(int pid, unsigned long count, void** pages, const int* nodes, int* status, int flags) {
+  return syscall(SYS_move_pages, pid, count, pages, nodes, status, flags);
+}
+#else
 #define VH_HAVE_NUMA 0
 #define MPOL_MF_MOVE 2
 // No NUMA API on this platform: nothing is migrated, every page reports "unknown node" (-1).
@@ -37,7 +40,9 @@ static inline long move_pages(int, unsigned long count, void** pages, const int*
   return -1;
 }
 #endif
+#if defined(__linux__)
 #include <sched.h>
+#endif
 #include <cstring>
 #include <cmath>
 #include <atomic>
@@ -54,7 +59,10 @@ static inline uint16_t f2bf(float f) {
 }
 // ---- V16: 16 fp32 lanes; lane l of a dot product accumulates k = 16j + l in ascending j with a fused multiply-add.
 // Every ISA below performs exactly that per-lane sequence, so every build gives the same bits.
-#if defined(__AVX512F__)
+#if defined(_MSC_VER) && defined(__AVX2__) && !defined(__FMA__)
+#define __FMA__ 1                         // MSVC /arch:AVX2 implies FMA3 but does not define it
+#endif
+#if !defined(VH_FORCE_SCALAR) && defined(__AVX512F__)
 #define VH_ISA "avx512"
 typedef __m512 V16;
 static inline V16 v_zero() { return _mm512_setzero_ps(); }
@@ -65,7 +73,7 @@ static inline V16 v_ldbf16(const uint16_t* p) {
 }
 static inline V16 v_fma(V16 a, V16 b, V16 c) { return _mm512_fmadd_ps(a, b, c); }
 static inline void v_store(float* a, V16 v) { _mm512_storeu_ps(a, v); }
-#elif defined(__AVX2__) && defined(__FMA__)
+#elif !defined(VH_FORCE_SCALAR) && defined(__AVX2__) && defined(__FMA__)
 #define VH_ISA "avx2"
 struct V16 { __m256 lo, hi; };                      // lanes 0-7, 8-15
 static inline V16 v_zero() { return {_mm256_setzero_ps(), _mm256_setzero_ps()}; }
@@ -76,7 +84,7 @@ static inline V16 v_ldbf16(const uint16_t* p) {
 }
 static inline V16 v_fma(V16 a, V16 b, V16 c) { return {_mm256_fmadd_ps(a.lo, b.lo, c.lo), _mm256_fmadd_ps(a.hi, b.hi, c.hi)}; }
 static inline void v_store(float* a, V16 v) { _mm256_storeu_ps(a, v.lo); _mm256_storeu_ps(a + 8, v.hi); }
-#elif defined(__ARM_NEON) || defined(__aarch64__)
+#elif !defined(VH_FORCE_SCALAR) && (defined(__ARM_NEON) || defined(__aarch64__) || defined(_M_ARM64))
 #define VH_ISA "neon"
 struct V16 { float32x4_t q[4]; };
 static inline V16 v_zero() { V16 r; for (int i = 0; i < 4; i++) r.q[i] = vdupq_n_f32(0.0f); return r; }
@@ -110,9 +118,11 @@ static inline float tree16(V16 v) {
 #define VH_PAUSE() ((void)0)
 #endif
 #if defined(__GNUC__) || defined(__clang__)
+#define VH_LIKELY0(x) __builtin_expect((x), 0)
 #define VH_PREFETCH(p) __builtin_prefetch((const void*)(p))
 #else
 #define VH_PREFETCH(p) ((void)0)
+#define VH_LIKELY0(x) (x)
 #endif
 // dots of one weight row (K bf16) with n fp32 vectors X[t*K ..]
 static inline void row_dots(const uint16_t* w, const float* X, int n, int K, float* out) {
@@ -201,11 +211,6 @@ std::vector<torch::Tensor> expert_mlps_ctx(torch::Tensor x, std::vector<torch::T
                                        std::vector<torch::Tensor> up, std::vector<torch::Tensor> down,
                                        int64_t numa, const ActCtx* ctx) {
   const double T0 = now_ms();
-  // The team size is fixed from OMP_NUM_THREADS at first use: torch ops on this thread (or
-  // torch.set_num_threads on the main thread) must not shrink it.
-  static const int nthr = [] { const char* v = std::getenv("OMP_NUM_THREADS"); int t = v ? std::atoi(v) : 0;
-                               return t > 0 ? t : omp_get_num_procs(); }();
-  omp_set_num_threads(nthr);
   const int E = x.size(0), n = x.size(1), H = x.size(2), I = gate[0].size(0);
   TORCH_CHECK(n <= 16 && H % 16 == 0 && I % 16 == 0);
   std::vector<float> xf((size_t)E * n * H), hf((size_t)E * n * I);
@@ -229,13 +234,12 @@ std::vector<torch::Tensor> expert_mlps_ctx(torch::Tensor x, std::vector<torch::T
   // row's arithmetic, so results are identical in every mode.
   std::atomic<size_t> cur[2];
   double T1 = now_ms(), Tp0 = 0.0;
-  #pragma omp parallel
-  {
-    int nd = numa ? ((sched_getcpu() >= 32) ? 1 : 0) : 0;
+  vh_parallel([&](int tid_, int) {
+    int nd = numa ? ((vh_cpu() >= 32) ? 1 : 0) : 0;
     float d[16], g[16], u[16];
     for (int pass = 0; pass < 2; pass++) {
-      #pragma omp single
-      { cur[0] = 0; cur[1] = 0; }
+      if (tid_ == 0) { cur[0] = 0; cur[1] = 0; }
+      vh_barrier();
       for (int hop = 0; hop < (numa ? 2 : 1); hop++) {
         int Ls = numa ? (nd ^ hop) : 0;
         const std::vector<int>& T = (pass == 0) ? t1[Ls] : t2[Ls];
@@ -278,13 +282,10 @@ std::vector<torch::Tensor> expert_mlps_ctx(torch::Tensor x, std::vector<torch::T
           }
         }
       }
-      #pragma omp barrier
-      if (pass == 0) {
-        #pragma omp master
-        Tp0 = now_ms();
-      }
+      vh_barrier();
+      if (pass == 0 && tid_ == 0) Tp0 = now_ms();
     }
-  }
+  });
   const double T2 = now_ms();
   auto nodes = torch::tensor(std::vector<int64_t>(enode.begin(), enode.end()));
   g_ph[0] += T1 - T0; g_ph[1] += Tp0 - T1; g_ph[2] += T2 - Tp0; g_ph[3] += now_ms() - T2; g_ph[4] += 1;
@@ -453,8 +454,6 @@ static std::unordered_map<const void*, std::vector<torch::Tensor>>* LIN_NX = new
 void register_linear_nx(torch::Tensor W, std::vector<torch::Tensor> packs) { (*LIN_NX)[W.data_ptr()] = std::move(packs); }
 torch::Tensor linear_nx(const float* xf, const std::vector<torch::Tensor>& pk, int R, int K, torch::TensorOptions opt);
 torch::Tensor linear_twin(torch::Tensor x, torch::Tensor W) {
-  static const int nthr = [] { const char* v = std::getenv("OMP_NUM_THREADS"); int t = v ? std::atoi(v) : 0;
-                               return t > 0 ? t : omp_get_num_procs(); }();
   const int n = x.size(0), K = x.size(1), R = W.size(0);
   TORCH_CHECK(K % 16 == 0 && R % 4 == 0 && n <= 16 && W.size(1) == K);
   std::vector<float> xf((size_t)n * K);
@@ -463,7 +462,6 @@ torch::Tensor linear_twin(torch::Tensor x, torch::Tensor W) {
   auto y = torch::empty({n, R}, x.options());
   uint16_t* yp = (uint16_t*)y.data_ptr();
   const uint16_t* w = (const uint16_t*)W.data_ptr();
-  omp_set_num_threads(nthr);
   if (n == 1 && K % 64 == 0) {                 // Phase 40: NX12 copy registered for this weight
     auto it = LIN_NX->find(W.data_ptr());
     if (it != LIN_NX->end()) return linear_nx(xf.data(), it->second, R, K, x.options());
@@ -472,9 +470,8 @@ torch::Tensor linear_twin(torch::Tensor x, torch::Tensor W) {
   if (lin_numa && n == 1 && R % 8 == 0) {
     // Phase 40: rows [0, R/2) computed by node-0 threads, [R/2, R) by node-1 threads, local-first stealing.
     std::atomic<int> cur[2]; cur[0] = 0; cur[1] = R / 2;
-    #pragma omp parallel
-    {
-      const int nd = (sched_getcpu() >= 32) ? 1 : 0;
+    vh_parallel([&](int, int) {
+      const int nd = (vh_cpu() >= 32) ? 1 : 0;
       float o[4];
       for (int hop = 0; hop < 2; hop++) {
         const int Ls = nd ^ hop, end = Ls == 0 ? R / 2 : R;
@@ -483,23 +480,25 @@ torch::Tensor linear_twin(torch::Tensor x, torch::Tensor W) {
           for (int q = 0; q < 4; q++) yp[r + q] = f2bf(o[q]);
         }
       }
-    }
+    });
     return y;
   }
-  #pragma omp parallel for schedule(dynamic, 4)
-  for (int r = 0; r < R; r += 4) {
+  std::atomic<int> nxt{0};
+  vh_parallel([&](int, int) {
+  for (int r = nxt.fetch_add(16); r < R; r = nxt.fetch_add(16)) for (int r1 = r; r1 < r + 16 && r1 < R; r1 += 4) {
     if (n == 1) {
       float o[4];
-      row_dots4_n1(w + (size_t)r * K, w + (size_t)(r + 1) * K, w + (size_t)(r + 2) * K, w + (size_t)(r + 3) * K, xf.data(), K, o);
-      for (int q = 0; q < 4; q++) yp[r + q] = f2bf(o[q]);
+      row_dots4_n1(w + (size_t)r1 * K, w + (size_t)(r1 + 1) * K, w + (size_t)(r1 + 2) * K, w + (size_t)(r1 + 3) * K, xf.data(), K, o);
+      for (int q = 0; q < 4; q++) yp[r1 + q] = f2bf(o[q]);
     } else {
       float d[16];
       for (int q = 0; q < 4; q++) {
-        row_dots(w + (size_t)(r + q) * K, xf.data(), n, K, d);
-        for (int t = 0; t < n; t++) yp[(size_t)t * R + r + q] = f2bf(d[t]);
+        row_dots(w + (size_t)(r1 + q) * K, xf.data(), n, K, d);
+        for (int t = 0; t < n; t++) yp[(size_t)t * R + r1 + q] = f2bf(d[t]);
       }
     }
   }
+  });
   return y;
 }
 
@@ -520,6 +519,7 @@ struct State { std::mutex mu; std::condition_variable cv; bool has_job = false, 
 State* S = new State();
 std::thread* worker = nullptr;
 void loop() {
+  vh_mark_job_thread();
   for (;;) {
     Job j;
     { std::unique_lock<std::mutex> l(S->mu); S->cv.wait(l, [] { return S->has_job; }); j = std::move(S->job); S->has_job = false; }
@@ -626,7 +626,7 @@ std::vector<int64_t> rows_nodes(torch::Tensor W) {
 // step (512-bit, VBMI byte permutes); the dot product then runs the unchanged twin arithmetic (16 fp32 lanes,
 // lane l accumulates k = 16j + l in ascending j, fixed tree), so outputs are bit-identical to the raw kernel.
 struct alignas(64) PadAt { std::atomic<int> v; };
-#if defined(__AVX512VBMI__)
+#if !defined(VH_FORCE_SCALAR) && defined(__AVX512VBMI__) && defined(__AVX512VBMI2__)
 #define VH_NX_FAST 1
 struct NXm { const uint8_t* lo; const uint8_t* nib; const uint8_t* esc; const int64_t* off; __m512i lut; int K;
              const uint8_t* lutp; };
@@ -660,7 +660,7 @@ static inline void dec64(const NXm& m, size_t base, int k, const uint8_t*& ep, V
                                        _mm512_slli_epi16(_mm512_and_si512(n16, _mm512_set1_epi16(0x00F0)), 4));
   __m512i ex = _mm512_permutexvar_epi8(code, m.lut);
   const __mmask64 em = _mm512_cmpeq_epi8_mask(code, _mm512_set1_epi8(15));
-  if (__builtin_expect(em != 0, 0)) { ex = _mm512_mask_expandloadu_epi8(ex, em, ep); ep += _mm_popcnt_u64(em); }
+  if (VH_LIKELY0(em != 0)) { ex = _mm512_mask_expandloadu_epi8(ex, em, ep); ep += _mm_popcnt_u64(em); }
   const __m512i hib = _mm512_or_si512(_mm512_and_si512(lo, _mm512_set1_epi8((char)0x80)),
                                       _mm512_and_si512(_mm512_srli_epi16(ex, 1), _mm512_set1_epi8(0x7F)));
   const __m512i lob = _mm512_or_si512(_mm512_and_si512(_mm512_slli_epi16(ex, 7), _mm512_set1_epi8((char)0x80)),
@@ -721,9 +721,7 @@ torch::Tensor expert_mlps_nx(torch::Tensor x, std::vector<torch::Tensor> packs, 
 }
 torch::Tensor expert_mlps_nx_ctx(torch::Tensor x, std::vector<torch::Tensor> packs, int64_t I_, int64_t numa,
                                  const ActCtx* ctx) {
-  static const int nthr = [] { const char* v = std::getenv("OMP_NUM_THREADS"); int t = v ? std::atoi(v) : 0;
-                               init_perm(); return t > 0 ? t : omp_get_num_procs(); }();
-  omp_set_num_threads(nthr);
+  static const bool inited_ = (init_perm(), true); (void)inited_;
   const int E = x.size(0), H = x.size(2), I = (int)I_;
   TORCH_CHECK(x.size(1) == 1 && (int)packs.size() == 15 * E && H % 64 == 0 && I % 64 == 0);
   std::vector<NXm> G(E), U(E), D(E);
@@ -741,13 +739,12 @@ torch::Tensor expert_mlps_nx_ctx(torch::Tensor x, std::vector<torch::Tensor> pac
     for (int b = 0; b < H / 16; b++) t2[numa == 2 ? (b >= H / 32) : 0].push_back(e * (H / 16) + b);
   }
   std::atomic<size_t> cur[2];
-  #pragma omp parallel
-  {
-    const int nd = numa == 2 ? ((sched_getcpu() >= 32) ? 1 : 0) : 0;
+  vh_parallel([&](int tid_, int) {
+    const int nd = numa == 2 ? ((vh_cpu() >= 32) ? 1 : 0) : 0;
     float o[4];
     for (int pass = 0; pass < 2; pass++) {
-      #pragma omp single
-      { cur[0] = 0; cur[1] = 0; }
+      if (tid_ == 0) { cur[0] = 0; cur[1] = 0; }
+      vh_barrier();
       for (int hop = 0; hop < (numa == 2 ? 2 : 1); hop++) {
         const int Ls = numa == 2 ? (nd ^ hop) : 0;
         const std::vector<int>& T = pass == 0 ? t1[Ls] : t2[Ls];
@@ -773,9 +770,9 @@ torch::Tensor expert_mlps_nx_ctx(torch::Tensor x, std::vector<torch::Tensor> pac
           }
         }
       }
-      #pragma omp barrier
+      vh_barrier();
     }
-  }
+  });
   return y;
 }
 // Move the pages of a 1-D buffer in place: bytes [0, split) -> node 0, [split, end) -> node 1.
@@ -803,20 +800,16 @@ std::vector<int64_t> place_split(torch::Tensor t, int64_t split) {
 // Phase 38: parallel NX12 encoder. W [R, K] bf16 contiguous -> {lo, nib, lut, esc(+64 slack), off}.
 std::vector<torch::Tensor> encode_nx(torch::Tensor W) {
   TORCH_CHECK(W.is_contiguous() && W.dim() == 2 && W.size(1) % 64 == 0);
-  static const int nthr = [] { const char* v = std::getenv("OMP_NUM_THREADS"); int t = v ? std::atoi(v) : 0;
-                               return t > 0 ? t : omp_get_num_procs(); }();
-  omp_set_num_threads(nthr);
   const int64_t R = W.size(0), K = W.size(1);
   const uint16_t* w = (const uint16_t*)W.data_ptr();
   std::vector<int64_t> cnt(256, 0);
-  #pragma omp parallel
-  {
+  std::mutex cmu;
+  vh_parallel([&](int tid_, int nt_) {
     std::vector<int64_t> h(256, 0);
-    #pragma omp for schedule(static)
-    for (int64_t r = 0; r < R; r++) for (int64_t k = 0; k < K; k++) h[(w[r * K + k] >> 7) & 0xFF]++;
-    #pragma omp critical
+    for (int64_t r = R * tid_ / nt_; r < R * (tid_ + 1) / nt_; r++) for (int64_t k = 0; k < K; k++) h[(w[r * K + k] >> 7) & 0xFF]++;
+    std::lock_guard<std::mutex> l(cmu);
     for (int i = 0; i < 256; i++) cnt[i] += h[i];
-  }
+  });
   std::vector<int> order(256);
   for (int i = 0; i < 256; i++) order[i] = i;
   std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return cnt[a] > cnt[b]; });
@@ -829,8 +822,8 @@ std::vector<torch::Tensor> encode_nx(torch::Tensor W) {
   auto off = torch::empty({R + 1}, torch::TensorOptions().dtype(torch::kInt64));
   uint8_t* lp = lo.data_ptr<uint8_t>(); uint8_t* np = nib.data_ptr<uint8_t>(); int64_t* op = off.data_ptr<int64_t>();
   std::vector<int64_t> rc(R, 0);
-  #pragma omp parallel for schedule(static)
-  for (int64_t r = 0; r < R; r++) {
+  vh_parallel([&](int tid_, int nt_) {
+  for (int64_t r = R * tid_ / nt_; r < R * (tid_ + 1) / nt_; r++) {
     int64_t c = 0;
     for (int64_t k = 0; k < K; k += 2) {
       uint16_t a = w[r * K + k], b = w[r * K + k + 1];
@@ -842,15 +835,17 @@ std::vector<torch::Tensor> encode_nx(torch::Tensor W) {
     }
     rc[r] = c;
   }
+  });
   op[0] = 0;
   for (int64_t r = 0; r < R; r++) op[r + 1] = op[r] + rc[r];
   auto esc = torch::zeros({op[R] + 64}, u8);
   uint8_t* ep = esc.data_ptr<uint8_t>();
-  #pragma omp parallel for schedule(static)
-  for (int64_t r = 0; r < R; r++) {
+  vh_parallel([&](int tid_, int nt_) {
+  for (int64_t r = R * tid_ / nt_; r < R * (tid_ + 1) / nt_; r++) {
     int64_t j = op[r];
     for (int64_t k = 0; k < K; k++) { uint16_t a = w[r * K + k]; if (inv[(a >> 7) & 0xFF] == 15) ep[j++] = (uint8_t)((a >> 7) & 0xFF); }
   }
+  });
   return {lo, nib, lut, esc, off};
 }
 // packs: 15 per expert in expert order (gate lo,nib,lut,esc,off; up ...; down ...)
@@ -866,9 +861,8 @@ torch::Tensor linear_nx(const float* xf, const std::vector<torch::Tensor>& pk, i
   uint16_t* yp = (uint16_t*)y.data_ptr();
   PadAt cur[2]; cur[0].v = 0; cur[1].v = R / 2;
   const int CH = (R / 2) % 8 == 0 ? 8 : 4;
-  #pragma omp parallel
-  {
-    const int nd = (sched_getcpu() >= 32) ? 1 : 0;
+  vh_parallel([&](int, int) {
+    const int nd = (vh_cpu() >= 32) ? 1 : 0;
     float o[4];
     for (int hop = 0; hop < 2; hop++) {
       const int Ls = nd ^ hop, end = Ls == 0 ? R / 2 : R;
@@ -880,7 +874,7 @@ torch::Tensor linear_nx(const float* xf, const std::vector<torch::Tensor>& pk, i
         }
       }
     }
-  }
+  });
   return y;
 }
 
@@ -891,9 +885,7 @@ torch::Tensor linear_nx(const float* xf, const std::vector<torch::Tensor>& pk, i
 // starts once all gate/up blocks of j are done (per-expert counter), so there is no global barrier.
 static void experts_nx_fused(const std::vector<const torch::Tensor*>& P, const std::vector<int>& Is, const float* xf,
                              int H, const std::vector<uint16_t*>& y, int numa, const ActCtx* ctx) {
-  static const int nthr = [] { const char* v = std::getenv("OMP_NUM_THREADS"); int t = v ? std::atoi(v) : 0;
-                               init_perm(); return t > 0 ? t : omp_get_num_procs(); }();
-  omp_set_num_threads(nthr);
+  static const bool inited_ = (init_perm(), true); (void)inited_;
   const int E = (int)P.size();
   std::vector<NXm> G(E), U(E), D(E);
   std::vector<size_t> ho(E + 1, 0);
@@ -912,9 +904,8 @@ static void experts_nx_fused(const std::vector<const torch::Tensor*>& P, const s
   PadAt ca[2], cb[2];
   ca[0].v = 0; ca[1].v = 0; cb[0].v = 0; cb[1].v = 0;
   const int nh = numa == 2 ? 2 : 1;
-  #pragma omp parallel
-  {
-    const int nd = numa == 2 ? ((sched_getcpu() >= 32) ? 1 : 0) : 0;
+  vh_parallel([&](int, int) {
+    const int nd = numa == 2 ? ((vh_cpu() >= 32) ? 1 : 0) : 0;
     float o[4];
     for (int hop = 0; hop < nh; hop++) {
       const int Ls = nd ^ hop;
@@ -946,14 +937,11 @@ static void experts_nx_fused(const std::vector<const torch::Tensor*>& P, const s
         }
       }
     }
-  }
+  });
 }
 
 // Phase 41: node-local streaming read of NX12 lo/nib buffers (packs, 5 per matrix); returns GB/s.
 double read_bw(std::vector<torch::Tensor> packs, int64_t numa) {
-  static const int nthr = [] { const char* v = std::getenv("OMP_NUM_THREADS"); int t = v ? std::atoi(v) : 0;
-                               return t > 0 ? t : omp_get_num_procs(); }();
-  omp_set_num_threads(nthr);
   std::vector<std::pair<const uint8_t*, size_t>> ch[2];
   size_t tot = 0;
   const size_t C = 65536;
@@ -965,9 +953,8 @@ double read_bw(std::vector<torch::Tensor> packs, int64_t numa) {
   PadAt cur[2]; cur[0].v = 0; cur[1].v = 0;
   std::atomic<long long> sink{0};
   const double t0 = now_ms();
-  #pragma omp parallel
-  {
-    const int nd = numa == 2 ? ((sched_getcpu() >= 32) ? 1 : 0) : 0;
+  vh_parallel([&](int, int) {
+    const int nd = numa == 2 ? ((vh_cpu() >= 32) ? 1 : 0) : 0;
     uint64_t acc[4] = {0, 0, 0, 0};
     for (int hop = 0; hop < (numa == 2 ? 2 : 1); hop++) {
       const int Ls = nd ^ hop;
@@ -982,13 +969,12 @@ double read_bw(std::vector<torch::Tensor> packs, int64_t numa) {
       }
     }
     sink += (long long)(acc[0] + acc[1] + acc[2] + acc[3]);
-  }
+  });
   const double ms = now_ms() - t0;
   return tot / ms / 1e6;
 }
 
 // ============================================================================ M0: host-node jobs
-#include <dlfcn.h>
 namespace {
 typedef int (*LaunchHostFn)(void* stream, void (*fn)(void*), void* data);
 LaunchHostFn g_launch_host = nullptr;
@@ -1020,13 +1006,7 @@ void host_cb(void* p) {
   }
 }
 LaunchHostFn launch_host() {
-  if (!g_launch_host) {
-    for (const char* lib : {"libcudart.so.12", "libcudart.so"}) {
-      void* h = dlopen(lib, RTLD_NOW | RTLD_NOLOAD);
-      if (h) { g_launch_host = (LaunchHostFn)dlsym(h, "cudaLaunchHostFunc"); if (g_launch_host) break; }
-    }
-    TORCH_CHECK(g_launch_host, "cudaLaunchHostFunc not found (is torch.cuda initialised?)");
-  }
+  TORCH_CHECK(g_launch_host, "cudaLaunchHostFunc not set (vahana._kernel sets it from the CUDA runtime torch loaded)");
   return g_launch_host;
 }
 }
@@ -1077,12 +1057,11 @@ static void attention_impl(const T* q, const T* k, const T* v, T* o, const int64
                            int64_t smb, int64_t smq) {
   const int64_t NCH = D / 16;
   const float NINF = -std::numeric_limits<float>::infinity();
-#pragma omp parallel
-  {
+  vh_parallel([&](int tid_, int nt_) {
     std::vector<float> qf(D), s(ATT_BT), p(ATT_BT), pv((size_t)ATT_BT * DV), acc(DV);
     std::vector<char> ok(ATT_BT);
-#pragma omp for schedule(static)
-    for (int64_t pid = 0; pid < B * H * Q; pid++) {
+    const int64_t NP = B * H * Q;
+    for (int64_t pid = NP * tid_ / nt_; pid < NP * (tid_ + 1) / nt_; pid++) {
       const int64_t i = pid % Q, h = (pid / Q) % H, b = pid / (Q * H), hk = h / G;
       const T* qp = q + b * sq[0] + h * sq[1] + i * sq[2];
       for (int64_t d = 0; d < D; d++) qf[d] = att_f<T>(qp[d]);
@@ -1138,14 +1117,14 @@ static void attention_impl(const T* q, const T* k, const T* v, T* o, const int64
         if constexpr (std::is_same<T, uint16_t>::value) op[d] = f2bf(r); else op[d] = r;
       }
     }
-  }
+  });
 }
 
 // q [B, H, Q, D], k [B, Hkv, T, D], v [B, Hkv, T, DV] (bf16 or fp32, unit stride on the last dim, D % 16 == 0),
 // first / last [B, Q] int64, mask int8 [B, *, Q, T] (or empty), sinks fp32 [H] (or empty) -> out [B, Q, H, DV].
 torch::Tensor attention_twin(torch::Tensor q, torch::Tensor k, torch::Tensor v, torch::Tensor first,
                              torch::Tensor last, torch::Tensor mask, torch::Tensor sinks, double scale, double cap,
-                             bool has_cap) {
+                             bool has_cap, torch::Tensor out) {
   TORCH_CHECK(q.dim() == 4 && k.dim() == 4 && v.dim() == 4);
   TORCH_CHECK(q.stride(3) == 1 && k.stride(3) == 1 && v.stride(3) == 1, "attention_twin: last dim must be unit stride");
   TORCH_CHECK(q.scalar_type() == k.scalar_type() && q.scalar_type() == v.scalar_type());
@@ -1154,10 +1133,11 @@ torch::Tensor attention_twin(torch::Tensor q, torch::Tensor k, torch::Tensor v, 
                 DV = v.size(3);
   TORCH_CHECK(D % 16 == 0 && H % Hkv == 0);
   first = first.contiguous(); last = last.contiguous();
-  const bool hm = mask.numel() > 0, hs = sinks.numel() > 0;
+  const bool hm = mask.data_ptr() != nullptr && mask.numel() > 0, hs = sinks.data_ptr() != nullptr && sinks.numel() > 0;
   if (hm) TORCH_CHECK(mask.scalar_type() == torch::kInt8 && mask.stride(3) == 1);
   if (hs) { sinks = sinks.to(torch::kFloat32).contiguous(); TORCH_CHECK(sinks.numel() == H); }
-  auto out = torch::empty({B, Q, H, DV}, q.options());
+  TORCH_CHECK(out.scalar_type() == q.scalar_type() && out.dim() == 4 && out.size(0) == B && out.size(1) == Q &&
+              out.size(2) == H && out.size(3) == DV && out.stride(3) == 1);
   const int64_t sq[3] = {q.stride(0), q.stride(1), q.stride(2)}, sk[3] = {k.stride(0), k.stride(1), k.stride(2)},
                 sv[3] = {v.stride(0), v.stride(1), v.stride(2)}, so[3] = {out.stride(0), out.stride(1), out.stride(2)};
   const int8_t* mp = hm ? mask.data_ptr<int8_t>() : nullptr;
@@ -1174,47 +1154,119 @@ torch::Tensor attention_twin(torch::Tensor q, torch::Tensor k, torch::Tensor v, 
   return out;
 }
 
-// P2: Vahana's exp on a tensor (tests compare it with the Triton twin).
-torch::Tensor dexp_t(torch::Tensor x) {
-  x = x.to(torch::kFloat32).contiguous();
-  auto y = torch::empty_like(x);
+// P2: Vahana's exp on a tensor (tests compare it with the Triton twin). x, y fp32 contiguous.
+void dexp_t(torch::Tensor x, torch::Tensor y) {
+  TORCH_CHECK(x.scalar_type() == torch::kFloat && y.scalar_type() == torch::kFloat && x.is_contiguous() &&
+              y.is_contiguous() && x.numel() == y.numel());
   const float* a = x.data_ptr<float>(); float* r = y.data_ptr<float>();
   for (int64_t i = 0; i < x.numel(); i++) r[i] = dexp(a[i]);
-  return y;
 }
 
 std::string isa() { return VH_ISA; }
 bool nx_fast() { return VH_NX_FAST != 0; }
 bool have_numa() { return VH_HAVE_NUMA != 0; }
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("attention_twin", &attention_twin);
-  m.def("dexp", &dexp_t);
-  m.def("have_numa", &have_numa);
-  m.def("isa", &isa);
-  m.def("nx_fast", &nx_fast);
-  m.def("register_layer_act", &register_layer_act);
-  m.def("make_host_job", &make_host_job);
-  m.def("enqueue_host_job", &enqueue_host_job);
-  m.def("host_calls", &host_calls);
-  m.def("make_host_linear", &make_host_linear);
-  m.def("make_host_embed", &make_host_embed);
-  m.def("read_bw", &read_bw, py::call_guard<py::gil_scoped_release>());
-  m.def("register_linear_nx", &register_linear_nx);
-  m.def("register_shared_nx", &register_shared_nx);
-  m.def("encode_nx", &encode_nx, py::call_guard<py::gil_scoped_release>());
-  m.def("register_layer_nx", &register_layer_nx);
-  m.def("expert_mlps_nx", &expert_mlps_nx, py::call_guard<py::gil_scoped_release>());
-  m.def("place_split", &place_split, py::call_guard<py::gil_scoped_release>());
-  m.def("place_rows", &place_rows, py::call_guard<py::gil_scoped_release>());
-  m.def("rows_nodes", &rows_nodes, py::call_guard<py::gil_scoped_release>());
-  m.def("expert_mlps", &expert_mlps, py::call_guard<py::gil_scoped_release>());
-  m.def("submit", &submit);
-  m.def("wait_done", &wait_done, py::call_guard<py::gil_scoped_release>());
-  m.def("kernel_ms", &kernel_ms);
-  m.def("phase_ms", &phase_ms);
-  m.def("register_layer", &register_layer);
-  m.def("submit_moe", &submit_moe);
-  m.def("register_shared", &register_shared);
-  m.def("submit_linear", &submit_linear);
-  m.def("linear_twin", &linear_twin, py::call_guard<py::gil_scoped_release>());
+// ============================================================================ P3: C ABI (vahana/_kernel.py)
+// Every tensor crosses as a vh_t descriptor of memory Python owns and keeps alive (registered weights, pinned job
+// buffers). Results the kernel allocates come back as a vh_list that Python copies out and frees. Errors: functions
+// return -1 / nullptr and vh_last_error() has the message. No libtorch, no Python headers: one library per ISA works
+// with any torch version.
+#if defined(_WIN32)
+#define VH_API extern "C" __declspec(dllexport)
+#else
+#define VH_API extern "C" __attribute__((visibility("default")))
+#endif
+struct vh_t { void* p; int64_t dt; int64_t nd; int64_t sz[8]; int64_t st[8]; };
+struct vh_list { std::vector<torch::Tensor> v; };
+static thread_local std::string g_err;
+static torch::Tensor T_(const vh_t* d) {
+  torch::Tensor t;
+  if (!d) return t;
+  t.p = d->p; t.dt = (int)d->dt; t.nd = (int)d->nd;
+  TORCH_CHECK(t.nd >= 0 && t.nd <= 8, "tensor rank ", t.nd);
+  for (int i = 0; i < t.nd; i++) { t.sz[i] = d->sz[i]; t.st[i] = d->st[i]; }
+  return t;
 }
+static std::vector<torch::Tensor> TV_(const vh_t* d, int64_t n) {
+  std::vector<torch::Tensor> v; v.reserve((size_t)n);
+  for (int64_t i = 0; i < n; i++) v.push_back(T_(d + i));
+  return v;
+}
+static vh_list* L_(std::vector<torch::Tensor> v) { vh_list* l = new vh_list(); l->v = std::move(v); return l; }
+static vh_list* Li_(const std::vector<int64_t>& v) { return L_({torch::tensor(v)}); }
+#define VH_INT(body) try { body; return 0; } catch (const std::exception& e) { g_err = e.what(); return -1; }
+#define VH_LIST(expr) try { return expr; } catch (const std::exception& e) { g_err = e.what(); return nullptr; }
+
+VH_API const char* vh_last_error() { return g_err.c_str(); }
+VH_API const char* vh_isa() { return VH_ISA; }
+VH_API int vh_nx_fast() { return VH_NX_FAST; }
+VH_API int vh_have_numa() { return VH_HAVE_NUMA; }
+VH_API int vh_threads() { return vh_nthreads(); }
+VH_API int vh_abi() { return 1; }
+VH_API int64_t vh_list_len(vh_list* l) { return l ? (int64_t)l->v.size() : 0; }
+VH_API int vh_list_get(vh_list* l, int64_t i, vh_t* out) {
+  if (!l || i < 0 || i >= (int64_t)l->v.size()) { g_err = "vh_list_get: index"; return -1; }
+  const torch::Tensor& t = l->v[(size_t)i];
+  out->p = t.p; out->dt = t.dt; out->nd = t.nd;
+  for (int k = 0; k < t.nd; k++) { out->sz[k] = t.sz[k]; out->st[k] = t.st[k]; }
+  return 0;
+}
+VH_API void vh_list_free(vh_list* l) { delete l; }
+
+VH_API vh_list* vh_expert_mlps(const vh_t* x, const vh_t* g, const vh_t* u, const vh_t* d, int64_t n, int64_t numa) {
+  VH_LIST(L_(expert_mlps(T_(x), TV_(g, n), TV_(u, n), TV_(d, n), numa)))
+}
+VH_API vh_list* vh_expert_mlps_nx(const vh_t* x, const vh_t* packs, int64_t n, int64_t I, int64_t numa) {
+  VH_LIST(L_({expert_mlps_nx(T_(x), TV_(packs, n), I, numa)}))
+}
+VH_API vh_list* vh_linear_twin(const vh_t* x, const vh_t* W) { VH_LIST(L_({linear_twin(T_(x), T_(W))})) }
+VH_API vh_list* vh_encode_nx(const vh_t* W) { VH_LIST(L_(encode_nx(T_(W)))) }
+VH_API int vh_register_layer(int64_t layer, const vh_t* g, const vh_t* u, const vh_t* d, int64_t n) {
+  VH_INT(register_layer(layer, TV_(g, n), TV_(u, n), TV_(d, n)))
+}
+VH_API int vh_register_layer_act(int64_t layer, int64_t act, double alpha, double limit, const vh_t* bg, int64_t nbg,
+                                 const vh_t* bu, int64_t nbu, const vh_t* bd, int64_t nbd) {
+  VH_INT(register_layer_act(layer, act, alpha, limit, TV_(bg, nbg), TV_(bu, nbu), TV_(bd, nbd)))
+}
+VH_API int vh_register_shared(int64_t layer, const vh_t* g, const vh_t* u, const vh_t* d) {
+  VH_INT(register_shared(layer, T_(g), T_(u), T_(d)))
+}
+VH_API int vh_register_layer_nx(int64_t layer, const vh_t* packs, int64_t n) { VH_INT(register_layer_nx(layer, TV_(packs, n))) }
+VH_API int vh_register_shared_nx(int64_t layer, const vh_t* packs, int64_t n) { VH_INT(register_shared_nx(layer, TV_(packs, n))) }
+VH_API int vh_register_linear_nx(const vh_t* W, const vh_t* packs, int64_t n) { VH_INT(register_linear_nx(T_(W), TV_(packs, n))) }
+VH_API int vh_submit(const vh_t* x, const vh_t* g, const vh_t* u, const vh_t* d, int64_t n, int64_t numa) {
+  VH_INT(submit(T_(x), TV_(g, n), TV_(u, n), TV_(d, n), numa))
+}
+VH_API int vh_submit_linear(const vh_t* x, const vh_t* W, const vh_t* out) { VH_INT(submit_linear(T_(x), T_(W), T_(out))) }
+VH_API int vh_submit_moe(int64_t layer, const vh_t* x, const vh_t* ti, const vh_t* tw, const vh_t* out, int64_t numa) {
+  VH_INT(submit_moe(layer, T_(x), T_(ti), T_(tw), T_(out), numa))
+}
+VH_API vh_list* vh_wait_done() { VH_LIST(L_(wait_done())) }
+VH_API double vh_kernel_ms() { return kernel_ms(); }
+VH_API void vh_phase_ms(double* out5) { auto v = phase_ms(); for (int i = 0; i < 5; i++) out5[i] = v[i]; }
+VH_API vh_list* vh_place_split(const vh_t* t, int64_t split) { VH_LIST(Li_(place_split(T_(t), split))) }
+VH_API vh_list* vh_place_rows(const vh_t* W) { VH_LIST(Li_(place_rows(T_(W)))) }
+VH_API vh_list* vh_rows_nodes(const vh_t* W) { VH_LIST(Li_(rows_nodes(T_(W)))) }
+VH_API double vh_read_bw(const vh_t* packs, int64_t n, int64_t numa) {
+  try { return read_bw(TV_(packs, n), numa); } catch (const std::exception& e) { g_err = e.what(); return -1.0; }
+}
+VH_API void vh_set_launch_host(void* fn) { g_launch_host = (LaunchHostFn)fn; }
+VH_API int64_t vh_make_host_job(int64_t layer, const vh_t* x, const vh_t* ti, const vh_t* tw, const vh_t* out,
+                                int64_t numa, int64_t noop) {
+  try { return make_host_job(layer, T_(x), T_(ti), T_(tw), T_(out), numa, noop != 0); }
+  catch (const std::exception& e) { g_err = e.what(); return -1; }
+}
+VH_API int64_t vh_make_host_linear(const vh_t* W, const vh_t* x, const vh_t* out) {
+  try { return make_host_linear(T_(W), T_(x), T_(out)); } catch (const std::exception& e) { g_err = e.what(); return -1; }
+}
+VH_API int64_t vh_make_host_embed(const vh_t* W, const vh_t* ids, const vh_t* out) {
+  try { return make_host_embed(T_(W), T_(ids), T_(out)); } catch (const std::exception& e) { g_err = e.what(); return -1; }
+}
+VH_API int vh_enqueue_host_job(int64_t stream, int64_t id) { VH_INT(enqueue_host_job(stream, id)) }
+VH_API int64_t vh_host_calls() { return host_calls(); }
+VH_API int vh_attention_twin(const vh_t* q, const vh_t* k, const vh_t* v, const vh_t* first, const vh_t* last,
+                             const vh_t* mask, const vh_t* sinks, double scale, double cap, int64_t has_cap,
+                             const vh_t* out) {
+  VH_INT(attention_twin(T_(q), T_(k), T_(v), T_(first), T_(last), T_(mask), T_(sinks), scale, cap, has_cap != 0,
+                        T_(out)))
+}
+VH_API int vh_dexp(const vh_t* x, const vh_t* y) { VH_INT(dexp_t(T_(x), T_(y))) }

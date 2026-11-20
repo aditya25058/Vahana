@@ -4,14 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vahana"
-version = "0.1.0.dev0"
+version = "0.2.0.dev0"
 description = "Exact inference for MoE models too big for your GPU"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "aditya25058" }]
 dependencies = [
   "torch>=2.4",
-  "triton>=3.0",
   "transformers>=5.0",
   "accelerate>=1.0",
   "safetensors>=0.4",
@@ -22,13 +21,15 @@ dependencies = [
 vahana = "vahana.cli:main"
 
 [project.optional-dependencies]
+gpu = ["triton>=3.0"]          # NVIDIA GPUs (Linux; Windows via triton-windows)
 test = ["pytest>=8"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-vahana = ["csrc/*.cpp", "csrc/*.sh"]
+# the CPU kernel, one library per instruction set (built by setup.py / csrc/build.py), and the selftest reference
+vahana = ["_build/*/vahana_kernel.*", "golden_tiny.json", "csrc/*.cpp", "csrc/*.h", "csrc/*.py", "csrc/*.sh"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

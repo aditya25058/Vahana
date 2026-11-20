@@ -1,0 +1,5 @@
+rerun after the false-sharing fix (pool.h atomics on separate cache lines), same command, alternated:
+cpu p2 r1: 18.20 tok/s
+cpu p3 r1: 17.18 tok/s
+cpu p2 r2: 17.80 tok/s
+cpu p3 r2: 17.48 tok/s

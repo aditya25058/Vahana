@@ -1,0 +1,20 @@
+import time, torch
+from vahana import hybrid
+k = hybrid.ext()
+g = torch.Generator().manual_seed(0)
+x = torch.randn(1, 2048, generator=g).bfloat16()
+W = (torch.randn(2048, 2048, generator=g) * 0.02).bfloat16()
+q = torch.randn(1, 16, 1, 128, generator=g).bfloat16(); kk = torch.randn(1, 16, 60, 128, generator=g).bfloat16()
+first = torch.zeros(1, 1, dtype=torch.long); last = torch.full((1, 1), 59, dtype=torch.long)
+out = torch.empty(1, 2048, dtype=torch.bfloat16)
+h = torch.randn(1, 2048, generator=g)
+def T(name, f, n=200):
+    f(); t = time.perf_counter()
+    for _ in range(n): f()
+    print(f"{name:24s} {1e6 * (time.perf_counter() - t) / n:9.1f} us", flush=True)
+def lin(): k.submit_linear(x, W, out); k.wait_done()
+def att(): k.attention_twin(q, kk, kk, first, last, torch.empty(0, dtype=torch.int8), torch.empty(0), 0.088, 1.0, False)
+def glue(): (h * h).sum(-1); torch.sqrt(h.double()).float()
+T("torch glue", glue); T("linear 2048 (job thr)", lin); T("attention (main thr)", att)
+def mix(): glue(); lin(); glue(); att()
+T("mixed", mix)

@@ -1,0 +1,98 @@
+# P3: build one wheel per platform, install it into a clean environment with CPU torch, and check that this
+# machine gives the same bits as the reference H100 (vahana selftest) under every kernel build the runner can run.
+name: wheels
+
+on:
+  push:
+    branches: [main, "ci/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  wheel:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-24.04, torch_index: "https://download.pytorch.org/whl/cpu" }
+          - { name: linux-arm64, os: ubuntu-24.04-arm, torch_index: "https://download.pytorch.org/whl/cpu" }
+          - { name: windows-x86_64, os: windows-2022, torch_index: "https://download.pytorch.org/whl/cpu" }
+          - { name: macos-arm64, os: macos-14, torch_index: "" }
+    runs-on: ${{ matrix.os }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel (Linux, manylinux_2_28)
+        if: runner.os == 'Linux'
+        uses: pypa/cibuildwheel@v2.22.0
+        env:
+          CIBW_BUILD: "cp312-*"
+          CIBW_SKIP: "*musllinux*"
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+          CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_28
+          CIBW_ENVIRONMENT: "VAHANA_STATIC_LIBSTDCXX=1"
+        with:
+          output-dir: dist
+
+      - name: Build wheel (Windows, macOS)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          python -m pip install --upgrade build
+          clang++ --version || true
+          python -m build --wheel --outdir dist .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.name }}
+          path: dist/*.whl
+
+      - name: Install the wheel into a clean environment
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          if [ "$RUNNER_OS" = Windows ]; then PY="$RUNNER_TEMP/venv/Scripts/python.exe"; else PY="$RUNNER_TEMP/venv/bin/python"; fi
+          echo "PY=$PY" >> "$GITHUB_ENV"
+          "$PY" -m pip install --upgrade pip
+          if [ -n "${{ matrix.torch_index }}" ]; then
+            "$PY" -m pip install torch --index-url "${{ matrix.torch_index }}"
+          else
+            "$PY" -m pip install torch
+          fi
+          "$PY" -m pip install "transformers==5.12.1" accelerate safetensors numpy pytest
+          "$PY" -m pip install --no-deps dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$PY" -c "import torch, vahana.hybrid as h; k = h.ext(); print('kernel', k.path, k.isa(), 'threads', k.threads(), 'torch', torch.__version__)"
+
+      - name: vahana selftest (every kernel build this CPU runs)
+        shell: bash
+        env:
+          VAHANA_THREADS: "4"
+          OMP_NUM_THREADS: "1"
+        run: |
+          cd "$RUNNER_TEMP"
+          ISAS=$("$PY" -c "from vahana import hybrid as h; i = h.cpu_isa(); print(' '.join({'avx512': ['avx512', 'avx2', 'scalar'], 'avx2': ['avx2', 'scalar'], 'neon': ['neon', 'scalar']}.get(i, [i])))")
+          echo "builds to check: $ISAS"
+          fail=0
+          for isa in $ISAS; do
+            echo "::group::selftest $isa"
+            VAHANA_ISA=$isa "$PY" -m vahana.selftest --device cpu | tee "selftest_$isa.txt" || fail=1
+            echo "::endgroup::"
+            echo "::notice title=selftest ${{ matrix.name }} $isa::$(tail -1 selftest_$isa.txt)"
+          done
+          exit $fail
+
+      - name: Tests (CPU)
+        shell: bash
+        env:
+          VAHANA_THREADS: "4"
+          OMP_NUM_THREADS: "1"
+        run: |
+          cd "$RUNNER_TEMP"
+          "$PY" -m pytest -q -p no:cacheprovider "$GITHUB_WORKSPACE/tests/test_twin.py" "$GITHUB_WORKSPACE/tests/test_modelspec.py"

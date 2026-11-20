@@ -19,13 +19,15 @@ Its answers are **bit-identical** wherever the work runs. The same tokens come o
 > - **v0.1:** one GPU plus a large-RAM CPU host, BF16 checkpoints, and an OpenAI-compatible server (one request at a time).
 > - **Done for v0.2:**
 >   - one CPU kernel for AVX-512, AVX2, ARM NEON and plain C (P1);
->   - CPU-only machines, with the same bits as a GPU (P2).
-> - **Next:** native Windows and macOS builds with wheels (P3).
+>   - CPU-only machines, with the same bits as a GPU (P2);
+>   - Linux, Windows and macOS: no libtorch or OpenMP dependency, one wheel per platform, and `vahana selftest` (P3).
+> - **Next:** `vahana doctor` and an SSD streaming tier, for models bigger than RAM (P4).
 
 ## Quick start
 ```bash
-pip install -e .                                   # torch >= 2.4, transformers >= 5.0
-bash src/vahana/csrc/build_kernel.sh python        # CPU kernel for every instruction set this CPU has
+pip install vahana-*.whl            # a wheel for your platform (CI builds them), then torch for your machine
+pip install -e . && python src/vahana/csrc/build.py    # or from source: needs a C++20 compiler, no torch headers
+vahana selftest                     # same bits as the reference H100? (18 tiny models, about a minute)
 
 vahana run   /models/Qwen3-30B-A3B --prompt "Explain mixture-of-experts in one paragraph." --chat
 vahana serve /models/DeepSeek-Coder-V2-Instruct --gpu-budget 16 --port 8000
@@ -97,7 +99,12 @@ Vahana finds the experts by structure (transformers' `experts(hidden, indices, w
 - **Hybrid-attention models decode eagerly.**
 
 ## Layout
-- **v0.1 path:** `src/vahana/{loader, modelspec, experts, runtime, attention, decode, server, cli}.py` and `src/vahana/csrc/cpu_moe.cpp`.
+- **v0.1 path:** `src/vahana/{loader, modelspec, experts, runtime, attention, decode, server, cli}.py`.
+- **Twin arithmetic (P2):** `tmath.py`, `attention.py`.
+- **Kernel (P3):**
+  - `src/vahana/csrc/` holds `cpu_moe.cpp`, `vt.h`, `pool.h` and `build.py`, built as a plain shared library with a C ABI.
+  - Python reaches it through `_kernel.py`.
+  - `osl.py` holds the OS-specific calls.
 - **Earlier research engine:** the remaining modules (batched throughput, column tiers, ANS plane, speculative decoding). Not used by the v0.1 path.
 - **Design:** `docs/design/v0.1-moe-adapter.md`, `docs/design/v0.2-portability.md`.
 - **Evidence:** `experiments/` (M0-M5, server, P1 portable kernel, P2 twin).

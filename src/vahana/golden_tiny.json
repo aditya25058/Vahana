@@ -1,0 +1,28 @@
+{
+ "_transformers": "5.12.1",
+ "_recorded_on": {
+  "device": "cuda",
+  "isa": "avx512",
+  "torch": "2.4.0+cu121",
+  "transformers": "5.12.1",
+  "platform": "linux"
+ },
+ "mixtral": "ce34fc14fa082f131ee2dd69",
+ "qwen2_moe": "3939272bd83b1b003f61fec9",
+ "qwen3_moe": "09be7f5e561a4f88611e801b",
+ "olmoe": "782a7ec8150c68e9a6c2b529",
+ "deepseek_v2": "34247d4ba5c9ebe27266917a",
+ "deepseek_v3": "a9891d8bb9e8da81495a9bd8",
+ "glm4_moe": "125d50eb37a437f432a8f8ba",
+ "glm4_moe_lite": "a6f60d8252b3b983a6748f03",
+ "minimax": "5df89cc29832418907377398",
+ "minimax_m2": "e260ff4d158fb5c140b260d2",
+ "hunyuan_v1_moe": "062bbc553ecd8dfe74056821",
+ "ernie4_5_moe": "c22f889765732a53c2bf17ca",
+ "cohere2_moe": "8a9031bc8fa75432593eb004",
+ "exaone_moe": "84179a4bfe29b3a7aba07417",
+ "afmoe": "4ea6231fd93ce865ca5ef5a4",
+ "phimoe": "386cf5a7fab5d32d6dae0c60",
+ "qwen3_5_moe_text": "049869a788fdf6baacd7339d",
+ "gpt_oss": "4385e7be5567ae5316aa5bfc"
+}
