@@ -1,4 +1,6 @@
 """ModelSpec discovery on meta-device tiny models (CPU only, no weights)."""
+import importlib
+
 import pytest
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM
@@ -13,7 +15,7 @@ SMALL = dict(hidden_size=256, intermediate_size=512, moe_intermediate_size=128, 
              decoder_sparse_step=1, mlp_only_layers=[], num_shared_experts=1)
 TIER1 = ["mixtral", "qwen2_moe", "qwen3_moe", "olmoe", "deepseek_v2", "deepseek_v3", "glm4_moe", "glm4_moe_lite",
          "minimax", "minimax_m2", "hunyuan_v1_moe", "ernie4_5_moe", "cohere2_moe", "exaone_moe", "afmoe", "phimoe",
-         "qwen3_5_moe_text", "granitemoe"]
+         "qwen3_5_moe_text"]
 NOT_YET = ["llama4_text"]
 
 
@@ -53,3 +55,26 @@ def test_gpt_oss_layout():
     s = specs[0]
     assert s.layout == "fused_interleaved_t" and s.act == "swiglu_oai" and s.bias
     assert (s.E, s.H) == (8, 256) and s.alpha == 1.702 and s.limit == 7.0
+
+
+def _has(module: str, cls: str) -> bool:
+    try:
+        return hasattr(importlib.import_module(module), cls)
+    except ImportError:
+        return False
+
+
+@pytest.mark.parametrize("fam,module,cls", [
+    ("granitemoe", "transformers.models.granitemoe.modeling_granitemoe", "GraniteMoeExperts"),
+    ("granitemoeshared", "transformers.models.granitemoeshared.modeling_granitemoeshared", "GraniteMoeSharedExperts"),
+])
+def test_granite_follows_transformers(fam, module, cls):
+    """transformers 5.20 rebuilt Granite-MoE on the standard experts module: discovery must then accept it with no
+    Vahana change; older transformers keep the ParallelExperts layout, which must be rejected loudly."""
+    m = meta_model(fam)
+    if _has(module, cls):
+        specs = inspect(m)
+        assert specs and specs[0].layout == "fused_concat" and specs[0].E == 8
+    else:
+        with pytest.raises(UnsupportedModel):
+            inspect(m)
