@@ -16,8 +16,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import torch
-import triton
-import triton.language as tl
+from ._triton import tl, triton
 
 C_LOG2E, C_LN2HI, C_LN2LO = (float.fromhex("0x1.715476p+0"), float.fromhex("0x1.63p-1"),
                              float.fromhex("-0x1.bd0106p-13"))

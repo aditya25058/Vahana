@@ -19,8 +19,7 @@ from __future__ import annotations
 import os as _os
 
 import torch
-import triton
-import triton.language as tl
+from ._triton import tl, triton
 
 _FAST_GATE = _os.environ.get("VAHANA_FAST_GATE") == "1"
 

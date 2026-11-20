@@ -17,6 +17,7 @@ from .invariant import inv_linear
 from .twinlin import gpu_linear
 
 GRAPH = {"on": False}
+TWIN = {"on": False}         # P2: every linear in twin arithmetic (set by loader when twin=True)
 ROWS = 16                    # rows per CPU job (the kernel's per-expert / per-linear batch limit)
 _BUF: dict = {}
 
@@ -108,8 +109,19 @@ def cpu_embed(W: torch.Tensor, ids: torch.Tensor, device) -> torch.Tensor:
     return out.view(*shp, W.shape[1])
 
 
+def twin_linear(x2: torch.Tensor, W: torch.Tensor) -> torch.Tensor:
+    """bf16 twin linear wherever W lives (CPU kernel or GPU Triton twin: the same bits). x2 [n, K], K % 16 == 0,
+    R % 4 == 0."""
+    if W.device.type == "cpu":
+        return cpu_linear(W, x2)
+    return gpu_linear(x2.contiguous(), W)
+
+
 def _linear_forward(self, x):
     W = self.weight
+    if TWIN["on"]:
+        from .tmath import tlinear
+        return tlinear(x, W, self.bias)
     shp = x.shape
     if W.device.type == "cpu":
         if self.bias is not None:
@@ -150,5 +162,12 @@ class SharedExpert(nn.Module):
         if self.folded:
             return torch.zeros_like(x)
         shp = x.shape
-        y = _hy.twin_one(x.reshape(-1, shp[-1]).to(torch.bfloat16).contiguous(), self.g, self.u, self.d)
+        x2 = x.reshape(-1, shp[-1]).to(torch.bfloat16).contiguous()
+        if self.g.device.type == "cpu":               # CPU expert kernel (the twin of twin_one), 16 rows per call
+            k = _hy.ext()
+            ys = [k.expert_mlps(x2[s:s + ROWS].cpu().unsqueeze(0), [self.g], [self.u], [self.d], 0)[0][0]
+                  for s in range(0, x2.shape[0], ROWS)]
+            y = torch.cat(ys).to(x.device)
+        else:
+            y = _hy.twin_one(x2, self.g, self.u, self.d)
         return y.view(shp).to(x.dtype)

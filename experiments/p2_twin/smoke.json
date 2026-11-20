@@ -1,0 +1,40 @@
+{
+ "mixtral": {
+  "norm_fast": {
+   "fast": 9,
+   "twinmode": []
+  },
+  "rope_twin": 1,
+  "twin": true,
+  "graph": true,
+  "batch_gpu": true,
+  "batch_cpu": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "audit": {},
+  "step_ms_gpu": 1.41980592161417,
+  "step_ms_cpu": 7.469366304576397
+ },
+ "qwen3_moe": {
+  "norm_fast": {
+   "fast": 17,
+   "twinmode": []
+  },
+  "rope_twin": 1,
+  "twin": true,
+  "graph": true,
+  "batch_gpu": true,
+  "batch_cpu": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "audit": {},
+  "step_ms_gpu": 1.4260457828640938,
+  "step_ms_cpu": 7.260642014443874
+ },
+ "summary": {
+  "families": 2,
+  "all_pass": 2,
+  "twin": 2,
+  "not": []
+ }
+}

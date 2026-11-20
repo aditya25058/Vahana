@@ -17,8 +17,7 @@ import re
 
 import torch
 import torch.nn.functional as F
-import triton
-import triton.language as tl
+from ._triton import tl, triton
 from torch import nn
 
 from . import hybrid as _hy
@@ -166,3 +165,68 @@ def shared_gpu(wrapper, x2: torch.Tensor) -> torch.Tensor:
     """Shared experts on the GPU in expert-twin arithmetic. x2 [N, H] -> [N, H]."""
     se = wrapper.shared_experts
     return _hy.twin_one(x2, se.gate_proj.weight, se.up_proj.weight, se.down_proj.weight)
+
+
+# ---- P2: one-kernel RMSNorm in the twin definition (tmath): x*x, halving-tree sum over the padded row, / N,
+# 1 / sqrt(var + eps), bf16(x * r), bf16(w * h). Used only where verified equal to the module run under TwinMode.
+@triton.jit
+def _halve(a, N: tl.constexpr):
+    return tl.sum(tl.reshape(a, (2, N // 2)), axis=0)
+
+
+@triton.jit
+def _trms(x, w, y, N, sx, sy, eps, BLOCK: tl.constexpr):
+    r = tl.program_id(0).to(tl.int64)
+    cols = tl.arange(0, BLOCK)
+    m = cols < N
+    v = tl.load(x + r * sx + cols, mask=m, other=0.0).to(tl.float32)
+    a = v * v
+    if BLOCK >= 2:
+        a = _halve(a, BLOCK)
+    if BLOCK >= 4:
+        a = _halve(a, BLOCK // 2)
+    if BLOCK >= 8:
+        a = _halve(a, BLOCK // 4)
+    if BLOCK >= 16:
+        a = _halve(a, BLOCK // 8)
+    if BLOCK >= 32:
+        a = _halve(a, BLOCK // 16)
+    if BLOCK >= 64:
+        a = _halve(a, BLOCK // 32)
+    if BLOCK >= 128:
+        a = _halve(a, BLOCK // 64)
+    if BLOCK >= 256:
+        a = _halve(a, BLOCK // 128)
+    if BLOCK >= 512:
+        a = _halve(a, BLOCK // 256)
+    if BLOCK >= 1024:
+        a = _halve(a, BLOCK // 512)
+    if BLOCK >= 2048:
+        a = _halve(a, BLOCK // 1024)
+    if BLOCK >= 4096:
+        a = _halve(a, BLOCK // 2048)
+    if BLOCK >= 8192:
+        a = _halve(a, BLOCK // 4096)
+    if BLOCK >= 16384:
+        a = _halve(a, BLOCK // 8192)
+    if BLOCK >= 32768:
+        a = _halve(a, BLOCK // 16384)
+    s = tl.sum(a, axis=0)                                  # one slot left (>= 0)
+    var = tl.math.div_rn(s, N.to(tl.float32))
+    rs = tl.math.div_rn(1.0, tl.math.sqrt_rn(var + eps))
+    h = (v * rs).to(tl.bfloat16).to(tl.float32)
+    ww = tl.load(w + cols, mask=m, other=0.0).to(tl.float32)
+    tl.store(y + r * sy + cols, (ww * h).to(tl.bfloat16), mask=m)
+
+
+def twin_rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
+    """bf16 x and weight (other dtypes: the caller keeps the TwinMode path)."""
+    assert x.dtype == torch.bfloat16 and weight.dtype == torch.bfloat16
+    shape = x.shape
+    x2 = x.reshape(-1, shape[-1]).contiguous()
+    y = torch.empty_like(x2)
+    N = x2.shape[1]
+    if x2.shape[0]:
+        _trms[(x2.shape[0],)](x2, weight, y, N, x2.stride(0), y.stride(0), eps,
+                              BLOCK=triton.next_power_of_2(N), num_warps=8, enable_fp_fusion=False)
+    return y.view(shape)

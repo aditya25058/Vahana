@@ -1,0 +1,66 @@
+{
+ "model": "OLMoE-1B-7B-0924",
+ "prompts": 50,
+ "positions": 603,
+ "fp32_s": 6.710839748382568,
+ "gpu": {
+  "load_s": 6.477022409439087,
+  "invariant": "twin",
+  "norm_fast": {
+   "fast": 65,
+   "twinmode": []
+  },
+  "rope_twin": 1,
+  "graph_used": [
+   true,
+   true,
+   true,
+   true
+  ],
+  "step_ms_median": [
+   20.6342451274395,
+   18.412610050290823,
+   19.319369923323393,
+   18.925896380096674
+  ],
+  "prefill_all_s": 11.398029565811157,
+  "wall_s": 22.471273183822632
+ },
+ "cpu": {
+  "load_s": 7.44013524055481,
+  "invariant": "twin",
+  "norm_fast": {
+   "fast": 0,
+   "twinmode": []
+  },
+  "rope_twin": 1,
+  "graph_used": [
+   false,
+   false,
+   false,
+   false
+  ],
+  "step_ms_median": [
+   50.94688292592764,
+   50.746181048452854,
+   51.956904120743275,
+   50.8238710463047
+  ],
+  "prefill_all_s": 13.413184404373169,
+  "wall_s": 27.057940006256104
+ },
+ "real": {
+  "gen_ids_equal": true,
+  "gen_logits_equal": true,
+  "prefill_logits_equal": 50,
+  "prefill_prompts": 50,
+  "pass": true
+ },
+ "quality_vs_fp32": {
+  "vahana_twin": {
+   "top1_agree": 0.9817578772802653,
+   "max_rel": 0.18434694409370422
+  }
+ },
+ "gen_text_0": "\n\nThe Fibonacci sequence is defined as follows:\n\nF(0) = 0\nF(1"
+}

@@ -53,7 +53,7 @@ class _State:
 
 def _run(st: _State, text: str, req: dict, emit=None):
     """Generate for one prompt; emit(delta_text) is called as text arrives. Returns (text, finish, n_in, n_out)."""
-    ids = st.tok(text, return_tensors="pt").input_ids.to("cuda")
+    ids = st.tok(text, return_tensors="pt").input_ids.to(getattr(st.model, "_vahana_device", "cuda"))
     max_tokens = int(req.get("max_tokens") or 16)
     stops = req.get("stop") or []
     stops = [stops] if isinstance(stops, str) else list(stops)

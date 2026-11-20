@@ -14,6 +14,11 @@ import torch
 from . import runtime as _rt
 
 
+def _sync(dev) -> None:
+    if dev.type == "cuda":
+        torch.cuda.synchronize(dev)
+
+
 @torch.no_grad()
 def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None = None, max_new_tokens: int = 64,
              graph: bool = True, eos_token_id=None, return_logits: bool = False, sampler=None, on_token=None):
@@ -24,6 +29,7 @@ def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None
     stops generation."""
     from transformers import StaticCache
     dev = input_ids.device
+    graph = graph and dev.type == "cuda"          # CPU-only machines decode eagerly
     B, T = input_ids.shape
     L = T + max_new_tokens
     am = torch.zeros(B, L, dtype=torch.long, device=dev)
@@ -49,7 +55,7 @@ def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None
             raise
         return _generate_dynamic(model, input_ids, attention_mask, max_new_tokens, return_logits, sampler, on_token,
                                  reason=f"own cache class: {str(e)[:160]}")
-    torch.cuda.synchronize()
+    _sync(dev)
     prefill_s = time.perf_counter() - t0
     logit = out.logits[:, -1].float()
     tok = logit.argmax(-1, keepdim=True) if sampler is None else sampler(logit).to(dev).view(B, 1)
@@ -75,7 +81,7 @@ def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None
         if stop or eos_token_id is not None and B == 1 and int(ids[-1][0, 0]) in (
                 eos_token_id if isinstance(eos_token_id, (list, tuple, set)) else (eos_token_id,)):
             break
-        torch.cuda.synchronize()
+        _sync(dev)
         t = time.perf_counter()
         if not graph:
             step()
@@ -111,7 +117,7 @@ def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None
                             f(dev.index if dev.index is not None else torch.cuda.current_device(), pool)
                         except Exception:  # noqa: BLE001
                             pass
-                    torch.cuda.synchronize()
+                    _sync(dev)
                     lines = (inner[0] if inner else repr(e)).strip().splitlines()
                     errs = [x for x in lines if "Error" in x and not x.startswith(" ")]
                     where = [x.strip() for x in lines if x.strip().startswith("File ")][-1:]
@@ -121,13 +127,13 @@ def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None
                     _rt.GRAPH["on"] = False
                 if g is not None:
                     torch.cuda.current_stream().wait_stream(s)
-                    torch.cuda.synchronize()
+                    _sync(dev)
                     t = time.perf_counter()
             if g is not None:
                 g.replay()
             else:
                 step()
-        torch.cuda.synchronize()
+        _sync(dev)
         lat.append(time.perf_counter() - t)
         if sampler is not None:
             tok.copy_(sampler(lbuf).to(dev).view(B, 1))
@@ -152,7 +158,7 @@ def _generate_dynamic(model, input_ids, attention_mask, max_new_tokens, return_l
     pos = (am.cumsum(-1) - 1).clamp(min=0)
     t0 = time.perf_counter()
     out = model(input_ids, attention_mask=am, position_ids=pos, use_cache=True, logits_to_keep=1)
-    torch.cuda.synchronize()
+    _sync(dev)
     prefill_s = time.perf_counter() - t0
     pkv, logit = out.past_key_values, out.logits[:, -1].float()
     pick = (lambda lg: lg.argmax(-1, keepdim=True)) if sampler is None else (lambda lg: sampler(lg).to(dev).view(B, 1))
@@ -162,14 +168,14 @@ def _generate_dynamic(model, input_ids, attention_mask, max_new_tokens, return_l
     for _ in range(max_new_tokens - 1):
         if stop:
             break
-        torch.cuda.synchronize()
+        _sync(dev)
         t = time.perf_counter()
         am = torch.cat([am, torch.ones(B, 1, dtype=torch.long, device=dev)], 1)
         pos = pos[:, -1:] + 1
         o = model(tok, attention_mask=am, position_ids=pos, past_key_values=pkv, use_cache=True, logits_to_keep=1)
         pkv, logit = o.past_key_values, o.logits[:, -1].float()
         tok = pick(logit)
-        torch.cuda.synchronize()
+        _sync(dev)
         lat.append(time.perf_counter() - t)
         ids.append(tok)
         if return_logits:

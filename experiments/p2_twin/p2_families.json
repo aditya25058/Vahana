@@ -1,0 +1,318 @@
+{
+ "mixtral": {
+  "norm_fast": {
+   "fast": 9,
+   "twinmode": []
+  },
+  "rope_twin": 1,
+  "twin": true,
+  "graph": true,
+  "batch_gpu": true,
+  "batch_cpu": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "audit": {},
+  "step_ms_gpu": 1.4581819996237755,
+  "step_ms_cpu": 6.452606990933418
+ },
+ "qwen2_moe": {
+  "norm_fast": {
+   "fast": 9,
+   "twinmode": []
+  },
+  "rope_twin": 1,
+  "twin": true,
+  "graph": true,
+  "batch_gpu": true,
+  "batch_cpu": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "audit": {},
+  "step_ms_gpu": 1.7753071151673794,
+  "step_ms_cpu": 8.365577086806297
+ },
+ "qwen3_moe": {
+  "norm_fast": {
+   "fast": 17,
+   "twinmode": []
+  },
+  "rope_twin": 1,
+  "twin": true,
+  "graph": true,
+  "batch_gpu": true,
+  "batch_cpu": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "audit": {},
+  "step_ms_gpu": 1.5453840605914593,
+  "step_ms_cpu": 7.57576385512948
+ },
+ "olmoe": {
+  "norm_fast": {
+   "fast": 17,
+   "twinmode": []
+  },
+  "rope_twin": 1,
+  "twin": true,
+  "graph": true,
+  "batch_gpu": true,
+  "batch_cpu": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "audit": {},
+  "step_ms_gpu": 1.59888481721282,
+  "step_ms_cpu": 7.7382768504321575
+ },
+ "deepseek_v2": {
+  "norm_fast": {
+   "fast": 17,
+   "twinmode": []
+  },
+  "rope_twin": 1,
+  "twin": true,
+  "graph": true,
+  "batch_gpu": true,
+  "batch_cpu": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "audit": {},
+  "step_ms_gpu": 1.638805028051138,
+  "step_ms_cpu": 9.128897916525602
+ },
+ "deepseek_v3": {
+  "norm_fast": {
+   "fast": 17,
+   "twinmode": []
+  },
+  "rope_twin": 1,
+  "twin": true,
+  "graph": true,
+  "batch_gpu": true,
+  "batch_cpu": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "audit": {},
+  "step_ms_gpu": 1.7563067376613617,
+  "step_ms_cpu": 9.399151895195246
+ },
+ "glm4_moe": {
+  "norm_fast": {
+   "fast": 9,
+   "twinmode": []
+  },
+  "rope_twin": 1,
+  "twin": true,
+  "graph": true,
+  "batch_gpu": true,
+  "batch_cpu": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "audit": {},
+  "step_ms_gpu": 1.8720980733633041,
+  "step_ms_cpu": 7.671545259654522
+ },
+ "glm4_moe_lite": {
+  "norm_fast": {
+   "fast": 17,
+   "twinmode": []
+  },
+  "rope_twin": 1,
+  "twin": true,
+  "graph": true,
+  "batch_gpu": true,
+  "batch_cpu": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "audit": {},
+  "step_ms_gpu": 1.5890244394540787,
+  "step_ms_cpu": 9.387170895934105
+ },
+ "minimax": {
+  "norm_fast": {
+   "fast": 11,
+   "twinmode": []
+  },
+  "rope_twin": 1,
+  "twin": true,
+  "graph": true,
+  "batch_gpu": true,
+  "batch_cpu": true,
+  "graph_used": false,
+  "graph_fallback": "non-attention layers ['linear_attention']",
+  "audit": {},
+  "step_ms_gpu": 10.555169079452753,
+  "step_ms_cpu": 8.440835867077112
+ },
+ "minimax_m2": {
+  "norm_fast": {
+   "fast": 17,
+   "twinmode": []
+  },
+  "rope_twin": 1,
+  "twin": true,
+  "graph": true,
+  "batch_gpu": true,
+  "batch_cpu": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "audit": {},
+  "step_ms_gpu": 1.7059361562132835,
+  "step_ms_cpu": 8.22457391768694
+ },
+ "hunyuan_v1_moe": {
+  "norm_fast": {
+   "fast": 17,
+   "twinmode": []
+  },
+  "rope_twin": 1,
+  "twin": true,
+  "graph": true,
+  "batch_gpu": true,
+  "batch_cpu": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "audit": {},
+  "step_ms_gpu": 1.641795039176941,
+  "step_ms_cpu": 8.951304014772177
+ },
+ "ernie4_5_moe": {
+  "norm_fast": {
+   "fast": 9,
+   "twinmode": []
+  },
+  "rope_twin": 1,
+  "twin": true,
+  "graph": true,
+  "batch_gpu": true,
+  "batch_cpu": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "audit": {},
+  "step_ms_gpu": 1.4832019805908203,
+  "step_ms_cpu": 7.934047840535641
+ },
+ "cohere2_moe": {
+  "norm_fast": {
+   "fast": 0,
+   "twinmode": [
+    "Cohere2MoeLayerNorm"
+   ]
+  },
+  "rope_twin": 1,
+  "twin": true,
+  "graph": true,
+  "batch_gpu": true,
+  "batch_cpu": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "audit": {},
+  "step_ms_gpu": 1.9641388207674026,
+  "step_ms_cpu": 7.712364662438631
+ },
+ "exaone_moe": {
+  "norm_fast": {
+   "fast": 17,
+   "twinmode": []
+  },
+  "rope_twin": 1,
+  "twin": true,
+  "graph": true,
+  "batch_gpu": true,
+  "batch_cpu": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "audit": {},
+  "step_ms_gpu": 1.8024668097496033,
+  "step_ms_cpu": 9.030154906213284
+ },
+ "afmoe": {
+  "norm_fast": {
+   "fast": 25,
+   "twinmode": []
+  },
+  "rope_twin": 1,
+  "twin": true,
+  "graph": true,
+  "batch_gpu": true,
+  "batch_cpu": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "audit": {},
+  "step_ms_gpu": 1.7464361153542995,
+  "step_ms_cpu": 10.42268518358469
+ },
+ "phimoe": {
+  "norm_fast": {
+   "fast": 0,
+   "twinmode": []
+  },
+  "rope_twin": 1,
+  "twin": true,
+  "graph": true,
+  "batch_gpu": true,
+  "batch_cpu": true,
+  "graph_used": false,
+  "graph_fallback": "RuntimeError: CUDA error: operation not permitted when stream is capturing | File \"<repo>/src/vahana/tmath.py\", line 782, in __torch_function__",
+  "audit": {},
+  "step_ms_gpu": 15.17196511849761,
+  "step_ms_cpu": 9.277707897126675
+ },
+ "qwen3_5_moe_text": {
+  "norm_fast": {
+   "fast": 0,
+   "twinmode": [
+    "Qwen3_5MoeRMSNormGated"
+   ]
+  },
+  "rope_twin": 1,
+  "twin": true,
+  "graph": true,
+  "batch_gpu": false,
+  "batch_cpu": false,
+  "graph_used": false,
+  "graph_fallback": "non-attention layers ['linear_attention']",
+  "audit": {},
+  "step_ms_gpu": 24.22380866482854,
+  "step_ms_cpu": 25.64813895151019
+ },
+ "gpt_oss": {
+  "norm_fast": {
+   "fast": 9,
+   "twinmode": []
+  },
+  "rope_twin": 1,
+  "twin": true,
+  "graph": true,
+  "batch_gpu": true,
+  "batch_cpu": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "audit": {},
+  "step_ms_gpu": 1.8677273765206337,
+  "step_ms_cpu": 7.6834941282868385
+ },
+ "mixtral@intermediate_size=96": {
+  "norm_fast": {
+   "fast": 9,
+   "twinmode": []
+  },
+  "rope_twin": 1,
+  "twin": true,
+  "graph": true,
+  "batch_gpu": true,
+  "batch_cpu": true,
+  "graph_used": true,
+  "graph_fallback": null,
+  "audit": {},
+  "step_ms_gpu": 1.5934929251670837,
+  "step_ms_cpu": 7.194206118583679
+ },
+ "summary": {
+  "families": 19,
+  "all_pass": 18,
+  "twin": 19,
+  "not": [
+   "qwen3_5_moe_text"
+  ]
+ }
+}

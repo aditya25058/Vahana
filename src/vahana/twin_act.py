@@ -7,8 +7,7 @@ exp). down: the kernel's down_o() (bf16(dot), then + bias, then bf16).
 from __future__ import annotations
 
 import torch
-import triton
-import triton.language as tl
+from ._triton import tl, triton
 
 from .hybrid import C_LN2HI, C_LN2LO, C_LOG2E, P0, P1, P2, P3, P4, P5, _dexp
 from .twinlin import _tree16

@@ -43,6 +43,8 @@ static inline long move_pages(int, unsigned long count, void** pages, const int*
 #include <atomic>
 #include <vector>
 #include <algorithm>
+#include <limits>
+#include <type_traits>
 
 static inline float bf2f(uint16_t h) { uint32_t u = ((uint32_t)h) << 16; float f; std::memcpy(&f, &u, 4); return f; }
 static inline uint16_t f2bf(float f) {
@@ -303,6 +305,8 @@ std::vector<double> phase_ms() { return std::vector<double>(g_ph, g_ph + 5); }
 //   acc = f32(y_0) * f32(w_0);  acc = acc + f32(y_j) * f32(w_j)  (separate roundings, no FMA);  out = bf16(acc)
 // Built with -ffp-contract=off, so the bits equal the GPU combine.
 #include <algorithm>
+#include <limits>
+#include <type_traits>
 #include <map>
 namespace {
 struct LayerW { std::vector<torch::Tensor> g, u, d; std::vector<torch::Tensor> sg, su, sd; std::vector<torch::Tensor> nx, snx;
@@ -1048,10 +1052,143 @@ int64_t make_host_embed(torch::Tensor W, torch::Tensor ids, torch::Tensor out) {
   HOST_JOBS->push_back(j); return (int64_t)HOST_JOBS->size() - 1;
 }
 
+// ---- P2: CPU twin of the `vahana` attention kernel (attention.py _attn). Same bits as the GPU, by construction.
+// Per (row b, head h, query i), keys in blocks of 64 anchored at the query's first allowed key:
+//   s_t   = tree16(16 fma lanes over d ascending: q[d] * k[t, d]) * scale     (d padded to a multiple of 16)
+//   cap:  y = s / cap; e = dexp(-2y); s = cap * (2 * (1 / (1 + e)) - 1)
+//   m'    = max(m, max_t s_t);  alpha = m' == -inf ? 1 : dexp(m - m');  p_t = ok_t ? dexp(s_t - m') : 0
+//   l     = fma(l, alpha, tree64(p));  acc[j] = fma(acc[j], alpha, tree64(p_t * v[t, j]))
+//   out   = l > 0 ? acc / l : 0, rounded to the output dtype.
+// tree64 halves the 64 slots in place (slot c += slot c + half), masked slots holding exact zeros.
+// Sinks (gpt-oss): m starts at the sink logit and l at 1.
+static constexpr int ATT_BT = 64;
+template <typename T> static inline V16 att_ld(const T* p);
+template <> inline V16 att_ld<uint16_t>(const uint16_t* p) { return v_ldbf16(p); }
+template <> inline V16 att_ld<float>(const float* p) { return v_loadf(p); }
+template <typename T> static inline float att_f(T x);
+template <> inline float att_f<uint16_t>(uint16_t x) { return bf2f(x); }
+template <> inline float att_f<float>(float x) { return x; }
+
+template <typename T>
+static void attention_impl(const T* q, const T* k, const T* v, T* o, const int64_t* first, const int64_t* last,
+                           const int8_t* mask, const float* sinks, float scale, float cap, bool has_cap,
+                           int64_t B, int64_t H, int64_t G, int64_t Q, int64_t T_, int64_t D, int64_t DV,
+                           const int64_t* sq, const int64_t* sk, const int64_t* sv, const int64_t* so,
+                           int64_t smb, int64_t smq) {
+  const int64_t NCH = D / 16;
+  const float NINF = -std::numeric_limits<float>::infinity();
+#pragma omp parallel
+  {
+    std::vector<float> qf(D), s(ATT_BT), p(ATT_BT), pv((size_t)ATT_BT * DV), acc(DV);
+    std::vector<char> ok(ATT_BT);
+#pragma omp for schedule(static)
+    for (int64_t pid = 0; pid < B * H * Q; pid++) {
+      const int64_t i = pid % Q, h = (pid / Q) % H, b = pid / (Q * H), hk = h / G;
+      const T* qp = q + b * sq[0] + h * sq[1] + i * sq[2];
+      for (int64_t d = 0; d < D; d++) qf[d] = att_f<T>(qp[d]);
+      const int64_t tf = first[b * Q + i], tl_ = last[b * Q + i];
+      float m = sinks ? sinks[h] : NINF, l = sinks ? 1.0f : 0.0f;
+      std::fill(acc.begin(), acc.end(), 0.0f);
+      const T* kb = k + b * sk[0] + hk * sk[1];
+      const T* vb = v + b * sv[0] + hk * sv[1];
+      const int8_t* mrow = mask ? mask + b * smb + i * smq : nullptr;
+      for (int64_t t0 = tf; t0 <= tl_; t0 += ATT_BT) {
+        float bmax = NINF;
+        for (int j = 0; j < ATT_BT; j++) {
+          const int64_t t = t0 + j;
+          ok[j] = t <= tl_ && (!mrow || (t < T_ && mrow[t] != 0));
+          if (!ok[j]) { s[j] = NINF; continue; }
+          V16 a = v_zero();
+          const T* kr = kb + t * sk[2];
+          for (int64_t c = 0; c < NCH; c++) a = v_fma(att_ld<T>(kr + 16 * c), v_loadf(qf.data() + 16 * c), a);
+          float x = tree16(a) * scale;
+          if (has_cap) {
+            const float y = x / cap;
+            const float e = dexp(-2.0f * y);
+            const float sg = 1.0f / (1.0f + e);
+            x = cap * (2.0f * sg - 1.0f);
+          }
+          s[j] = x;
+          bmax = std::fmax(bmax, x);
+        }
+        const float mn = std::fmax(m, bmax);
+        const float alpha = mn == NINF ? 1.0f : dexp(m - mn);
+        for (int j = 0; j < ATT_BT; j++) p[j] = ok[j] ? dexp(s[j] - mn) : 0.0f;
+        for (int j = 0; j < ATT_BT; j++) {
+          float* r = pv.data() + (size_t)j * DV;
+          if (!ok[j]) { std::fill(r, r + DV, 0.0f); continue; }
+          const T* vr = vb + (t0 + j) * sv[2];
+          for (int64_t d = 0; d < DV; d++) r[d] = p[j] * att_f<T>(vr[d]);
+        }
+        for (int hs = ATT_BT / 2; hs > 0; hs >>= 1) {
+          for (int c = 0; c < hs; c++) {
+            p[c] = p[c] + p[c + hs];
+            float* r = pv.data() + (size_t)c * DV;
+            const float* r2 = pv.data() + (size_t)(c + hs) * DV;
+            for (int64_t d = 0; d < DV; d++) r[d] = r[d] + r2[d];
+          }
+        }
+        l = std::fma(l, alpha, p[0]);
+        for (int64_t d = 0; d < DV; d++) acc[d] = std::fma(acc[d], alpha, pv[d]);
+        m = mn;
+      }
+      T* op = o + b * so[0] + i * so[1] + h * so[2];
+      for (int64_t d = 0; d < DV; d++) {
+        const float r = l > 0.0f ? acc[d] / l : 0.0f;
+        if constexpr (std::is_same<T, uint16_t>::value) op[d] = f2bf(r); else op[d] = r;
+      }
+    }
+  }
+}
+
+// q [B, H, Q, D], k [B, Hkv, T, D], v [B, Hkv, T, DV] (bf16 or fp32, unit stride on the last dim, D % 16 == 0),
+// first / last [B, Q] int64, mask int8 [B, *, Q, T] (or empty), sinks fp32 [H] (or empty) -> out [B, Q, H, DV].
+torch::Tensor attention_twin(torch::Tensor q, torch::Tensor k, torch::Tensor v, torch::Tensor first,
+                             torch::Tensor last, torch::Tensor mask, torch::Tensor sinks, double scale, double cap,
+                             bool has_cap) {
+  TORCH_CHECK(q.dim() == 4 && k.dim() == 4 && v.dim() == 4);
+  TORCH_CHECK(q.stride(3) == 1 && k.stride(3) == 1 && v.stride(3) == 1, "attention_twin: last dim must be unit stride");
+  TORCH_CHECK(q.scalar_type() == k.scalar_type() && q.scalar_type() == v.scalar_type());
+  TORCH_CHECK(q.scalar_type() == torch::kBFloat16 || q.scalar_type() == torch::kFloat32);
+  const int64_t B = q.size(0), H = q.size(1), Q = q.size(2), D = q.size(3), Hkv = k.size(1), T_ = k.size(2),
+                DV = v.size(3);
+  TORCH_CHECK(D % 16 == 0 && H % Hkv == 0);
+  first = first.contiguous(); last = last.contiguous();
+  const bool hm = mask.numel() > 0, hs = sinks.numel() > 0;
+  if (hm) TORCH_CHECK(mask.scalar_type() == torch::kInt8 && mask.stride(3) == 1);
+  if (hs) { sinks = sinks.to(torch::kFloat32).contiguous(); TORCH_CHECK(sinks.numel() == H); }
+  auto out = torch::empty({B, Q, H, DV}, q.options());
+  const int64_t sq[3] = {q.stride(0), q.stride(1), q.stride(2)}, sk[3] = {k.stride(0), k.stride(1), k.stride(2)},
+                sv[3] = {v.stride(0), v.stride(1), v.stride(2)}, so[3] = {out.stride(0), out.stride(1), out.stride(2)};
+  const int8_t* mp = hm ? mask.data_ptr<int8_t>() : nullptr;
+  const int64_t smb = hm ? mask.stride(0) : 0, smq = hm ? mask.stride(2) : 0;
+  const float* sp = hs ? sinks.data_ptr<float>() : nullptr;
+  if (q.scalar_type() == torch::kBFloat16)
+    attention_impl<uint16_t>((const uint16_t*)q.data_ptr(), (const uint16_t*)k.data_ptr(), (const uint16_t*)v.data_ptr(),
+                             (uint16_t*)out.data_ptr(), first.data_ptr<int64_t>(), last.data_ptr<int64_t>(), mp, sp,
+                             (float)scale, (float)cap, has_cap, B, H, H / Hkv, Q, T_, D, DV, sq, sk, sv, so, smb, smq);
+  else
+    attention_impl<float>(q.data_ptr<float>(), k.data_ptr<float>(), v.data_ptr<float>(), out.data_ptr<float>(),
+                          first.data_ptr<int64_t>(), last.data_ptr<int64_t>(), mp, sp, (float)scale, (float)cap, has_cap,
+                          B, H, H / Hkv, Q, T_, D, DV, sq, sk, sv, so, smb, smq);
+  return out;
+}
+
+// P2: Vahana's exp on a tensor (tests compare it with the Triton twin).
+torch::Tensor dexp_t(torch::Tensor x) {
+  x = x.to(torch::kFloat32).contiguous();
+  auto y = torch::empty_like(x);
+  const float* a = x.data_ptr<float>(); float* r = y.data_ptr<float>();
+  for (int64_t i = 0; i < x.numel(); i++) r[i] = dexp(a[i]);
+  return y;
+}
+
 std::string isa() { return VH_ISA; }
 bool nx_fast() { return VH_NX_FAST != 0; }
 bool have_numa() { return VH_HAVE_NUMA != 0; }
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("attention_twin", &attention_twin);
+  m.def("dexp", &dexp_t);
   m.def("have_numa", &have_numa);
   m.def("isa", &isa);
   m.def("nx_fast", &nx_fast);

@@ -126,7 +126,8 @@ def _plan(model, specs, budget_bytes, force_cpu: str | None):
     return cpu, folded, total
 
 
-def _assemble(model, specs, get_param, get_experts, dev, cpu, folded, numa, nx, place, log, experts="cpu"):
+def _assemble(model, specs, get_param, get_experts, dev, cpu, folded, numa, nx, place, log, experts="cpu",
+              twin=True):
     pref = tuple(s.path + "." for s in specs)
     on_cpu = lambda mod_name: any(mod_name == c or mod_name.startswith(c + ".") for c in cpu)
     for n, p in list(model.named_parameters()):
@@ -182,16 +183,24 @@ def _assemble(model, specs, get_param, get_experts, dev, cpu, folded, numa, nx, 
         block = model.get_submodule(s.path.rsplit(".", 1)[0])
         if nre is not None and not hasattr(block, "num_experts"):
             block.num_experts = nre
-    info = {"invariant": _inv.install(model), "experts_s": time.time() - t1,
+    info = {"invariant": "twin" if twin else _inv.install(model), "experts_s": time.time() - t1,
             "nx_layers": sum(1 for m in model.modules() if isinstance(m, VahanaExperts) and m.nx)}
+    _rt.TWIN["on"] = twin
+    model._vahana_device = dev            # where inputs go (server / cli)
     _rt.install_linear()
     _attn.use(model)
+    if twin:                      # P2: every remaining op in twin arithmetic -> the same bits on any CPU or GPU
+        from . import tmath as _tm
+        info["rope_twin"] = _tm.twin_rope(model)
+        info["norm_fast"] = _tm.fast_norms(model)
+        _tm.wrap_forward(model)
     model.eval()
     return info
 
 
 def load(model_dir: str, gpu_budget_gb: float | None = None, device: str = "cuda", numa: int = 2, nx: bool = True,
-         place: bool = True, reserve_gb: float = 1.5, force_cpu: str | None = None, log=print, experts: str = "cpu"):
+         place: bool = True, reserve_gb: float = 1.5, force_cpu: str | None = None, log=print, experts: str = "cpu",
+         twin: bool = True):
     """Checkpoint directory -> (Vahana model, info)."""
     from accelerate import init_empty_weights
     from transformers import AutoConfig, AutoModelForCausalLM
@@ -244,24 +253,28 @@ def load(model_dir: str, gpu_budget_gb: float | None = None, device: str = "cuda
     if log:
         log(f"vahana: {cfg.model_type}, {len(specs)} MoE layers, non-expert {total / 2**30:.1f} GB, "
             f"{len(cpu)} modules in CPU RAM ({len(folded)} shared experts folded)")
-    info = _assemble(model, specs, get_param, get_experts, dev, cpu, folded, numa, nx, place, log, experts)
+    info = _assemble(model, specs, get_param, get_experts, dev, cpu, folded, numa, nx, place, log, experts, twin)
     if getattr(cfg, "tie_word_embeddings", False):
         model.tie_weights()
     info.update(model_type=cfg.model_type, moe_layers=len(specs), nonexpert_gb=total / 2**30,
                 cpu_modules=sorted(cpu), folded_shared=len(folded), load_s=time.time() - t0,
-                gpu_gb=torch.cuda.memory_allocated(dev) / 2**30)
+                gpu_gb=torch.cuda.memory_allocated(dev) / 2**30 if dev.type == "cuda" else 0.0)
     return model, info
 
 
 def prepare(model: nn.Module, gpu_budget_gb: float | None = None, force_cpu: str | None = None, numa: int = 2,
-            nx: bool = True, place: bool = False, log=None):
-    """A model already in memory (weights on any device) -> Vahana model, in place."""
+            nx: bool = True, place: bool = False, log=None, twin: bool = True, experts: str = "cpu"):
+    """A model already in memory -> Vahana model, in place. The model's device is where non-expert weights run
+    (a CUDA device, or the CPU for a CPU-only machine). twin: the device-twin arithmetic everywhere (P2), so the
+    result is the same bits on any CPU or GPU."""
     specs = inspect(model)
-    dev = next(p for p in model.parameters() if p.device.type == "cuda").device
+    devs = [p.device for p in model.parameters()]
+    dev = next((d for d in devs if d.type == "cuda"), devs[0])
     src = {n: p.detach() for n, p in model.named_parameters()}
     exp = {s.path: expert_weights(s, model.get_submodule(s.path)) for s in specs}
     budget = gpu_budget_gb * 2**30 if gpu_budget_gb else float("inf")
     cpu, folded, total = _plan(model, specs, budget, force_cpu)
-    info = _assemble(model, specs, lambda n: src[n], lambda s: exp[s.path], dev, cpu, folded, numa, nx, place, log)
+    info = _assemble(model, specs, lambda n: src[n], lambda s: exp[s.path], dev, cpu, folded, numa, nx, place, log,
+                     experts, twin)
     info.update(cpu_modules=sorted(cpu), folded_shared=len(folded))
     return model, info
