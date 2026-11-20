@@ -2,38 +2,88 @@
 
 **Exact inference for MoE models too big for your GPU.**
 
-Vahana (Sanskrit: *carrier*) runs Mixture-of-Experts models that do not fit in GPU memory. It keeps the experts in CPU RAM and computes them on the CPU, while the GPU runs attention and routing. Its answers are **bit-identical** to a full-precision GPU run: the same tokens no matter where an expert runs, how small the GPU budget is, or what the batch size or thread count is.
+Vahana (Sanskrit: *carrier*) runs Mixture-of-Experts language models whose experts do not fit in GPU memory:
+- the routed experts stay in CPU RAM and run on a CPU kernel;
+- the GPU runs attention, routing and everything else;
+- anything still over your GPU budget moves to CPU RAM too.
 
-> Status: **v0.1 in development.** The engine is a research prototype being turned into a server. Expect rough edges and environment-variable configuration.
+Its answers are **bit-identical** wherever the work runs. The same tokens come out regardless of:
+- whether an expert runs on the CPU or the GPU;
+- how small the GPU budget is;
+- what else is in the batch, or how it is padded;
+- how many CPU threads are used;
+- whether a token is computed in prefill or decode.
 
-## Results so far
-All results are from one machine: 1× H100, 2× EPYC 9354, 503 GB DDR5 with 4 of 12 channels per socket populated. Prompts are greedy, batch 1, 128 tokens. Every run's tokens match the full-GPU reference.
+> **Status: v0.1.** One GPU plus a large-RAM CPU host, BF16 checkpoints, an OpenAI-compatible server (one request at a time).
 
-| Model | GPU budget | Vahana |
+## Quick start
+```bash
+pip install -e .                                   # torch >= 2.4, transformers >= 5.0
+bash src/vahana/csrc/build_kernel.sh python        # CPU kernel: AVX-512 + VBMI (Zen 4+, Sapphire Rapids+)
+
+vahana run   /models/Qwen3-30B-A3B --prompt "Explain mixture-of-experts in one paragraph." --chat
+vahana serve /models/DeepSeek-Coder-V2-Instruct --gpu-budget 16 --port 8000
+```
+```python
+import vahana
+model, info = vahana.load("/models/Mixtral-8x7B-v0.1", gpu_budget_gb=4)
+out = vahana.generate(model, input_ids, max_new_tokens=128)        # ids, per-step timings
+```
+The server speaks the OpenAI API:
+- `GET /v1/models`
+- `POST /v1/completions`
+- `POST /v1/chat/completions`, with `stream`, `max_tokens`, `temperature`, `top_p`, `seed` and `stop`.
+
+Greedy decoding is bit-exact. Sampling is reproducible: tokens are drawn on the host from fp32 logits with a seeded generator.
+
+## Results
+All measured on one machine: 1× H100 NVL, 2× EPYC 9354, 503 GB DDR5 with 4 of 12 channels per socket populated. Every number is from a pre-registered experiment in `experiments/`.
+
+| Model | GPU budget | Decode | Exactness |
+|---|---|---|---|
+| DeepSeek-Coder-V2 236B (BF16, 438 GB) | 16 GB | **7.49 tok/s** (48 threads) | graph == eager, bit for bit |
+| Mixtral-8x7B (BF16, 94 GB) | 4 GB | **11.40 tok/s** (48 threads) | graph == eager, bit for bit |
+| Qwen3-30B-A3B | 2.9 GB used | ~20 tok/s through the server, prefill included (24 threads) | CPU experts == GPU experts, bit for bit |
+
+**Quality on real checkpoints** (experiments/m5_real): next-token agreement with stock transformers in fp32, over every position of 50 prompts.
+
+| Model | Vahana | Stock bf16 |
 |---|---|---|
-| DeepSeek-Coder-V2 236B (BF16, 438 GB) | 16 GB | **7.39 tok/s** (48 threads), 6.39 (24 threads) |
-| Mixtral-8x7B (BF16, 94 GB) | 4 GB | **11.7 tok/s** (48 threads) |
+| OLMoE-1B-7B | 98.0% | 98.5% |
+| Qwen1.5-MoE-A2.7B | 97.3% | 96.3% |
+| DeepSeek-V2-Lite | 98.0% | 98.0% |
+| Qwen3-30B-A3B | 96.8% | 96.4% |
 
-Against KTransformers on the same CPUs (Mixtral BF16, all experts on the CPU):
-- **24 cores:** Vahana is 1.19× faster.
-- **48 threads:** Vahana is 1.08× faster.
-- **Exactness:** KTransformers' tokens change when experts move between CPU and GPU. Vahana's do not.
-
-## How it is exact
-- **Twin arithmetic.** The CPU kernel and the GPU kernels evaluate every dot product in the same order, with the same rounding points. A CPU expert therefore returns the same bits as a GPU expert.
-- **Batch-invariant kernels.** Each token's result does not depend on which other rows share the batch or how they are padded.
-- **NX12.** A lossless 12-bit encoding of BF16 weights (75% of the size) that decodes at memory bandwidth inside the kernel.
+Vahana is as close to full precision as ordinary bf16 inference. Unlike ordinary inference, it is also exactly reproducible.
 
 ## Supported models
-- **Validated:** Mixtral, DeepSeek-V2.
-- **In progress (v0.1):** a generic MoE adapter for every MoE family in `transformers`, including Qwen-MoE, DeepSeek-V3, OLMoE, gpt-oss, Llama 4 and GLM-4-MoE.
+Vahana finds the experts by structure (transformers' `experts(hidden, indices, weights)` modules) instead of hard-coding families, and fails loudly on anything it does not recognise.
 
-## Build the CPU kernel
-Requires AVX-512 with VBMI (AMD Zen 4+, Intel Sapphire Rapids+), GCC and libnuma.
+| Status | Families |
+|---|---|
+| **Real checkpoints validated** (exact + quality) | Mixtral, DeepSeek-V2 (Lite and 236B), Qwen1.5-MoE (Qwen2-MoE), Qwen3-MoE, OLMoE |
+| **Validated on the real architecture, tiny random weights** (exact, batch-invariant, graph decode) | DeepSeek-V3, GLM-4-MoE (+Lite), MiniMax-M2, Hunyuan-MoE, Ernie-4.5-MoE, Cohere2-MoE, Exaone-MoE, AFMoE, gpt-oss (BF16 experts) |
+| **Exact, but eager decode only** | MiniMax (lightning attention), Qwen3.5-MoE (Gated-DeltaNet), Phi-MoE (host-side RoPE) |
+| **Not yet** | gpt-oss MXFP4 checkpoints, FP8 checkpoints (DeepSeek-V3/R1), Llama 4, Granite-MoE, JetMoE, DBRX, encoder-decoder MoE |
 
-```bash
-bash src/vahana/csrc/build_kernel.sh python
-```
+## How it is exact
+- **Twin arithmetic.** CPU and GPU kernels evaluate every dot product in the same order (16 fp32 FMA lanes, a fixed reduction tree) with the same BF16 rounding points. An expert or linear layer gives the same bits on either device.
+- **Batch-invariant kernels.** The `vahana` attention function and the linear and norm kernels reduce each row in a fixed order that depends only on that row. Batch neighbours, padding and prefill-vs-decode cannot change it.
+- **NX12.** A lossless 12-bit encoding of BF16 expert weights (75% of the size) that the CPU kernel decodes at memory bandwidth.
+- **One CUDA graph per decode step,** with the CPU jobs as host nodes, for any model.
+
+## Requirements and limits (v0.1)
+- **RAM** for the experts: about 0.75 × their BF16 size as NX12, plus page cache for the checkpoint. 236B needs about 340 GB.
+- **One NVIDIA GPU;** CPU with AVX-512 VBMI; Linux.
+- **The server runs one request at a time.**
+- **Prefill on very large models is slow** when many linears are in CPU RAM: 38 s for a 236B prompt.
+- **Hybrid-attention models decode eagerly.**
+
+## Layout
+- **v0.1 path:** `src/vahana/{loader, modelspec, experts, runtime, attention, decode, server, cli}.py` and `src/vahana/csrc/cpu_moe.cpp`.
+- **Earlier research engine:** the remaining modules (batched throughput, column tiers, ANS plane, speculative decoding). Not used by the v0.1 path.
+- **Design:** `docs/design/v0.1-moe-adapter.md`.
+- **Evidence:** `experiments/` (M0-M5, server).
 
 ## License
 Not yet chosen; all rights reserved until then.

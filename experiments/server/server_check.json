@@ -1,0 +1,33 @@
+{
+ "models": {
+  "object": "list",
+  "data": [
+   {
+    "id": "Qwen3-30B-A3B",
+    "object": "model",
+    "owned_by": "vahana"
+   }
+  ]
+ },
+ "greedy_text": " Paris. The capital of the United Kingdom is London. The capital of Germany is",
+ "greedy_repeatable": true,
+ "usage": {
+  "prompt_tokens": 5,
+  "completion_tokens": 16,
+  "total_tokens": 21
+ },
+ "chat_text": "<think>\nOkay, the user is asking for three primary colors. Let me think. Primary colors are the basic colors that can't be created by mixing other colors. But wait, there are different systems",
+ "stream_equals_nonstream": true,
+ "stream_chunks": 41,
+ "sampled_same_seed_equal": true,
+ "sampled_other_seed_differs": true,
+ "sampled_text": ", there was a girl named Wukong. She didn't want to be called that, though. She wanted to",
+ "stop_newline": {
+  "text": " 100000000000000000000000000000000000000",
+  "finish": "length"
+ },
+ "stop_text": " Paris. ",
+ "stop_respected": true,
+ "chat_ok_extra_fields": true,
+ "128_tokens_s": 6.53634786605835
+}
