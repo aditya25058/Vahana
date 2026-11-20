@@ -93,7 +93,8 @@ Vahana finds the experts by structure (transformers' `experts(hidden, indices, w
 - **RAM** for the experts: about 0.75 × their BF16 size as NX12, plus page cache for the checkpoint. 236B needs about 340 GB.
 - **One NVIDIA GPU, or none.** CPU-only works, gives the same tokens, and is slower.
 - **CPU:** any x86-64 (AVX-512 fastest, AVX2, or plain). The ARM NEON build is written but not yet run on ARM hardware.
-- **OS:** Linux; on Windows, WSL. Native Windows and macOS are P3.
+- **OS:** Linux, Windows and macOS. CI builds a wheel for Linux x86-64 / arm64, Windows x86-64 and macOS arm64, and checks the selftest on each.
+- **CUDA graphs** need Linux or Windows with an NVIDIA GPU. CPU-only works everywhere.
 - **The server runs one request at a time.**
 - **Prefill on very large models is slow** when many linears are in CPU RAM: 38 s for a 236B prompt.
 - **Hybrid-attention models decode eagerly.**
