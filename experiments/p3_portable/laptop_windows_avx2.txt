@@ -1,0 +1,20 @@
+vahana selftest: {'device': 'cpu', 'isa': 'avx2', 'torch': '2.14.1+cpu', 'transformers': '5.12.1', 'platform': 'win32'}
+  mixtral            ce34fc14fa082f131ee2dd69  same bits  5.8s
+  qwen2_moe          3939272bd83b1b003f61fec9  same bits  0.4s
+  qwen3_moe          09be7f5e561a4f88611e801b  same bits  0.4s
+  olmoe              782a7ec8150c68e9a6c2b529  same bits  0.9s
+  deepseek_v2        34247d4ba5c9ebe27266917a  same bits  0.4s
+  deepseek_v3        a9891d8bb9e8da81495a9bd8  same bits  0.4s
+  glm4_moe           125d50eb37a437f432a8f8ba  same bits  0.4s
+  glm4_moe_lite      a6f60d8252b3b983a6748f03  same bits  0.4s
+  minimax            5df89cc29832418907377398  same bits  0.9s
+  minimax_m2         e260ff4d158fb5c140b260d2  same bits  1.0s
+  hunyuan_v1_moe     062bbc553ecd8dfe74056821  same bits  1.0s
+  ernie4_5_moe       c22f889765732a53c2bf17ca  same bits  0.4s
+  cohere2_moe        8a9031bc8fa75432593eb004  same bits  1.1s
+  exaone_moe         84179a4bfe29b3a7aba07417  same bits  0.4s
+  afmoe              4ea6231fd93ce865ca5ef5a4  same bits  0.5s
+  phimoe             386cf5a7fab5d32d6dae0c60  same bits  1.0s
+  qwen3_5_moe_text   049869a788fdf6baacd7339d  same bits  3.8s
+  gpt_oss            4385e7be5567ae5316aa5bfc  same bits  0.8s
+vahana selftest: 18/18 families give the same bits as the reference machine

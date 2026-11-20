@@ -65,7 +65,7 @@ Pre-registered 2026-11-21, after the code below compiled on the H100. Two checks
 - **CI run 2:** Linux x86-64 also tried a 32-bit build, so the wheels are now 64-bit only. Linux arm64, macOS and Windows passed.
 - **CI run 3:** all pass.
 
-## Result: GOLDEN, TWIN-GPU, GPU SPEED, CI pass; CPU-only SPEED not met in the counted run (−5.3%), met after a fix (−3.7%); LAPTOP pending
+## Result: GOLDEN, TWIN-GPU, GPU SPEED, CI, LAPTOP pass; CPU-only SPEED not met in the counted run (−5.3%), met after a fix (−3.7%)
 | Bar | Result |
 |---|---|
 | GOLDEN: selftest GPU == CPU-only avx512 / avx2 / scalar | **18/18 each** |
@@ -73,6 +73,7 @@ Pre-registered 2026-11-21, after the code below compiled on the H100. Two checks
 | SPEED, GPU: Mixtral 4 GB steady step | **78.5 / 78.8 ms vs P2 82.5 / 81.0 (3.9% faster)**; tok/s 12.09 / 12.65 vs 11.96 / 11.98 |
 | SPEED, CPU-only: OLMoE tok/s | Counted: 17.31 / 17.26 vs 18.18 / 18.29 (**−5.3%, not met**). After the false-sharing fix: 17.18 / 17.48 vs 18.20 / 17.80 (−3.7%). Prefill (6 tokens) 0.17 s vs 0.20 s |
 | CI: wheel builds, installs with CPU torch; selftest == H100 golden under every ISA the runner can execute | **All 4 platforms, 9 ISA builds, 18/18 each** (ci_runs.txt) |
+| LAPTOP: the CI Windows wheel on this laptop (Ryzen 7 4800H, native Windows 11, Python 3.10, torch 2.14.1 CPU, no WSL, no compiler) | **18/18 under avx2 and scalar** (laptop_windows_*.txt) |
 
 **CI detail (run 3):**
 
@@ -102,5 +103,4 @@ Pre-registered 2026-11-21, after the code below compiled on the H100. Two checks
 - **Remaining speed gap:** CPU-only is 3.7% behind the OpenMP build.
 
 **Not done:**
-- **LAPTOP** (this laptop, native Windows) waits on downloading the CI wheel. GitHub's Windows runner already passed the same check.
 - **No PyPI upload:** publishing is the owner's call. Wheels are CI artifacts.
