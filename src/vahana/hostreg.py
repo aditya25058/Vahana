@@ -49,12 +49,16 @@ def _cudart():
     return ctypes.CDLL(lib)
 
 
-_libc = ctypes.CDLL(None, use_errno=True)
-_libc.mmap.restype = ctypes.c_void_p
-_libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int,
-                       ctypes.c_int, ctypes.c_int, ctypes.c_long]
-_libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
-_MAP_FAILED = ctypes.c_void_p(-1).value
+if os.name == "posix":
+    _libc = ctypes.CDLL(None, use_errno=True)
+    _libc.mmap.restype = ctypes.c_void_p
+    _libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int,
+                           ctypes.c_int, ctypes.c_int, ctypes.c_long]
+    _libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    _MAP_FAILED = ctypes.c_void_p(-1).value
+else:
+    _libc = None
+    _MAP_FAILED = None
 
 
 class _SharedMap:

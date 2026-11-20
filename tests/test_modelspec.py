@@ -13,8 +13,8 @@ SMALL = dict(hidden_size=256, intermediate_size=512, moe_intermediate_size=128, 
              decoder_sparse_step=1, mlp_only_layers=[], num_shared_experts=1)
 TIER1 = ["mixtral", "qwen2_moe", "qwen3_moe", "olmoe", "deepseek_v2", "deepseek_v3", "glm4_moe", "glm4_moe_lite",
          "minimax", "minimax_m2", "hunyuan_v1_moe", "ernie4_5_moe", "cohere2_moe", "exaone_moe", "afmoe", "phimoe",
-         "qwen3_5_moe_text"]
-NOT_YET = ["llama4_text", "granitemoe"]
+         "qwen3_5_moe_text", "granitemoe"]
+NOT_YET = ["llama4_text"]
 
 
 def meta_model(fam):
