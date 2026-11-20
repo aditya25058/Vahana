@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 
-from setuptools import setup
+from setuptools import Distribution, setup
 from setuptools.command.build_py import build_py
 
 try:
@@ -27,6 +27,11 @@ class BuildKernel(build_py):
         super().run()
 
 
+class BinaryDistribution(Distribution):
+    def has_ext_modules(self):          # the kernel libraries are binaries: platform wheel, files in platlib
+        return True
+
+
 class PlatformWheel(bdist_wheel):
     def finalize_options(self):
         super().finalize_options()
@@ -37,4 +42,4 @@ class PlatformWheel(bdist_wheel):
         return "py3", "none", plat
 
 
-setup(cmdclass={"build_py": BuildKernel, "bdist_wheel": PlatformWheel})
+setup(distclass=BinaryDistribution, cmdclass={"build_py": BuildKernel, "bdist_wheel": PlatformWheel})

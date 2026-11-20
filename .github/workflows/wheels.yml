@@ -18,7 +18,7 @@ jobs:
           - { name: linux-x86_64, os: ubuntu-24.04, torch_index: "https://download.pytorch.org/whl/cpu" }
           - { name: linux-arm64, os: ubuntu-24.04-arm, torch_index: "https://download.pytorch.org/whl/cpu" }
           - { name: windows-x86_64, os: windows-2022, torch_index: "https://download.pytorch.org/whl/cpu" }
-          - { name: macos-arm64, os: macos-14, torch_index: "" }
+          - { name: macos-arm64, os: macos-15, torch_index: "" }
     runs-on: ${{ matrix.os }}
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
@@ -28,25 +28,29 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Build wheel (Linux, manylinux_2_28)
-        if: runner.os == 'Linux'
-        uses: pypa/cibuildwheel@v2.22.0
+      - name: Build wheel (Linux in manylinux_2_28 via cibuildwheel; Windows, macOS with python -m build)
+        shell: bash
         env:
           CIBW_BUILD: "cp312-*"
           CIBW_SKIP: "*musllinux*"
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
           CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_28
           CIBW_ENVIRONMENT: "VAHANA_STATIC_LIBSTDCXX=1"
-        with:
-          output-dir: dist
-
-      - name: Build wheel (Windows, macOS)
-        if: runner.os != 'Linux'
-        shell: bash
         run: |
-          python -m pip install --upgrade build
+          set -o pipefail
           clang++ --version || true
-          python -m build --wheel --outdir dist .
+          if [ "$RUNNER_OS" = Linux ]; then
+            python -m pip install cibuildwheel==2.22.0
+            cmd="python -m cibuildwheel --output-dir dist"
+          else
+            python -m pip install --upgrade build
+            cmd="python -m build --wheel --outdir dist ."
+          fi
+          if ! $cmd 2>&1 | tee build.log; then
+            grep -iE "error|undefined|fatal|not found" build.log | head -30 | sed 's/^/::error title=build::/'
+            exit 1
+          fi
+          ls -la dist
 
       - uses: actions/upload-artifact@v4
         with:
@@ -68,6 +72,7 @@ jobs:
           "$PY" -m pip install "transformers==5.12.1" accelerate safetensors numpy pytest
           "$PY" -m pip install --no-deps dist/*.whl
           cd "$RUNNER_TEMP"
+          "$PY" -c "import vahana, os; print(os.listdir(os.path.join(os.path.dirname(vahana.__file__), '_build')))"
           "$PY" -c "import torch, vahana.hybrid as h; k = h.ext(); print('kernel', k.path, k.isa(), 'threads', k.threads(), 'torch', torch.__version__)"
 
       - name: vahana selftest (every kernel build this CPU runs)
@@ -82,7 +87,8 @@ jobs:
           fail=0
           for isa in $ISAS; do
             echo "::group::selftest $isa"
-            VAHANA_ISA=$isa "$PY" -m vahana.selftest --device cpu | tee "selftest_$isa.txt" || fail=1
+            VAHANA_ISA=$isa "$PY" -m vahana.selftest --device cpu 2>&1 | tee "selftest_$isa.txt" || fail=1
+            grep -E "DIFFERENT|error" "selftest_$isa.txt" | head -20 | sed "s/^/::error title=selftest $isa::/" || true
             echo "::endgroup::"
             echo "::notice title=selftest ${{ matrix.name }} $isa::$(tail -1 selftest_$isa.txt)"
           done
