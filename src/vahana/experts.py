@@ -76,7 +76,8 @@ class VahanaExperts(nn.Module):
             k.register_shared(spec.slot, *self.shared)
         mats = [w for trip in zip(self.g, self.u, self.d) for w in trip] + (self.shared or [])
         need_gb = sum(w.numel() * 2 for w in mats) * 0.76 / 2**30
-        self.nx = nx and spec.H % 64 == 0 and spec.I % 64 == 0 and \
+        nx_fast = getattr(k, "nx_fast", lambda: True)()      # portable builds: raw BF16 is faster than NX12
+        self.nx = nx and nx_fast and spec.H % 64 == 0 and spec.I % 64 == 0 and \
             _hy.mem_available_gb() - need_gb >= margin_gb + 8
         if self.nx:
             pk = lambda W: _hy.nx_pack(W, place) if place else list(k.encode_nx(W))

@@ -1,0 +1,13 @@
+{
+ "isa": "scalar",
+ "nx_fast": false,
+ "torch": "2.15.0+cpu",
+ "experts_n1": "8279cdb07591a881",
+ "experts_n3": "ce80cac9366f2030",
+ "linear_n1": "5180cff971937d2c",
+ "linear_n3": "6693bb4439b6b424",
+ "nx_experts_n1": "8279cdb07591a881",
+ "moe_N5_fp32w": "d4da68130d10dcca",
+ "moe_N1_fused": "40639f2ddb8df72e",
+ "moe_oai_bias": "931d6ec1a532de1f"
+}

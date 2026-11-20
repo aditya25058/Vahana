@@ -14,9 +14,29 @@
 // Each output row is computed entirely by one thread, so results are independent of thread count,
 // NUMA placement and of which other tokens/experts share the call (batch invariance).
 #include <torch/extension.h>
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__)
 #include <immintrin.h>
+#endif
+#if defined(__ARM_NEON) || defined(__aarch64__)
+#include <arm_neon.h>
+#endif
 #include <omp.h>
+#if defined(__linux__) && defined(__has_include)
+#if __has_include(<numaif.h>)
 #include <numaif.h>
+#define VH_HAVE_NUMA 1
+#endif
+#endif
+#ifndef VH_HAVE_NUMA
+#define VH_HAVE_NUMA 0
+#define MPOL_MF_MOVE 2
+// No NUMA API on this platform: nothing is migrated, every page reports "unknown node" (-1).
+static inline long move_pages(int, unsigned long count, void** pages, const int*, int* status, int) {
+  (void)pages;
+  for (unsigned long i = 0; i < count; i++) status[i] = -1;
+  return -1;
+}
+#endif
 #include <sched.h>
 #include <cstring>
 #include <cmath>
@@ -30,22 +50,75 @@ static inline uint16_t f2bf(float f) {
   if ((u & 0x7fffffffu) > 0x7f800000u) return (uint16_t)((u >> 16) | 0x40);
   return (uint16_t)((u + 0x7fffu + ((u >> 16) & 1u)) >> 16);
 }
-static inline __m512 ld_bf16(const uint16_t* p) {
+// ---- V16: 16 fp32 lanes; lane l of a dot product accumulates k = 16j + l in ascending j with a fused multiply-add.
+// Every ISA below performs exactly that per-lane sequence, so every build gives the same bits.
+#if defined(__AVX512F__)
+#define VH_ISA "avx512"
+typedef __m512 V16;
+static inline V16 v_zero() { return _mm512_setzero_ps(); }
+static inline V16 v_loadf(const float* p) { return _mm512_loadu_ps(p); }
+static inline V16 v_ldbf16(const uint16_t* p) {
   __m256i v = _mm256_loadu_si256((const __m256i*)p);
   return _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(v), 16));
 }
-static inline float tree16(__m512 v) {
-  alignas(64) float a[16]; _mm512_store_ps(a, v);
+static inline V16 v_fma(V16 a, V16 b, V16 c) { return _mm512_fmadd_ps(a, b, c); }
+static inline void v_store(float* a, V16 v) { _mm512_storeu_ps(a, v); }
+#elif defined(__AVX2__) && defined(__FMA__)
+#define VH_ISA "avx2"
+struct V16 { __m256 lo, hi; };                      // lanes 0-7, 8-15
+static inline V16 v_zero() { return {_mm256_setzero_ps(), _mm256_setzero_ps()}; }
+static inline V16 v_loadf(const float* p) { return {_mm256_loadu_ps(p), _mm256_loadu_ps(p + 8)}; }
+static inline __m256 bf8(__m128i h) { return _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_cvtepu16_epi32(h), 16)); }
+static inline V16 v_ldbf16(const uint16_t* p) {
+  return {bf8(_mm_loadu_si128((const __m128i*)p)), bf8(_mm_loadu_si128((const __m128i*)(p + 8)))};
+}
+static inline V16 v_fma(V16 a, V16 b, V16 c) { return {_mm256_fmadd_ps(a.lo, b.lo, c.lo), _mm256_fmadd_ps(a.hi, b.hi, c.hi)}; }
+static inline void v_store(float* a, V16 v) { _mm256_storeu_ps(a, v.lo); _mm256_storeu_ps(a + 8, v.hi); }
+#elif defined(__ARM_NEON) || defined(__aarch64__)
+#define VH_ISA "neon"
+struct V16 { float32x4_t q[4]; };
+static inline V16 v_zero() { V16 r; for (int i = 0; i < 4; i++) r.q[i] = vdupq_n_f32(0.0f); return r; }
+static inline V16 v_loadf(const float* p) { V16 r; for (int i = 0; i < 4; i++) r.q[i] = vld1q_f32(p + 4 * i); return r; }
+static inline V16 v_ldbf16(const uint16_t* p) {
+  V16 r;
+  for (int i = 0; i < 4; i++) r.q[i] = vreinterpretq_f32_u32(vshll_n_u16(vld1_u16(p + 4 * i), 16));
+  return r;
+}
+static inline V16 v_fma(V16 a, V16 b, V16 c) { V16 r; for (int i = 0; i < 4; i++) r.q[i] = vfmaq_f32(c.q[i], a.q[i], b.q[i]); return r; }
+static inline void v_store(float* a, V16 v) { for (int i = 0; i < 4; i++) vst1q_f32(a + 4 * i, v.q[i]); }
+#else
+#define VH_ISA "scalar"
+struct V16 { float v[16]; };
+static inline V16 v_zero() { V16 r; for (int i = 0; i < 16; i++) r.v[i] = 0.0f; return r; }
+static inline V16 v_loadf(const float* p) { V16 r; std::memcpy(r.v, p, 64); return r; }
+static inline V16 v_ldbf16(const uint16_t* p) { V16 r; for (int i = 0; i < 16; i++) r.v[i] = bf2f(p[i]); return r; }
+static inline V16 v_fma(V16 a, V16 b, V16 c) { V16 r; for (int i = 0; i < 16; i++) r.v[i] = std::fma(a.v[i], b.v[i], c.v[i]); return r; }
+static inline void v_store(float* a, V16 v) { std::memcpy(a, v.v, 64); }
+#endif
+static inline float tree16(V16 v) {
+  float a[16]; v_store(a, v);
   for (int s = 8; s > 0; s >>= 1) for (int i = 0; i < s; i++) a[i] = a[i] + a[i + s];
   return a[0];
 }
+#if defined(__x86_64__) || defined(_M_X64)
+#define VH_PAUSE() _mm_pause()
+#elif defined(__aarch64__)
+#define VH_PAUSE() __asm__ __volatile__("yield")
+#else
+#define VH_PAUSE() ((void)0)
+#endif
+#if defined(__GNUC__) || defined(__clang__)
+#define VH_PREFETCH(p) __builtin_prefetch((const void*)(p))
+#else
+#define VH_PREFETCH(p) ((void)0)
+#endif
 // dots of one weight row (K bf16) with n fp32 vectors X[t*K ..]
 static inline void row_dots(const uint16_t* w, const float* X, int n, int K, float* out) {
-  __m512 acc[16];
-  for (int t = 0; t < n; t++) acc[t] = _mm512_setzero_ps();
+  V16 acc[16];
+  for (int t = 0; t < n; t++) acc[t] = v_zero();
   for (int k = 0; k < K; k += 16) {
-    __m512 wv = ld_bf16(w + k);
-    for (int t = 0; t < n; t++) acc[t] = _mm512_fmadd_ps(wv, _mm512_loadu_ps(X + (size_t)t * K + k), acc[t]);
+    V16 wv = v_ldbf16(w + k);
+    for (int t = 0; t < n; t++) acc[t] = v_fma(wv, v_loadf(X + (size_t)t * K + k), acc[t]);
   }
   for (int t = 0; t < n; t++) out[t] = tree16(acc[t]);
 }
@@ -76,13 +149,13 @@ static inline double now_ms() { return std::chrono::duration<double, std::milli>
 // n == 1: four independent rows at once (same per-row arithmetic as row_dots).
 static inline void row_dots4_n1(const uint16_t* w0, const uint16_t* w1, const uint16_t* w2,
                                 const uint16_t* w3, const float* X, int K, float* out) {
-  __m512 a0 = _mm512_setzero_ps(), a1 = _mm512_setzero_ps(), a2 = _mm512_setzero_ps(), a3 = _mm512_setzero_ps();
+  V16 a0 = v_zero(), a1 = v_zero(), a2 = v_zero(), a3 = v_zero();
   for (int k = 0; k < K; k += 16) {
-    __m512 xv = _mm512_loadu_ps(X + k);
-    a0 = _mm512_fmadd_ps(ld_bf16(w0 + k), xv, a0);
-    a1 = _mm512_fmadd_ps(ld_bf16(w1 + k), xv, a1);
-    a2 = _mm512_fmadd_ps(ld_bf16(w2 + k), xv, a2);
-    a3 = _mm512_fmadd_ps(ld_bf16(w3 + k), xv, a3);
+    V16 xv = v_loadf(X + k);
+    a0 = v_fma(v_ldbf16(w0 + k), xv, a0);
+    a1 = v_fma(v_ldbf16(w1 + k), xv, a1);
+    a2 = v_fma(v_ldbf16(w2 + k), xv, a2);
+    a3 = v_fma(v_ldbf16(w3 + k), xv, a3);
   }
   out[0] = tree16(a0); out[1] = tree16(a1); out[2] = tree16(a2); out[3] = tree16(a3);
 }
@@ -549,23 +622,34 @@ std::vector<int64_t> rows_nodes(torch::Tensor W) {
 // step (512-bit, VBMI byte permutes); the dot product then runs the unchanged twin arithmetic (16 fp32 lanes,
 // lane l accumulates k = 16j + l in ascending j, fixed tree), so outputs are bit-identical to the raw kernel.
 struct alignas(64) PadAt { std::atomic<int> v; };
-struct NXm { const uint8_t* lo; const uint8_t* nib; const uint8_t* esc; const int64_t* off; __m512i lut; int K; };
+#if defined(__AVX512VBMI__)
+#define VH_NX_FAST 1
+struct NXm { const uint8_t* lo; const uint8_t* nib; const uint8_t* esc; const int64_t* off; __m512i lut; int K;
+             const uint8_t* lutp; };
+#else
+#define VH_NX_FAST 0
+struct NXm { const uint8_t* lo; const uint8_t* nib; const uint8_t* esc; const int64_t* off; int K; const uint8_t* lutp; };
+#endif
 static NXm make_nxm(const torch::Tensor* t, int K) {
   NXm m;
   m.lo = t[0].data_ptr<uint8_t>(); m.nib = t[1].data_ptr<uint8_t>(); m.esc = t[3].data_ptr<uint8_t>();
   m.off = t[4].data_ptr<int64_t>();
-  m.lut = _mm512_zextsi128_si512(_mm_loadu_si128((const __m128i*)t[2].data_ptr<uint8_t>())); m.K = K;
+  m.lutp = t[2].data_ptr<uint8_t>(); m.K = K;
+#if VH_NX_FAST
+  m.lut = _mm512_zextsi128_si512(_mm_loadu_si128((const __m128i*)t[2].data_ptr<uint8_t>()));
+#endif
   return m;
 }
-static __m512i g_plo, g_phi;
 static int g_pf = 0;
+#if VH_NX_FAST
+static __m512i g_plo, g_phi;
 static void init_perm() {
   { const char* v = std::getenv("VAHANA_PF"); g_pf = v ? std::atoi(v) : 0; }
   alignas(64) uint8_t a[64], b[64];
   for (int i = 0; i < 32; i++) { a[2 * i] = i; a[2 * i + 1] = 64 + i; b[2 * i] = 32 + i; b[2 * i + 1] = 96 + i; }
   g_plo = _mm512_load_si512(a); g_phi = _mm512_load_si512(b);
 }
-static inline void dec64(const NXm& m, size_t base, int k, const uint8_t*& ep, __m512* w) {
+static inline void dec64(const NXm& m, size_t base, int k, const uint8_t*& ep, V16* w) {
   const __m512i lo = _mm512_loadu_si512(m.lo + base + k);
   const __m512i n16 = _mm512_cvtepu8_epi16(_mm256_loadu_si256((const __m256i*)(m.nib + (base + k) / 2)));
   const __m512i code = _mm512_or_si512(_mm512_and_si512(n16, _mm512_set1_epi16(0x000F)),
@@ -583,28 +667,44 @@ static inline void dec64(const NXm& m, size_t base, int k, const uint8_t*& ep, _
   w[2] = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(_mm512_castsi512_si256(wb)), 16));
   w[3] = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(_mm512_extracti64x4_epi64(wb, 1)), 16));
 }
+#else
+static void init_perm() { const char* v = std::getenv("VAHANA_PF"); g_pf = v ? std::atoi(v) : 0; }
+// Portable NX12 decode: weights k .. k+63 of a row in natural order; escaped exponents are consumed from the escape
+// stream in ascending position, exactly as the VBMI expand-load does. Same BF16 bits, so the same dot products.
+static inline void dec64(const NXm& m, size_t base, int k, const uint8_t*& ep, V16* w) {
+  uint16_t b[64];
+  for (int i = 0; i < 64; i++) {
+    const size_t idx = base + k + i;
+    const uint8_t lo = m.lo[idx];
+    const uint8_t nb = m.nib[idx / 2];
+    const uint8_t code = (idx & 1) ? (nb >> 4) : (nb & 0x0F);
+    const uint8_t ex = code == 15 ? *ep++ : m.lutp[code];
+    b[i] = (uint16_t)(((lo & 0x80) << 8) | ((uint16_t)ex << 7) | (lo & 0x7F));
+  }
+  for (int j = 0; j < 4; j++) w[j] = v_ldbf16(b + 16 * j);
+}
+#endif
 // four rows, one token, same per-row arithmetic as row_dots4_n1
 static inline void dots4_nx(const NXm* const* m4, const int* r4, const float* X, float* out) {
-  __m512 a[4] = {_mm512_setzero_ps(), _mm512_setzero_ps(), _mm512_setzero_ps(), _mm512_setzero_ps()};
+  V16 a[4] = {v_zero(), v_zero(), v_zero(), v_zero()};
   const uint8_t* ep[4]; size_t rb[4];
   for (int q = 0; q < 4; q++) { ep[q] = m4[q]->esc + m4[q]->off[r4[q]]; rb[q] = (size_t)r4[q] * m4[q]->K; }
   const int K = m4[0]->K, pf = g_pf;
-  __m512 w[4];
+  V16 w[4];
   for (int k = 0; k < K; k += 64) {
     if (pf) {
       for (int q = 0; q < 4; q++) {
-        _mm_prefetch((const char*)(m4[q]->lo + rb[q] + k + pf), _MM_HINT_T0);
-        _mm_prefetch((const char*)(m4[q]->nib + (rb[q] + k + pf) / 2), _MM_HINT_T0);
+        VH_PREFETCH(m4[q]->lo + rb[q] + k + pf);
+        VH_PREFETCH(m4[q]->nib + (rb[q] + k + pf) / 2);
       }
     }
-    const __m512 x0 = _mm512_loadu_ps(X + k), x1 = _mm512_loadu_ps(X + k + 16),
-                 x2 = _mm512_loadu_ps(X + k + 32), x3 = _mm512_loadu_ps(X + k + 48);
+    const V16 x0 = v_loadf(X + k), x1 = v_loadf(X + k + 16), x2 = v_loadf(X + k + 32), x3 = v_loadf(X + k + 48);
     for (int q = 0; q < 4; q++) {
       dec64(*m4[q], rb[q], k, ep[q], w);
-      a[q] = _mm512_fmadd_ps(w[0], x0, a[q]);
-      a[q] = _mm512_fmadd_ps(w[1], x1, a[q]);
-      a[q] = _mm512_fmadd_ps(w[2], x2, a[q]);
-      a[q] = _mm512_fmadd_ps(w[3], x3, a[q]);
+      a[q] = v_fma(w[0], x0, a[q]);
+      a[q] = v_fma(w[1], x1, a[q]);
+      a[q] = v_fma(w[2], x2, a[q]);
+      a[q] = v_fma(w[3], x3, a[q]);
     }
   }
   for (int q = 0; q < 4; q++) out[q] = tree16(a[q]);
@@ -833,7 +933,7 @@ static void experts_nx_fused(const std::vector<const torch::Tensor*>& P, const s
       const std::vector<int>& T = tb[Ls];
       for (int i = cb[Ls].v.fetch_add(1); i < (int)T.size(); i = cb[Ls].v.fetch_add(1)) {
         const int j = T[i] >> 16, b = T[i] & 0xFFFF;
-        while (done[j].v.load(std::memory_order_acquire) < Is[j] / 16) _mm_pause();
+        while (done[j].v.load(std::memory_order_acquire) < Is[j] / 16) VH_PAUSE();
         const float* hj = &hf[ho[j]];
         for (int r = b * 16; r < b * 16 + 16; r += 4) {
           const NXm* m4[4] = {&D[j], &D[j], &D[j], &D[j]}; const int r4[4] = {r, r + 1, r + 2, r + 3};
@@ -864,20 +964,20 @@ double read_bw(std::vector<torch::Tensor> packs, int64_t numa) {
   #pragma omp parallel
   {
     const int nd = numa == 2 ? ((sched_getcpu() >= 32) ? 1 : 0) : 0;
-    __m512i acc = _mm512_setzero_si512();
+    uint64_t acc[4] = {0, 0, 0, 0};
     for (int hop = 0; hop < (numa == 2 ? 2 : 1); hop++) {
       const int Ls = nd ^ hop;
       for (int i = cur[Ls].v.fetch_add(1); i < (int)ch[Ls].size(); i = cur[Ls].v.fetch_add(1)) {
         const uint8_t* p = ch[Ls][i].first;
         for (size_t o = 0; o < C; o += 256) {
-          acc = _mm512_add_epi64(acc, _mm512_loadu_si512(p + o));
-          acc = _mm512_add_epi64(acc, _mm512_loadu_si512(p + o + 64));
-          acc = _mm512_add_epi64(acc, _mm512_loadu_si512(p + o + 128));
-          acc = _mm512_add_epi64(acc, _mm512_loadu_si512(p + o + 192));
+          { uint64_t t_[8]; std::memcpy(t_, p + o, 64); for (int z = 0; z < 8; z++) acc[0] += t_[z]; }
+          { uint64_t t_[8]; std::memcpy(t_, p + o + 64, 64); for (int z = 0; z < 8; z++) acc[1] += t_[z]; }
+          { uint64_t t_[8]; std::memcpy(t_, p + o + 128, 64); for (int z = 0; z < 8; z++) acc[2] += t_[z]; }
+          { uint64_t t_[8]; std::memcpy(t_, p + o + 192, 64); for (int z = 0; z < 8; z++) acc[3] += t_[z]; }
         }
       }
     }
-    sink += _mm512_reduce_add_epi64(acc);
+    sink += (long long)(acc[0] + acc[1] + acc[2] + acc[3]);
   }
   const double ms = now_ms() - t0;
   return tot / ms / 1e6;
@@ -948,7 +1048,13 @@ int64_t make_host_embed(torch::Tensor W, torch::Tensor ids, torch::Tensor out) {
   HOST_JOBS->push_back(j); return (int64_t)HOST_JOBS->size() - 1;
 }
 
+std::string isa() { return VH_ISA; }
+bool nx_fast() { return VH_NX_FAST != 0; }
+bool have_numa() { return VH_HAVE_NUMA != 0; }
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("have_numa", &have_numa);
+  m.def("isa", &isa);
+  m.def("nx_fast", &nx_fast);
   m.def("register_layer_act", &register_layer_act);
   m.def("make_host_job", &make_host_job);
   m.def("enqueue_host_job", &enqueue_host_job);
