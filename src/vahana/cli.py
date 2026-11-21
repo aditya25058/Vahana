@@ -3,6 +3,7 @@
   vahana run   MODEL_DIR --prompt "..." [--gpu-budget GB] [--max-tokens N]
   vahana serve MODEL_DIR [--gpu-budget GB] [--port 8000] [--host 127.0.0.1]
   vahana selftest [--device cpu|cuda]        tiny models of 18 families: same bits as the reference H100?
+  vahana doctor [MODEL_DIR ...]              this machine, and how each model would run here (and how fast)
 
 Process setup happens here, before torch is imported, because it must apply to every thread:
   - automatic NUMA balancing is turned off for the process (MPOL_BIND over all nodes; it stalls the CPU expert
@@ -93,6 +94,9 @@ def main(argv=None):
     if argv[:1] == ["selftest"]:                      # same bits as the reference machine? (tiny models, no download)
         from .selftest import main as selftest
         return selftest(argv[1:])
+    if argv[:1] == ["doctor"]:                        # this machine, and which models it runs (and how fast)
+        from .doctor import main as doctor
+        return doctor(argv[1:])
     p = argparse.ArgumentParser("vahana", description="Exact inference for MoE models too big for your GPU")
     sub = p.add_subparsers(dest="cmd", required=True)
     for name in ("run", "serve"):

@@ -20,14 +20,16 @@ Its answers are **bit-identical** wherever the work runs. The same tokens come o
 > - **Done for v0.2:**
 >   - one CPU kernel for AVX-512, AVX2, ARM NEON and plain C (P1);
 >   - CPU-only machines, with the same bits as a GPU (P2);
->   - Linux, Windows and macOS: no libtorch or OpenMP dependency, one wheel per platform, and `vahana selftest` (P3).
-> - **Next:** `vahana doctor` and an SSD streaming tier, for models bigger than RAM (P4).
+>   - Linux, Windows and macOS: no libtorch or OpenMP dependency, one wheel per platform, and `vahana selftest` (P3);
+>   - `vahana doctor`, and models bigger than RAM streamed from disk, still exact (P4). Qwen3-30B (57 GB) runs on a 15 GB laptop and gives the H100's logits bit for bit.
+> - **Next:** speed (v0.3): hot experts in spare VRAM, prefetching, exact speculative decoding, batched serving.
 
 ## Quick start
 ```bash
 pip install vahana-*.whl            # a wheel for your platform (CI builds them), then torch for your machine
 pip install -e . && python src/vahana/csrc/build.py    # or from source: needs a C++20 compiler, no torch headers
 vahana selftest                     # same bits as the reference H100? (18 tiny models, about a minute)
+vahana doctor /models/Qwen3-30B-A3B # what this machine runs, where the weights go, and roughly how fast
 
 vahana run   /models/Qwen3-30B-A3B --prompt "Explain mixture-of-experts in one paragraph." --chat
 vahana serve /models/DeepSeek-Coder-V2-Instruct --gpu-budget 16 --port 8000
@@ -90,7 +92,9 @@ Vahana finds the experts by structure (transformers' `experts(hidden, indices, w
   - **Cost:** +1.8% per GPU decode step.
 
 ## Requirements and limits (v0.1)
-- **RAM** for the experts: about 0.75 × their BF16 size as NX12, plus page cache for the checkpoint. 236B needs about 340 GB.
+- **RAM:**
+  - **Fast:** room for the experts, about 0.75 × their BF16 size as NX12, plus page cache. 236B needs about 340 GB.
+  - **Less RAM still works, exactly:** experts stream from disk through the page cache, at disk speed. Qwen3-30B at about 0.55 tok/s on a 15 GB laptop with NVMe.
 - **One NVIDIA GPU, or none.** CPU-only works, gives the same tokens, and is slower.
 - **CPU:** any x86-64 (AVX-512 fastest, AVX2, or plain). The ARM NEON build is written but not yet run on ARM hardware.
 - **OS:** Linux, Windows and macOS. CI builds a wheel for Linux x86-64 / arm64, Windows x86-64 and macOS arm64, and checks the selftest on each.

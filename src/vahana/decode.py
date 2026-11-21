@@ -112,7 +112,10 @@ def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None
                 except Exception as e:  # noqa: BLE001
                     # Not capturable (e.g. a module that copies host tensors to the GPU inside forward). Release the
                     # half-made capture pool and continue eagerly; the reason is reported, never silent.
-                    for f in (torch._C._cuda_endAllocateCurrentStreamToPool, torch._C._cuda_releasePool):
+                    # Older torch (private _cuda_endAllocateCurrentStreamToPool present) leaves the pool allocating
+                    # after a failed capture and needs this; newer torch cleans up itself, and a second release aborts.
+                    old = getattr(torch._C, "_cuda_endAllocateCurrentStreamToPool", None)
+                    for f in ((old, torch._C._cuda_releasePool) if old is not None else ()):
                         try:
                             f(dev.index if dev.index is not None else torch.cuda.current_device(), pool)
                         except Exception:  # noqa: BLE001

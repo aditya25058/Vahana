@@ -102,4 +102,4 @@ jobs:
           OMP_NUM_THREADS: "1"
         run: |
           cd "$RUNNER_TEMP"
-          "$PY" -m pytest -q -p no:cacheprovider "$GITHUB_WORKSPACE/tests/test_twin.py" "$GITHUB_WORKSPACE/tests/test_modelspec.py"
+          "$PY" -m pytest -q -p no:cacheprovider "$GITHUB_WORKSPACE/tests/test_twin.py" "$GITHUB_WORKSPACE/tests/test_modelspec.py" "$GITHUB_WORKSPACE/tests/test_doctor.py"

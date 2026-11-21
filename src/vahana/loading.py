@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import mmap
 import os
+import sys
 import re
 from typing import Any
 
@@ -109,9 +110,21 @@ class ShardMap:
         self.header_len = int.from_bytes(self.f.read(8), "little")
         self.header = json.loads(self.f.read(self.header_len))
         self.data_start = 8 + self.header_len
-        # ACCESS_COPY: writeable view, no disk I/O for reads (torch needs it).
-        self.mm = mmap.mmap(self.f.fileno(), 0, access=mmap.ACCESS_COPY)
-        self.u8 = torch.frombuffer(self.mm, dtype=torch.uint8)
+        # Linux / macOS: ACCESS_COPY (a writeable private view; no commit charge, no disk I/O until read).
+        # Windows: a copy-on-write view is charged in full against the commit limit (RAM + pagefile), so a model
+        # bigger than that cannot even be mapped (WinError 1455). Read-only views cost nothing; Vahana never writes
+        # into weight memory (GPU weights are copies, CPU weights are only read), so the views stay read-only.
+        self.readonly = sys.platform == "win32"
+        self.mm = mmap.mmap(self.f.fileno(), 0, access=mmap.ACCESS_READ if self.readonly else mmap.ACCESS_COPY)
+        self.u8 = self._frombuffer(dtype=torch.uint8)
+
+    def _frombuffer(self, **kw) -> torch.Tensor:
+        if not self.readonly:
+            return torch.frombuffer(self.mm, **kw)
+        import warnings
+        with warnings.catch_warnings():              # "buffer is not writable": intended, the weights are read-only
+            warnings.simplefilter("ignore", UserWarning)
+            return torch.frombuffer(self.mm, **kw)
 
     @classmethod
     def get(cls, path: str) -> ShardMap:
@@ -132,8 +145,7 @@ class ShardMap:
         # (odd header length), where viewing the uint8 map as a wider dtype
         # raises. Still zero-copy.
         n = (e - b) // torch.empty((), dtype=dtype).element_size()
-        return torch.frombuffer(self.mm, dtype=dtype, count=n,
-                                offset=s).reshape(info["shape"])
+        return self._frombuffer(dtype=dtype, count=n, offset=s).reshape(info["shape"])
 
 
 _SAFETENSORS_DTYPES = {

@@ -1,0 +1,5 @@
+vahana selftest: {'device': 'cuda', 'isa': 'avx2', 'torch': '2.11.0+cu128', 'transformers': '5.12.1', 'platform': 'win32'}
+  phimoe             386cf5a7fab5d32d6dae0c60  same bits  9.4s
+  mixtral            ce34fc14fa082f131ee2dd69  same bits  1.6s
+  gpt_oss            4385e7be5567ae5316aa5bfc  same bits  1.7s
+vahana selftest: 3/3 families give the same bits as the reference machine

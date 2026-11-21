@@ -1,0 +1,12 @@
+vahana doctor
+  system   Windows 11 (build 26200) AMD64, Python 3.10.10, torch 2.11.0+cu128
+  CPU      AMD Ryzen 7 4800H with Radeon Graphics, 16 threads; kernel: avx2 (avx2 build), 14 threads
+  RAM      15.4 GB total, 7.4 GB available, read 14 GB/s
+  GPU      NVIDIA GeForce RTX 3050 Ti Laptop GPU, 4.0 GB (3.2 free), triton yes
+
+  Qwen3-30B-A3B (qwen3_moe, 48 layers, 128 experts, top-8)
+    weights   non-expert 2.9 GB, experts 54.0 GB, an average token reads 3.4 GB of experts
+    disk      1.32 GB/s sequential read (an upper bound if the file was cached)
+    plan      device=cpu: non-expert in CPU RAM, experts streamed from disk (about 5% cached in RAM)
+    estimate  about 0.4 tok/s decode (rough; run it to know)
+    exact     yes: every placement gives the same bits (check this machine with `vahana selftest`)
