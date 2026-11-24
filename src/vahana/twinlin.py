@@ -17,7 +17,7 @@ import re
 
 import torch
 import torch.nn.functional as F
-from ._triton import tl, triton
+from ._triton import div_rn, sqrt_rn, tl, triton
 from torch import nn
 
 from . import hybrid as _hy
@@ -212,8 +212,8 @@ def _trms(x, w, y, N, sx, sy, eps, BLOCK: tl.constexpr):
     if BLOCK >= 32768:
         a = _halve(a, BLOCK // 16384)
     s = tl.sum(a, axis=0)                                  # one slot left (>= 0)
-    var = tl.math.div_rn(s, N.to(tl.float32))
-    rs = tl.math.div_rn(1.0, tl.math.sqrt_rn(var + eps))
+    var = div_rn(s, N.to(tl.float32))
+    rs = div_rn(1.0, sqrt_rn(var + eps))
     h = (v * rs).to(tl.bfloat16).to(tl.float32)
     ww = tl.load(w + cols, mask=m, other=0.0).to(tl.float32)
     tl.store(y + r * sy + cols, (ww * h).to(tl.bfloat16), mask=m)

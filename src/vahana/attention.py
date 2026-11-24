@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import torch
 
-from ._triton import tl, triton
+from ._triton import div_rn, tl, triton
 from .hybrid import C_LN2HI, C_LN2LO, C_LOG2E, P0, P1, P2, P3, P4, P5, _dexp
 from .twinlin import _tree16
 
@@ -88,9 +88,9 @@ def _attn(q, k, v, o, first, last, mask, sinks, scale, softcap, H, G, Q, T,
             sacc = tl.fma(kc, qc[None, :], sacc)
         s = _tree16(sacc, BT) * scale
         if HAS_CAP:                             # cap * tanh(s / cap), tanh(y) = 2 sigmoid(2y) - 1 with Vahana's exp
-            y = tl.math.div_rn(s, softcap)
+            y = div_rn(s, softcap)
             e = _dexp(-2.0 * y, LOG2E, LN2HI, LN2LO, P0, P1, P2, P3, P4, P5)
-            sg = tl.math.div_rn(1.0, 1.0 + e)
+            sg = div_rn(1.0, 1.0 + e)
             s = softcap * (2.0 * sg - 1.0)
         s = tl.where(ok, s, -float("inf"))
         m_new = tl.maximum(m_i, tl.max(s, axis=0))
@@ -103,7 +103,7 @@ def _attn(q, k, v, o, first, last, mask, sinks, scale, softcap, H, G, Q, T,
         acc = tl.fma(acc, alpha, _tsum64_rows(p[:, None] * vb, DVP))
         m_i = m_new
     den = tl.where(l_i > 0, l_i, 1.0)
-    out = tl.where(l_i > 0, tl.math.div_rn(acc, tl.zeros((DVP,), tl.float32) + den), 0.0)
+    out = tl.where(l_i > 0, div_rn(acc, tl.zeros((DVP,), tl.float32) + den), 0.0)
     tl.store(o + b * sob + i * soq + h * soh + dv, out.to(o.dtype.element_ty), mask=dv < DV)
 
 

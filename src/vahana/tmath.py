@@ -319,13 +319,19 @@ def trsqrt(x):
     return 1.0 / tsqrt(x)
 
 
-def tsoftmax(x, dim, dtype=None):
+def tsoftmax(x, dim, dtype=None, fused=True):
     out = dtype or x.dtype
+    if fused and dim in (-1, x.dim() - 1) and x.is_cuda:     # v0.3-c: one kernel, the same operations (fused.py)
+        from .fused import softmax_lastdim
+        y = softmax_lastdim(x, out)
+        if y is not None:
+            return y
     xf = x.float() if x.dtype != torch.float64 else x
     m = xf.amax(dim, keepdim=True)
     e = exp64(_f64(xf - m)).to(xf.dtype)
     s = tsum(e, dim, keepdim=True)
-    return (e / s).to(out)
+    r = (e / s).to(out)
+    return r.masked_fill(r != r, float("nan"))              # one NaN bit pattern on every device (0x7fc00000 / 0x7fc0)
 
 
 def tlog_softmax(x, dim, dtype=None):

@@ -7,7 +7,7 @@ exp). down: the kernel's down_o() (bf16(dot), then + bias, then bf16).
 from __future__ import annotations
 
 import torch
-from ._triton import tl, triton
+from ._triton import div_rn, tl, triton
 
 from .hybrid import C_LN2HI, C_LN2LO, C_LOG2E, P0, P1, P2, P3, P4, P5, _dexp
 from .twinlin import _tree16
@@ -45,12 +45,12 @@ def _act(gd, ud, bg, bu, h, n, I, HAS_B: tl.constexpr, ACT: tl.constexpr, alpha,
         ub = tl.minimum(tl.maximum(ub, -limit), limit)
         z = (gb * alpha).to(tl.bfloat16).to(tl.float32)
         ex = _dexp(-z, LOG2E, LN2HI, LN2LO, P0, P1, P2, P3, P4, P5)
-        sg = tl.math.div_rn(1.0, 1.0 + ex).to(tl.bfloat16).to(tl.float32)
+        sg = div_rn(1.0, 1.0 + ex).to(tl.bfloat16).to(tl.float32)
         glu = (gb * sg).to(tl.bfloat16).to(tl.float32)
         out = (ub + 1.0).to(tl.bfloat16).to(tl.float32) * glu
     else:
         ex = _dexp(-gb, LOG2E, LN2HI, LN2LO, P0, P1, P2, P3, P4, P5)
-        s = tl.math.div_rn(gb, 1.0 + ex).to(tl.bfloat16).to(tl.float32)
+        s = div_rn(gb, 1.0 + ex).to(tl.bfloat16).to(tl.float32)
         out = s * ub
     tl.store(h + i, out.to(tl.bfloat16), mask=m)
 

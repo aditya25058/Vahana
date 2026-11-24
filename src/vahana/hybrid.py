@@ -16,7 +16,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import torch
-from ._triton import tl, triton
+from ._triton import div_rn, tl, triton
 
 C_LOG2E, C_LN2HI, C_LN2LO = (float.fromhex("0x1.715476p+0"), float.fromhex("0x1.63p-1"),
                              float.fromhex("-0x1.bd0106p-13"))
@@ -182,7 +182,7 @@ def _gate_up(x, g, u, h, H, I, BR: tl.constexpr, LOG2E: tl.constexpr, LN2HI: tl.
     gb = _tree16(ag, BR).to(tl.bfloat16).to(tl.float32)
     ub = _tree16(au, BR).to(tl.bfloat16).to(tl.float32)
     ex = _dexp(-gb, LOG2E, LN2HI, LN2LO, P0, P1, P2, P3, P4, P5)
-    s = tl.math.div_rn(gb, 1.0 + ex).to(tl.bfloat16).to(tl.float32)
+    s = div_rn(gb, 1.0 + ex).to(tl.bfloat16).to(tl.float32)
     tl.store(h + t * I + rows, (s * ub).to(tl.bfloat16))
 
 
