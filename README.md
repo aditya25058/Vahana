@@ -1,75 +1,60 @@
 # Vahana
 
-**Exact inference for MoE models too big for your GPU.**
+**Exact inference and serving for Mixture-of-Experts models too big for your GPU.**
 
-Vahana (Sanskrit: *carrier*) runs Mixture-of-Experts language models whose experts do not fit in GPU memory:
-- the routed experts stay in CPU RAM and run on a CPU kernel;
-- the GPU runs attention, routing and everything else;
-- anything still over your GPU budget moves to CPU RAM too.
+Vahana (Sanskrit: *carrier*) runs Mixture-of-Experts language models on the hardware you have, from an H100 server down to a laptop with a 4 GB GPU:
+- the GPU runs attention, routing and everything else, plus a cache of the most-used experts;
+- the remaining experts run on an exact CPU kernel, from RAM or streamed from disk when they do not fit.
 
-Its answers are **bit-identical** wherever the work runs. The same tokens come out regardless of:
-- whether an expert runs on the CPU or the GPU;
-- how small the GPU budget is;
-- what else is in the batch, or how it is padded;
-- how many CPU threads are used;
-- whether a token is computed in prefill or decode;
-- **which machine it runs on.** A CPU-only laptop and an H100 give the same logits and tokens, bit for bit (v0.2 P2).
+Its answers are **bit-identical** wherever and however the work runs. The same tokens and the same logits come out regardless of:
+- **the machine:** a CPU-only laptop and an H100 agree bit for bit, on Linux, Windows and macOS, on AVX-512, AVX2, ARM NEON or plain C;
+- **where the weights live:** GPU, GPU expert cache, RAM, or disk;
+- **what else is running:** batching, continuous batching in the server, padding, speculative decoding, or prefill vs decode.
 
-> **Status: v0.1, plus v0.2 portability in progress.**
-> - **v0.1:** one GPU plus a large-RAM CPU host, BF16 checkpoints, and an OpenAI-compatible server (one request at a time).
-> - **Done for v0.2:**
->   - one CPU kernel for AVX-512, AVX2, ARM NEON and plain C (P1);
->   - CPU-only machines, with the same bits as a GPU (P2);
->   - Linux, Windows and macOS: no libtorch or OpenMP dependency, one wheel per platform, and `vahana selftest` (P3);
->   - `vahana doctor`, and models bigger than RAM streamed from disk, still exact (P4). Qwen3-30B (57 GB) runs on a 15 GB laptop and gives the H100's logits bit for bit.
->   - v0.3-a, speed at the same bits:
->     - a GPU<->CPU mailbox replaces CUDA host callbacks (about 1.3 ms -> 12 us per layer), so Qwen3-30B decodes 1.7x faster on the H100;
->     - hot experts live in spare VRAM (`gpu_cache_gb`);
->     - on a 4 GB laptop GPU, OLMoE runs 2.8x faster than in P4.
-> - **Next:** exact speculative decoding (GPU-resident models), expert prefetch for disk streaming, batched serving.
+Other engines change a request's output when the batch around it changes. In Vahana, a request served alongside 63 others gives exactly the bits it gives alone, and that is measured, not assumed ([benchmarks](docs/benchmarks.md)).
+
+> **Status: 1.0.** Validated on real checkpoints up to DeepSeek-V2 236B; 18 model families in the selftest.
+> Every claim here comes from a pre-registered experiment in [`experiments/`](experiments), including the bars it missed.
+> See the [changelog](CHANGELOG.md).
 
 ## Quick start
 ```bash
-pip install vahana-*.whl            # a wheel for your platform (CI builds them), then torch for your machine
-pip install -e . && python src/vahana/csrc/build.py    # or from source: needs a C++20 compiler, no torch headers
-vahana selftest                     # same bits as the reference H100? (18 tiny models, about a minute)
-vahana doctor /models/Qwen3-30B-A3B # what this machine runs, where the weights go, and roughly how fast
+pip install torch                      # the build for your machine (CUDA or CPU), from pytorch.org
+pip install "vahana[gpu]"              # [gpu] adds Triton for NVIDIA GPUs (triton-windows on Windows); omit it for CPU-only
+vahana selftest                        # does this machine give the reference bits? (18 tiny models, about a minute)
+vahana doctor /models/Qwen3-30B-A3B    # what this machine runs, where the weights go; add --measure to time it
 
 vahana run   /models/Qwen3-30B-A3B --prompt "Explain mixture-of-experts in one paragraph." --chat
-vahana serve /models/DeepSeek-Coder-V2-Instruct --gpu-budget 16 --port 8000
-vahana run   /models/OLMoE-1B-7B-0924 --device cpu --prompt "Hello"   # no GPU: same tokens, slower
+vahana serve /models/Qwen3-30B-A3B --slots 32 --port 8000      # OpenAI-compatible, continuous batching
+vahana run   /models/OLMoE-1B-7B-0924 --device cpu --prompt "Hello"   # no GPU: the same tokens, slower
 ```
+From source: `pip install -e .` then `python src/vahana/csrc/build.py` (needs a C++20 compiler; no torch headers).
+
 ```python
 import vahana
-model, info = vahana.load("/models/Mixtral-8x7B-v0.1", gpu_budget_gb=4)    # or device="cpu"
-out = vahana.generate(model, input_ids, max_new_tokens=128)        # ids, per-step timings
+model, info = vahana.load("/models/Qwen3-30B-A3B", gpu_cache_gb="auto")   # or gpu_budget_gb=4, device="cpu"
+out = vahana.generate(model, input_ids, max_new_tokens=128)               # greedy; ids, logits, per-step timings
+batch = vahana.generate_batch(model, [ids_a, ids_b, ids_c], 64)           # each row == its solo run, bit for bit
+spec = vahana.generate_spec(model, input_ids, 64, k=4)                    # exact speculative decoding
 ```
 The server speaks the OpenAI API:
-- `GET /v1/models`
-- `POST /v1/completions`
-- `POST /v1/chat/completions`, with `stream`, `max_tokens`, `temperature`, `top_p`, `seed` and `stop`.
+- `GET /health`, `GET /v1/models`;
+- `POST /v1/completions` and `POST /v1/chat/completions`, with `stream`, `max_tokens`, `temperature`, `top_p`, `seed` and `stop`.
 
-Greedy decoding is bit-exact. Sampling is reproducible: tokens are drawn on the host from fp32 logits with a seeded generator.
+Concurrent requests share decode steps (continuous batching), and every response equals the same request run alone. Greedy decoding is bit-exact. Sampling is reproducible: tokens are drawn on the host from fp32 logits with a generator seeded by `seed`.
 
 ## Results
-All measured on one machine: 1× H100 NVL, 2× EPYC 9354, 503 GB DDR5 with 4 of 12 channels per socket populated. Every number is from a pre-registered experiment in `experiments/`.
+Full tables, the machines used, and the misses are in **[docs/benchmarks.md](docs/benchmarks.md)**. Highlights (H100 NVL server, and a laptop with an RTX 3050 Ti 4 GB and 15 GB of RAM):
 
-| Model | GPU budget | Decode | Exactness |
-|---|---|---|---|
-| DeepSeek-Coder-V2 236B (BF16, 438 GB) | 16 GB | **7.49 tok/s** (48 threads) | graph == eager, bit for bit |
-| Mixtral-8x7B (BF16, 94 GB) | 4 GB | **11.40 tok/s** (48 threads) | graph == eager, bit for bit |
-| Qwen3-30B-A3B | 2.9 GB used | ~20 tok/s through the server, prefill included (24 threads) | CPU experts == GPU experts, bit for bit |
-
-**Quality on real checkpoints** (experiments/m5_real): next-token agreement with stock transformers in fp32, over every position of 50 prompts.
-
-| Model | Vahana | Stock bf16 |
-|---|---|---|
-| OLMoE-1B-7B | 98.0% | 98.5% |
-| Qwen1.5-MoE-A2.7B | 97.3% | 96.3% |
-| DeepSeek-V2-Lite | 98.0% | 98.0% |
-| Qwen3-30B-A3B | 96.8% | 96.4% |
-
-Vahana is as close to full precision as ordinary bf16 inference. Unlike ordinary inference, it is also exactly reproducible.
+| | Result |
+|---|---|
+| DeepSeek-Coder-V2 236B (438 GB), 16 GB GPU budget | 7.49 tok/s |
+| Qwen3-30B-A3B served to 64 requests at once (18 GB of experts on the GPU, the rest on the CPU) | 130 tok/s aggregate, every request bit-identical to running alone |
+| OLMoE-1B-7B, 64 requests at once | 1,016 tok/s aggregate |
+| Continuous batching (128 requests, 32 slots) | the throughput of a static batch, 7.4× one at a time |
+| Qwen3.5-35B-A3B (Gated DeltaNet hybrid), batched | 4.35× one at a time, bit-identical |
+| Qwen3-30B (57 GB) on the 15 GB laptop, streamed from NVMe | about 1 tok/s, the H100's logits bit for bit |
+| Cost of exactness | +1.8% per GPU decode step |
 
 ## Supported models
 Vahana finds the experts by structure (transformers' `experts(hidden, indices, weights)` modules) instead of hard-coding families, and fails loudly on anything it does not recognise.
@@ -78,14 +63,16 @@ Vahana finds the experts by structure (transformers' `experts(hidden, indices, w
 |---|---|
 | **Real checkpoints validated** (exact + quality) | Mixtral, DeepSeek-V2 (Lite and 236B), Qwen1.5-MoE (Qwen2-MoE), Qwen3-MoE, OLMoE |
 | **Validated on the real architecture, tiny random weights** (exact, batch-invariant, graph decode) | DeepSeek-V3, GLM-4-MoE (+Lite), MiniMax-M2, Hunyuan-MoE, Ernie-4.5-MoE, Cohere2-MoE, Exaone-MoE, AFMoE, gpt-oss (BF16 experts) |
-| **Exact, but eager decode only** | MiniMax (lightning attention), Qwen3.5-MoE (Gated-DeltaNet), Phi-MoE (host-side RoPE) |
+| **Real checkpoint validated, eager decode** | Qwen3.5-MoE (Gated DeltaNet; Qwen3.5-35B-A3B batched and served exactly) |
+| **Exact, eager decode only** (tiny random weights) | MiniMax (lightning attention), Phi-MoE (host-side RoPE) |
 | **Not yet** | gpt-oss MXFP4 checkpoints, FP8 checkpoints (DeepSeek-V3/R1), Llama 4, Granite-MoE, JetMoE, DBRX, encoder-decoder MoE |
 
 ## How it is exact
 - **Twin arithmetic.** CPU and GPU kernels evaluate every dot product in the same order (16 fp32 FMA lanes, a fixed reduction tree) with the same BF16 rounding points. An expert or linear layer gives the same bits on either device.
 - **Batch-invariant kernels.** The `vahana` attention function and the linear and norm kernels reduce each row in a fixed order that depends only on that row. Batch neighbours, padding and prefill-vs-decode cannot change it.
 - **NX12.** A lossless 12-bit encoding of BF16 expert weights (75% of the size) that the CPU kernel decodes at memory bandwidth.
-- **One CUDA graph per decode step,** with the CPU jobs as host nodes, for any model.
+- **One CUDA graph per decode step,** with the CPU jobs reached through a GPU↔CPU mailbox, for any model.
+- **Batching without changing bits.** Every kernel computes each row on its own, and attention is anchored at each query's first key, so batch neighbours and padding never move a rounding. The continuous-batching engine only copies KV; recurrent layers never see padding.
 - **Twin arithmetic for everything else (v0.2 P2).**
   - Attention has a CPU twin of the GPU kernel: the same blocks, Vahana's own `exp` and fixed reduction trees.
   - Every remaining operation is written only in IEEE-exact steps: norms, rotary embeddings, router softmax and top-k, activations, small matmuls.
@@ -95,28 +82,27 @@ Vahana finds the experts by structure (transformers' `experts(hidden, indices, w
   - **Result:** the whole model gives the same bits on any CPU or GPU.
   - **Cost:** +1.8% per GPU decode step.
 
-## Requirements and limits (v0.1)
+## Requirements and limits
+- **Python 3.10+, PyTorch 2.4+, transformers 5.** NVIDIA GPUs need Triton (`vahana[gpu]`). CPU-only works everywhere.
 - **RAM:**
-  - **Fast:** room for the experts, about 0.75 × their BF16 size as NX12, plus page cache. 236B needs about 340 GB.
-  - **Less RAM still works, exactly:** experts stream from disk through the page cache, at disk speed. Qwen3-30B at about 0.55 tok/s on a 15 GB laptop with NVMe.
-- **One NVIDIA GPU, or none.** CPU-only works, gives the same tokens, and is slower.
-- **CPU:** any x86-64 (AVX-512 fastest, AVX2, or plain). The ARM NEON build is written but not yet run on ARM hardware.
-- **OS:** Linux, Windows and macOS. CI builds a wheel for Linux x86-64 / arm64, Windows x86-64 and macOS arm64, and checks the selftest on each.
-- **CUDA graphs** need Linux or Windows with an NVIDIA GPU. CPU-only works everywhere.
-- **The server runs one request at a time.**
-- **Prefill on very large models is slow** when many linears are in CPU RAM: 38 s for a 236B prompt.
-- **Hybrid-attention models decode eagerly.**
+  - **Fast:** room for the experts, plus page cache.
+  - **Less RAM still works, exactly:** experts stream from disk at disk speed. A saturated NVMe caps decode; for example Qwen3-30B on a 15 GB laptop runs at about 1 tok/s.
+- **One NVIDIA GPU, or none.** Multi-GPU is not supported.
+- **CPU:** x86-64 (AVX-512 fastest, AVX2, or plain) and ARM64 (NEON). Wheels: Linux x86-64 / arm64, Windows x86-64, macOS arm64. CI runs the selftest on each, under every instruction set.
+- **Checkpoints:** BF16. FP8 and MXFP4 checkpoints are not yet supported.
+- **Hybrid linear-attention models** decode eagerly (no CUDA graph).
+- **Speculative decoding is exact but rarely faster for batch-1 MoE:** each drafted token routes to new experts ([why](docs/benchmarks.md#what-did-not-work)).
+- **Prefill on very large models is slow** when many linears sit in CPU RAM: 38 s for a 236B prompt.
 
 ## Layout
-- **v0.1 path:** `src/vahana/{loader, modelspec, experts, runtime, attention, decode, server, cli}.py`.
-- **Twin arithmetic (P2):** `tmath.py`, `attention.py`.
-- **Kernel (P3):**
-  - `src/vahana/csrc/` holds `cpu_moe.cpp`, `vt.h`, `pool.h` and `build.py`, built as a plain shared library with a C ABI.
-  - Python reaches it through `_kernel.py`.
-  - `osl.py` holds the OS-specific calls.
-- **Earlier research engine:** the remaining modules (batched throughput, column tiers, ANS plane, speculative decoding). Not used by the v0.1 path.
-- **Design:** `docs/design/v0.1-moe-adapter.md`, `docs/design/v0.2-portability.md`.
-- **Evidence:** `experiments/` (M0-M5, server, P1 portable kernel, P2 twin).
+- **Engine:** `src/vahana/`:
+  - `loader`, `modelspec`, `experts`, `runtime` (GPU↔CPU mailbox), `cache` (GPU expert cache);
+  - `attention`, `twinlin`, `fused`, `tmath` (twin arithmetic);
+  - `decode`, `batch`, `speculative`, `engine` (continuous batching);
+  - `server`, `cli`, `doctor`, `selftest`.
+- **CPU kernel:** `src/vahana/csrc/`: `cpu_moe.cpp`, `vt.h`, `pool.h`, `build.py`. A plain shared library with a C ABI, loaded through `_kernel.py`. `osl.py` holds the OS-specific calls.
+- **Earlier research modules** (column tiers, ANS plane, tiered serving) are kept for reference and are not on the default path.
+- **Design:** `docs/design/`. **Evidence:** `experiments/` (M0–M5, P1–P4, v0.3-a … v0.5).
 
 ## License
-Not yet chosen; all rights reserved until then.
+Apache License 2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE). Copyright 2026 aditya25058.

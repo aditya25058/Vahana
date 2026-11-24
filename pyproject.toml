@@ -4,11 +4,26 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vahana"
-version = "0.3.0.dev0"
-description = "Exact inference for MoE models too big for your GPU"
+version = "1.0.0"
+description = "Exact, bit-reproducible inference and serving for Mixture-of-Experts models too big for your GPU"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "aditya25058" }]
+license = { text = "Apache-2.0" }
+keywords = ["llm", "inference", "mixture-of-experts", "moe", "deterministic", "reproducible", "serving"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: C++",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: MacOS",
+  "Intended Audience :: Science/Research",
+  "Intended Audience :: Developers",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
 dependencies = [
   "torch>=2.4",
   "transformers>=5.0",
@@ -17,11 +32,19 @@ dependencies = [
   "numpy>=1.24",
 ]
 
+[project.urls]
+Homepage = "https://github.com/aditya25058/Vahana"
+Source = "https://github.com/aditya25058/Vahana"
+Changelog = "https://github.com/aditya25058/Vahana/blob/main/CHANGELOG.md"
+
 [project.scripts]
 vahana = "vahana.cli:main"
 
 [project.optional-dependencies]
-gpu = ["triton>=3.0"]          # NVIDIA GPUs (Linux; Windows via triton-windows)
+gpu = [                        # NVIDIA GPUs: Triton on Linux, triton-windows on Windows
+  "triton>=3.0; platform_system == 'Linux'",
+  "triton-windows>=3.2; platform_system == 'Windows'",
+]
 test = ["pytest>=8"]
 
 [tool.setuptools.packages.find]
@@ -29,7 +52,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 # the CPU kernel, one library per instruction set (built by setup.py / csrc/build.py), and the selftest reference
-vahana = ["_build/*/vahana_kernel.*", "golden_tiny.json", "csrc/*.cpp", "csrc/*.h", "csrc/*.py", "csrc/*.sh"]
+vahana = ["_build/*/vahana_kernel.so", "_build/*/vahana_kernel.dll", "_build/*/vahana_kernel.dylib", "golden_tiny.json", "csrc/*.cpp", "csrc/*.h", "csrc/*.py", "csrc/*.sh"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

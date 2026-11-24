@@ -94,13 +94,20 @@ def _load(args, setup):
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] in (["--version"], ["-V"]):
+        from . import __version__
+        print(f"vahana {__version__}")
+        return 0
     if argv[:1] == ["selftest"]:                      # same bits as the reference machine? (tiny models, no download)
         from .selftest import main as selftest
         return selftest(argv[1:])
     if argv[:1] == ["doctor"]:                        # this machine, and which models it runs (and how fast)
         from .doctor import main as doctor
         return doctor(argv[1:])
-    p = argparse.ArgumentParser("vahana", description="Exact inference for MoE models too big for your GPU")
+    p = argparse.ArgumentParser(
+        "vahana", description="Exact inference for MoE models too big for your GPU",
+        epilog="also: `vahana selftest` (does this machine give the reference bits?), `vahana doctor [MODEL] "
+               "[--measure]` (what this machine runs, where the weights go, how fast), `vahana --version`")
     sub = p.add_subparsers(dest="cmd", required=True)
     for name in ("run", "serve"):
         s = sub.add_parser(name)

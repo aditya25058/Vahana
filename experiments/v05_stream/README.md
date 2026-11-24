@@ -22,7 +22,7 @@ Pre-registered 2026-11-24, after the baseline and before the counted runs.
 
 **Prediction:** mode 1 gives 1.1–1.4× (deeper I/O queue); mode 2 gives 1.3–2× with about 60–80% prediction hit; bits are identical in every mode.
 
-## Results (laptop: counted). The H100 part is pending (see below)
+## Results (laptop: counted)
 | Bar | Result |
 |---|---|
 | EXACT: selftest with `VAHANA_PREFETCH=2`, laptop CPU (avx2, scalar) and GPU with half cache | **18/18** each |
