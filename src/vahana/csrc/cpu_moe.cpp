@@ -327,7 +327,8 @@ std::vector<double> phase_ms() { return std::vector<double>(g_ph, g_ph + 5); }
 namespace {
 struct LayerW { std::vector<torch::Tensor> g, u, d; std::vector<torch::Tensor> sg, su, sd; std::vector<torch::Tensor> nx, snx;
                 int act = 0; float alpha = 1.702f, limit = 7.0f; std::vector<torch::Tensor> bg, bu, bd;
-                std::vector<uint8_t> resident; };                // v0.3: experts cached on the GPU
+                std::vector<uint8_t> resident;                   // v0.3: experts cached on the GPU
+                torch::Tensor router; };                         // v0.5: [E, H] bf16 copy of this layer's router (prefetch)
 std::map<int64_t, LayerW>* LAYERS = new std::map<int64_t, LayerW>();
 }
 void register_layer(int64_t layer, std::vector<torch::Tensor> g, std::vector<torch::Tensor> u,
@@ -357,6 +358,143 @@ void register_resident(int64_t layer, torch::Tensor r) {
   const uint8_t* p = r.data_ptr<uint8_t>();
   L.resident.assign(p, p + r.numel());
 }
+// ---- v0.5: expert prefetch for streamed (mmap) weights. Only hints to the OS (PrefetchVirtualMemory / madvise
+// WILLNEED): no data and no arithmetic change, so outputs are bit-identical with or without it.
+//   mode 1: at the start of a job, the selected experts of this layer are prefetched as whole ranges (large reads
+//           with a deep queue instead of page faults inside the kernel);
+//   mode 2: + the next MoE layer's experts are predicted with its router applied to this layer's input (top-K per
+//           token, VAHANA_PREFETCH_TOPK) and prefetched by a background thread while this layer computes.
+// Off by default (v0.5 measured no gain on a disk that is already saturated); VAHANA_PREFETCH=1/2 turns it on.
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
+#include <deque>
+#include <set>
+#include <mutex>
+#include <thread>
+#include <condition_variable>
+namespace {
+std::atomic<int> g_pf_mode{0};
+std::atomic<long long> g_pf_bytes{0}, g_pf_calls{0}, g_pf_hit{0}, g_pf_n{0}, g_pf_pred_bytes{0};
+std::mutex g_pf_mu; std::condition_variable g_pf_cv;
+std::deque<std::vector<std::pair<const void*, size_t>>>* g_pf_q = new std::deque<std::vector<std::pair<const void*, size_t>>>();
+std::map<int64_t, std::set<int64_t>>* g_pf_pred = new std::map<int64_t, std::set<int64_t>>();
+std::mutex g_pf_pred_mu;
+bool g_pf_thread = false;
+
+void os_prefetch(const std::vector<std::pair<const void*, size_t>>& r) {
+  if (r.empty()) return;
+#if defined(_WIN32)
+  typedef BOOL(WINAPI* PFN)(HANDLE, ULONG_PTR, PWIN32_MEMORY_RANGE_ENTRY, ULONG);
+  static PFN f = (PFN)(void*)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "PrefetchVirtualMemory");
+  if (!f) return;
+  std::vector<WIN32_MEMORY_RANGE_ENTRY> e(r.size());
+  for (size_t i = 0; i < r.size(); i++) { e[i].VirtualAddress = (PVOID)r[i].first; e[i].NumberOfBytes = r[i].second; }
+  f(GetCurrentProcess(), (ULONG_PTR)e.size(), e.data(), 0);
+#else
+  static const uintptr_t pg = (uintptr_t)sysconf(_SC_PAGESIZE);
+  for (auto& x : r) {
+    uintptr_t a = (uintptr_t)x.first & ~(pg - 1), b = (uintptr_t)x.first + x.second;
+    madvise((void*)a, b - a, MADV_WILLNEED);
+  }
+#endif
+  long long n = 0; for (auto& x : r) n += (long long)x.second;
+  g_pf_bytes += n; g_pf_calls += 1;
+}
+
+void pf_loop() {
+  for (;;) {
+    std::vector<std::pair<const void*, size_t>> r;
+    {
+      std::unique_lock<std::mutex> lk(g_pf_mu);
+      g_pf_cv.wait(lk, [] { return !g_pf_q->empty(); });
+      r = std::move(g_pf_q->front()); g_pf_q->pop_front();
+    }
+    os_prefetch(r);
+  }
+}
+
+void expert_ranges(const LayerW& L, int64_t e, std::vector<std::pair<const void*, size_t>>& r) {
+  if (e < 0 || e >= (int64_t)L.g.size()) return;
+  for (const torch::Tensor* t : {&L.g[e], &L.u[e], &L.d[e]})
+    r.push_back({t->data_ptr(), (size_t)t->numel() * t->element_size()});
+}
+
+// Called at the start of a CPU expert job for `layer` with its N x K selected experts (mask: 1 = runs here).
+void prefetch_job(int64_t layer, const LayerW& L, const uint16_t* xp, int N, int H, const int64_t* tip, int K,
+                  const uint8_t* mask) {
+  const int mode = g_pf_mode.load();
+  if (mode <= 0 || !L.nx.empty()) return;          // NX packs live in RAM: nothing to stream
+  std::set<int64_t> sel;
+  for (int i = 0; i < N * K; i++) if (!mask || mask[i]) sel.insert(tip[i]);
+  {
+    std::lock_guard<std::mutex> lk(g_pf_pred_mu);    // how well the previous layer predicted this one
+    auto it = g_pf_pred->find(layer);
+    if (it != g_pf_pred->end()) {
+      for (int64_t e : sel) { g_pf_n += 1; if (it->second.count(e)) g_pf_hit += 1; }
+      g_pf_pred->erase(it);
+    }
+  }
+  std::vector<std::pair<const void*, size_t>> r;
+  for (int64_t e : sel) expert_ranges(L, e, r);
+  os_prefetch(r);
+  if (mode < 2) return;
+  auto nx = LAYERS->find(layer + 1);
+  if (nx == LAYERS->end() || nx->second.router.data_ptr() == nullptr || !nx->second.nx.empty()) return;
+  const LayerW& M = nx->second;
+  const int E = (int)M.router.size(0);
+  if (M.router.size(1) != H) return;
+  const uint16_t* W = (const uint16_t*)M.router.data_ptr();
+  static const int pk = [] { const char* v = std::getenv("VAHANA_PREFETCH_TOPK"); return v ? std::atoi(v) : 0; }();
+  const int P = std::min(E, pk > 0 ? pk : K);       // predicted experts per token (default: top-K)
+  std::set<int64_t> pred;
+  std::vector<float> sc(E), xf(H);
+  for (int n = 0; n < N; n++) {
+    for (int h = 0; h < H; h++) xf[h] = bf2f(xp[(size_t)n * H + h]);
+    for (int e = 0; e < E; e++) {
+      float a = 0.f; const uint16_t* w = W + (size_t)e * H;
+      for (int h = 0; h < H; h++) a += bf2f(w[h]) * xf[h];
+      sc[e] = a;
+    }
+    std::vector<int> id(E); for (int e = 0; e < E; e++) id[e] = e;
+    std::partial_sort(id.begin(), id.begin() + P, id.end(), [&](int a, int b) { return sc[a] > sc[b]; });
+    for (int q = 0; q < P; q++) {
+      if (!M.resident.empty() && M.resident[(size_t)id[q]]) continue;     // on the GPU: nothing to read
+      pred.insert(id[q]);
+    }
+  }
+  std::vector<std::pair<const void*, size_t>> rn;
+  for (int64_t e : pred) expert_ranges(M, e, rn);
+  long long nb = 0; for (auto& x : rn) nb += (long long)x.second;
+  g_pf_pred_bytes += nb;
+  {
+    std::lock_guard<std::mutex> lk(g_pf_pred_mu);
+    (*g_pf_pred)[layer + 1] = pred;
+  }
+  {
+    std::lock_guard<std::mutex> lk(g_pf_mu);
+    if (!g_pf_thread) { std::thread(pf_loop).detach(); g_pf_thread = true; }
+    g_pf_q->push_back(std::move(rn));
+  }
+  g_pf_cv.notify_one();
+}
+}  // namespace
+void set_prefetch(int64_t mode) { g_pf_mode = (int)mode; }
+void register_router(int64_t layer, torch::Tensor W) { LAYERS->at(layer).router = W; }
+void prefetch_stats(double* out) {
+  out[0] = (double)g_pf_bytes; out[1] = (double)g_pf_calls; out[2] = (double)g_pf_hit; out[3] = (double)g_pf_n;
+  out[4] = (double)g_pf_pred_bytes; out[5] = (double)g_pf_mode.load();
+}
+void prefetch_stats_reset() { g_pf_bytes = 0; g_pf_calls = 0; g_pf_hit = 0; g_pf_n = 0; g_pf_pred_bytes = 0; }
 void register_shared(int64_t layer, torch::Tensor g, torch::Tensor u, torch::Tensor d) {
   LayerW& L = LAYERS->at(layer);
   L.sg = {g}; L.su = {u}; L.sd = {d};
@@ -375,6 +513,7 @@ static std::vector<torch::Tensor> moe_fused(int64_t layer, torch::Tensor x, torc
   const bool twf = tw.scalar_type() == torch::kFloat;          // M2: fp32 routing weights used as given
   const float* twfp = twf ? tw.data_ptr<float>() : nullptr;
   const uint16_t* xp = (const uint16_t*)x.data_ptr();
+  prefetch_job(layer, L, xp, N, H, tip, K, nullptr);           // v0.5: hints only (no-op unless enabled)
   static const bool fuse = [] { const char* v = std::getenv("VAHANA_FUSE"); return !(v && v[0] == '0'); }();
   if (fuse && N == 1 && !L.nx.empty() && (L.sg.empty() || !L.snx.empty()) && H % 64 == 0) {
     // Phase 41: routed + shared in one region; same per-row arithmetic and the same combine as below.
@@ -555,6 +694,8 @@ static void moe_cached(int64_t layer, torch::Tensor x, torch::Tensor ti, torch::
     const int64_t* t0 = ti.data_ptr<int64_t>(); uint8_t* m0 = mask.data_ptr<uint8_t>();
     for (int i = 0; i < N * K; i++) m0[i] = L.resident[(size_t)t0[i]] ? 0 : 1;
   }
+  prefetch_job(layer, LAYERS->at(layer), (const uint16_t*)x.data_ptr(), N, H, ti.data_ptr<int64_t>(), K,
+               mask.data_ptr<uint8_t>());                     // v0.5: hints only, for the CPU slots
   auto Y = torch::empty({N, K, H}, x.options());
   moe_slots(layer, x, ti, mask, Y, numa);
   uint16_t* yp = (uint16_t*)Y.data_ptr();
@@ -1458,6 +1599,9 @@ VH_API int vh_register_shared(int64_t layer, const vh_t* g, const vh_t* u, const
 }
 VH_API int vh_register_layer_nx(int64_t layer, const vh_t* packs, int64_t n) { VH_INT(register_layer_nx(layer, TV_(packs, n))) }
 VH_API int vh_register_resident(int64_t layer, const vh_t* r) { VH_INT(register_resident(layer, T_(r))) }
+VH_API int vh_register_router(int64_t layer, const vh_t* W) { VH_INT(register_router(layer, T_(W))) }
+VH_API void vh_set_prefetch(int64_t mode) { set_prefetch(mode); }
+VH_API void vh_prefetch_stats(double* out6, int64_t reset) { prefetch_stats(out6); if (reset) prefetch_stats_reset(); }
 VH_API int vh_register_shared_nx(int64_t layer, const vh_t* packs, int64_t n) { VH_INT(register_shared_nx(layer, TV_(packs, n))) }
 VH_API int vh_register_linear_nx(const vh_t* W, const vh_t* packs, int64_t n) { VH_INT(register_linear_nx(T_(W), TV_(packs, n))) }
 VH_API int vh_submit(const vh_t* x, const vh_t* g, const vh_t* u, const vh_t* d, int64_t n, int64_t numa) {

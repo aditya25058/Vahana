@@ -276,7 +276,50 @@ def load(model_dir: str, gpu_budget_gb: float | None = None, device: str = "cuda
                 gpu_gb=torch.cuda.memory_allocated(dev) / 2**30 if dev.type == "cuda" else 0.0)
     if gpu_cache_gb and dev.type == "cuda":
         info["gpu_cache"] = _gpu_cache(model, model_dir, gpu_cache_gb, reserve_gb, log)
+    info["prefetch"] = _prefetch(model, log)
     return model, info
+
+
+_ROUTERS = []
+
+
+def _prefetch(model, log=None) -> dict:
+    """v0.5: let the kernel prefetch streamed (mmap) experts: each job's experts as whole ranges (1), plus the next
+    layer's experts predicted by its router applied to this layer's input (2). Hints to the OS only: the outputs are
+    the same bits with or without it. Off by default (no gain measured on a saturated disk); VAHANA_PREFETCH=1/2."""
+    import os
+    from . import hybrid as _hy
+    from .experts import VahanaExperts
+    from .modelspec import parent_of
+    k = _hy.ext()
+    if not getattr(k, "has_prefetch", False):
+        return {"mode": 0, "reason": "kernel without prefetch"}
+    exp = [(n, m) for n, m in model.named_modules() if isinstance(m, VahanaExperts)]
+    if not exp:
+        return {"mode": 0, "reason": "no CPU experts"}
+    streamed = sum(w.numel() * 2 for _, m in exp if not m.nx for trip in zip(m.g, m.u, m.d) for w in trip)
+    need = streamed / 2**30
+    env = os.environ.get("VAHANA_PREFETCH")
+    # Off unless asked: on the v0.5 laptop (NVMe already saturated by demand paging) prefetching did not help
+    mode = int(env) if env not in (None, "") else 0
+    n = 0
+    if mode >= 2:
+        for name, m in exp:
+            parent, _ = parent_of(model, name)
+            E, H = m.spec.E, m.spec.H
+            W = next((p for pn, p in parent.named_parameters() if p.dim() == 2 and tuple(p.shape) == (E, H)
+                      and ".experts" not in "." + pn), None)
+            if W is None:
+                continue
+            Wc = W.detach().to("cpu", torch.bfloat16).contiguous()
+            _ROUTERS.append(Wc)
+            k.register_router(m.spec.slot, Wc)
+            n += 1
+    k.set_prefetch(mode)
+    info = {"mode": mode, "streamed_gb": round(need, 1), "routers": n}
+    if log and mode:
+        log(f"vahana: expert prefetch mode {mode} ({need:.0f} GB of experts streamed from disk, {n} routers)")
+    return info
 
 
 _CALIB = ["The history of the Roman Empire spans more than a thousand years, from the founding of the city",

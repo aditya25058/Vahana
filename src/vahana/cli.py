@@ -76,7 +76,10 @@ def _load(args, setup):
     import torch
     from . import loader
     device = args.device
+    gc = getattr(args, "gpu_cache", "auto")
+    gc = None if gc in (None, "0", "off", "none") else (gc if gc == "auto" else float(gc))
     model, info = loader.load(args.model, gpu_budget_gb=args.gpu_budget, reserve_gb=args.reserve, device=device,
+                              gpu_cache_gb=gc if device == "cuda" else None,
                               log=lambda m: print(m, file=sys.stderr, flush=True))
     if setup["main_cpus"] and device != "cpu":    # CPU-only: the main thread computes too, keep every core
         from .osl import set_cpus
@@ -106,6 +109,9 @@ def main(argv=None):
         s.add_argument("--reserve", type=float, default=1.5, help="GB of the budget kept for KV cache / workspace")
         s.add_argument("--threads", type=int, default=None, help="CPU threads for the expert kernel")
         s.add_argument("--keep-numa-balancing", action="store_true")
+        s.add_argument("--gpu-cache", default="auto",
+                       help="GB of spare GPU memory for the most-used experts ('auto' = what is free, 0 = off); "
+                            "speed only, the same bits")
         s.add_argument("--device", default=None, choices=["cuda", "cpu"],
                        help="default: cuda if an NVIDIA GPU is present; cpu gives the same tokens, slower")
         if name == "run":

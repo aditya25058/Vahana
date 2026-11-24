@@ -98,6 +98,12 @@ class Kernel:
         for name, (res, args) in sig.items():
             f = getattr(L, name)
             f.restype, f.argtypes = res, args
+        opt = {"vh_register_router": (ctypes.c_int, [_I64, _P]), "vh_set_prefetch": (None, [_I64]),   # v0.5
+               "vh_prefetch_stats": (None, [ctypes.POINTER(_D), _I64])}
+        self.has_prefetch = all(hasattr(L, n) for n in opt)
+        for name, (res, args) in (opt.items() if self.has_prefetch else ()):
+            f = getattr(L, name)
+            f.restype, f.argtypes = res, args
         if L.vh_abi() != 3:
             raise RuntimeError(f"{path}: kernel ABI {L.vh_abi()}, this vahana expects 3 (rebuild: csrc/build.py)")
         self._launch_set = False
@@ -184,6 +190,24 @@ class Kernel:
         """v0.3: uint8 [E], 1 = this expert is cached on the GPU (moe_cached then computes the mask itself)."""
         self._ok(self.lib.vh_register_resident(layer, _desc(resident.to(torch.uint8).contiguous())),
                  "register_resident")
+
+    def register_router(self, layer, W):
+        """v0.5: [E, H] bf16 host copy of a layer's router, used only to predict which experts to prefetch."""
+        if self.has_prefetch:
+            self._ok(self.lib.vh_register_router(layer, _desc(W)), "register_router")
+
+    def set_prefetch(self, mode: int):
+        """v0.5: 0 off, 1 prefetch each job's experts, 2 + predicted experts of the next layer (hints only)."""
+        if self.has_prefetch:
+            self.lib.vh_set_prefetch(int(mode))
+
+    def prefetch_stats(self, reset: bool = False) -> dict:
+        if not self.has_prefetch:
+            return {}
+        a = (_D * 6)()
+        self.lib.vh_prefetch_stats(a, int(reset))
+        return {"gb": a[0] / 2**30, "calls": int(a[1]), "pred_hit": a[2] / a[3] if a[3] else None,
+                "pred_gb": a[4] / 2**30, "mode": int(a[5])}
 
     def register_shared_nx(self, layer, packs):
         self._ok(self.lib.vh_register_shared_nx(layer, _arr(packs), len(packs)), "register_shared_nx")

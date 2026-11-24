@@ -205,12 +205,51 @@ def report(models: list[str], gpu_budget_gb=None, probe=True) -> int:
     return 0
 
 
+MEASURE_PROMPT = "The history of the Roman Empire spans more than a thousand years, from the founding of the city"
+
+
+def measure(path: str, tokens: int = 16, gpu_budget_gb=None, gpu_cache: str = "auto", keep: bool = False) -> dict:
+    """v0.5: load the model exactly as `vahana run` does (same setup, placement, GPU expert cache, prefetch) and
+    decode `tokens` tokens on a fixed prompt: a measured decode speed instead of an estimate."""
+    import time
+    from argparse import Namespace
+
+    from . import cli
+    ns = Namespace(model=path, gpu_budget=gpu_budget_gb, reserve=1.5, threads=None, keep_numa_balancing=False,
+                   device=None, gpu_cache=gpu_cache)
+    setup = cli._setup(ns)
+    t0 = time.time()
+    model, tok, torch = cli._load(ns, setup)
+    load_s = time.time() - t0
+    from . import decode
+    ids = tok(MEASURE_PROMPT, return_tensors="pt").input_ids.to(model._vahana_device)
+    decode.generate(model, ids, max_new_tokens=4)                # warm: kernels, graph capture, first page-ins
+    r = decode.generate(model, ids, max_new_tokens=tokens)
+    st = r["step_ms"]
+    out = {"tok_s": len(st) / (sum(st) / 1e3) if st else None, "prefill_s": r["prefill_s"], "load_s": load_s,
+           "tokens": tokens, "graph": r["graph_used"], "device": str(model._vahana_device)}
+    if keep:
+        out["model"], out["tokenizer"] = model, tok
+    return out
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser("vahana doctor")
     ap.add_argument("models", nargs="*")
     ap.add_argument("--gpu-budget", type=float, default=None)
     ap.add_argument("--no-probe", action="store_true")
+    ap.add_argument("--measure", action="store_true",
+                    help="also load each model as `vahana run` would and time a short decode (takes as long as a load)")
+    ap.add_argument("--tokens", type=int, default=16)
     a = ap.parse_args(argv)
+    if a.measure:
+        if len(a.models) != 1:
+            ap.error("--measure takes one model")
+        m = measure(a.models[0], a.tokens, a.gpu_budget)     # first: the CLI's thread setup must precede torch's
+        rc = report(a.models, a.gpu_budget, not a.no_probe)
+        print(f"    measured  {m['tok_s']:.2f} tok/s decode ({m['tokens']} tokens on {m['device']}, "
+              f"{'CUDA graph' if m['graph'] else 'eager'}; load {m['load_s']:.0f}s, prefill {m['prefill_s']:.1f}s)")
+        return rc
     return report(a.models, a.gpu_budget, not a.no_probe)
 
 
