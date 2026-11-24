@@ -26,7 +26,7 @@ classifiers = [
 
 dependencies = [
   "torch>=2.4",
-  "transformers>=5.12,<5.25",     # Vahana relies on transformers internals (cache classes, model code): tested range
+  "transformers>=5.12,<5.14",     # the versions every real checkpoint and the selftest reference were validated on (see CI `compat`)
   "accelerate>=1.0",
   "safetensors>=0.4",
   "numpy>=1.24",

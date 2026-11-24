@@ -4,7 +4,7 @@ Each version's evidence is in `experiments/` (pre-registered bars, run logs, raw
 
 ## 1.0.0 (2026-11-24)
 First public release (beta). The exactness guarantee is stable. Licensed under Apache-2.0.
-- Dependencies pinned to the tested range: transformers 5.12–5.24, torch ≥ 2.4. CI logs the torch and transformers versions it tested.
+- Dependencies pinned to the validated range: transformers 5.12–5.13 (later releases change Qwen3.5-MoE and gpt-oss outputs; found by a clean-install test before publishing), torch ≥ 2.4. CI logs the versions it tested, and a `compat` job runs the selftest on every transformers release.
 - Docs: README quick start, [docs/benchmarks.md](docs/benchmarks.md) (every number linked to its experiment), this changelog.
 - `vahana --version`. `vahana --help` lists `selftest` and `doctor`.
 - Release pipeline: a version tag builds and checks every platform's wheel plus an sdist, then publishes to PyPI by trusted publishing ([docs/RELEASING.md](docs/RELEASING.md)). `pip install "vahana[gpu]"` picks Triton on Linux and triton-windows on Windows.
