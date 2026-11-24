@@ -230,6 +230,11 @@ def load(model_dir: str, gpu_budget_gb: float | None = None, device: str = "cuda
             k = k.replace(a, b)
         return k
     ck = {rename(k): k for k in h.weight_map}
+    # v0.4-c: vision-language checkpoints (e.g. Qwen3.5-MoE) keep the text model under model.language_model.; the
+    # causal-LM class names it model. (the vision tower and MTP head are simply never requested)
+    for k in list(h.weight_map):
+        if k.startswith("model.language_model."):
+            ck.setdefault("model." + k[len("model.language_model."):], k)
 
     def get_param(n):
         if n not in ck:
@@ -247,6 +252,13 @@ def load(model_dir: str, gpu_budget_gb: float | None = None, device: str = "cuda
             base = pname[: -len(tail)]
             got[leaf] = [[h.get_tensor(ck[base + (p if p.startswith(".") else "." + p).replace("*", str(e))])
                           for e in range(s.E)] for p in src]
+        if not got and f"{s.path}.gate_up_proj" in ck and f"{s.path}.down_proj" in ck:
+            # v0.4-c: fused 3-D expert tensors as the module stores them: gate_up_proj [E, 2I, H] (gate = rows :I,
+            # up = rows I:, the module's chunk(2)), down_proj [E, H, I]. Per-expert slices are views of the mmap.
+            gu, dp = get_param(f"{s.path}.gate_up_proj"), get_param(f"{s.path}.down_proj")
+            I = gu.shape[1] // 2
+            return ([gu[e, :I] for e in range(gu.shape[0])], [gu[e, I:] for e in range(gu.shape[0])],
+                    [dp[e] for e in range(dp.shape[0])], None, None, None)
         if len(got.get("gate_up_proj", [])) != 2 or len(got.get("down_proj", [])) != 1:
             raise ValueError(f"{s.path}: no per-expert gate / up / down keys in the checkpoint")
         return got["gate_up_proj"][0], got["gate_up_proj"][1], got["down_proj"][0], None, None, None

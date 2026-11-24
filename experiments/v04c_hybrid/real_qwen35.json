@@ -1,0 +1,24 @@
+{
+ "model": "Qwen3.5-35B-A3B",
+ "gpu_cache": {
+  "cached_experts": 4266,
+  "layers": 40,
+  "gb": 24.99609375,
+  "profile_hit": 0.8772875816993464
+ },
+ "load_s": 74.25752305984497,
+ "engine": "HybridEngine",
+ "exact": 8,
+ "of": 8,
+ "engine_decode_tok_s": 16.8,
+ "solo_decode_tok_s": 3.86,
+ "speedup": 4.35,
+ "stats": {
+  "steps": 62,
+  "prefills": 16,
+  "active_tokens": 496,
+  "bucket_tokens": 496,
+  "trims": 0
+ },
+ "sample": " The Fibonacci sequence is defined as:  \n- F(0) = 0  \n- F(1) = 1  \n- F(n) = F"
+}
