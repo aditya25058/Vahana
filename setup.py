@@ -39,6 +39,9 @@ class PlatformWheel(bdist_wheel):
 
     def get_tag(self):
         _, _, plat = super().get_tag()
+        if plat.endswith("universal2"):     # the kernels are built for this machine's architecture only (1.0.1)
+            import platform
+            plat = plat[: -len("universal2")] + platform.machine()
         return "py3", "none", plat
 
 

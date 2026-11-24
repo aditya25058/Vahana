@@ -2,6 +2,9 @@
 
 Each version's evidence is in `experiments/` (pre-registered bars, run logs, raw results). Missed bars are recorded there too.
 
+## 1.0.1 (2026-11-25)
+- The macOS wheel is tagged `macosx_11_0_arm64` instead of `universal2`. It only ever contained Apple-silicon kernels, so on an Intel Mac pip would install 1.0.0 and its kernel would fail to load. Intel Macs can build from the source distribution.
+
 ## 1.0.0 (2026-11-24)
 First public release (beta). The exactness guarantee is stable. Licensed under Apache-2.0.
 - Dependencies pinned to the validated range: transformers 5.12–5.13 (later releases change Qwen3.5-MoE and gpt-oss outputs; found by a clean-install test before publishing), torch ≥ 2.4. CI logs the versions it tested, and a `compat` job runs the selftest on every transformers release.
