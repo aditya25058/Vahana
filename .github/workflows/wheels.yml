@@ -133,8 +133,7 @@ jobs:
         run: |
           cd /tmp
           vahana selftest --device cpu | tee st.txt
-          echo "::notice title=transformers ${{ matrix.tf }}::$(tail -1 st.txt) $(grep DIFFERENT st.txt | awk '{print $1}' | tr '
-' ' ')"
+          echo "::notice title=transformers ${{ matrix.tf }}::$(tail -1 st.txt) $(grep DIFFERENT st.txt | awk '{print $1}' | xargs)"
           grep -q "18/18" st.txt
 
   # v1.0: source distribution (the wheels carry the prebuilt kernels; the sdist builds them with a C++20 compiler)
