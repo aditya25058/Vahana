@@ -84,12 +84,12 @@ def prompts(vocab):
     return ids, am
 
 
-def run(fam, device):
+def run(fam, device, cache_frac=None):
     import torch
     from . import decode, loader
     cfg, m = build(fam)
     m = m.to(device)
-    model, _ = loader.prepare(m)
+    model, _ = loader.prepare(m, gpu_cache_frac=cache_frac)
     ids, am = prompts(cfg.vocab_size)
     r = decode.generate(model, ids.to(device), am.to(device), max_new_tokens=STEPS, graph=device.type == "cuda",
                         return_logits=True)
@@ -105,6 +105,8 @@ def main(argv=None):
     ap.add_argument("--families", default=None)
     ap.add_argument("--write", default=None, help="record hashes to this file instead of checking")
     ap.add_argument("--golden", default=GOLDEN)
+    ap.add_argument("--gpu-cache", type=float, default=None,
+                    help="cache this fraction of every layer's experts on the GPU (the bits must not change)")
     a = ap.parse_args(argv)
     import torch
     import transformers
@@ -122,7 +124,7 @@ def main(argv=None):
     for f in fams:
         t = time.time()
         try:
-            res[f] = run(f, dev)
+            res[f] = run(f, dev, a.gpu_cache)
         except Exception as e:  # noqa: BLE001
             res[f] = f"error: {type(e).__name__}: {str(e)[:200]}"
         same = gold.get(f) == res[f]

@@ -74,11 +74,14 @@ class Kernel:
             "vh_register_layer_act": (ctypes.c_int, [_I64, _I64, _D, _D, _P, _I64, _P, _I64, _P, _I64]),
             "vh_register_shared": (ctypes.c_int, [_I64, _P, _P, _P]),
             "vh_register_layer_nx": (ctypes.c_int, [_I64, _P, _I64]),
+            "vh_register_resident": (ctypes.c_int, [_I64, _P]),
             "vh_register_shared_nx": (ctypes.c_int, [_I64, _P, _I64]),
             "vh_register_linear_nx": (ctypes.c_int, [_P, _P, _I64]),
             "vh_submit": (ctypes.c_int, [_P, _P, _P, _P, _I64, _I64]),
             "vh_submit_linear": (ctypes.c_int, [_P, _P, _P]),
             "vh_submit_moe": (ctypes.c_int, [_I64, _P, _P, _P, _P, _I64]),
+            "vh_submit_moe_cached": (ctypes.c_int, [_I64, _P, _P, _P, _P, _P, _P, _I64]),
+            "vh_make_host_cached": (_I64, [_I64, _P, _P, _P, _P, _P, _P, _I64]),
             "vh_wait_done": (ctypes.c_void_p, []), "vh_kernel_ms": (_D, []),
             "vh_phase_ms": (None, [ctypes.POINTER(_D)]),
             "vh_place_split": (ctypes.c_void_p, [_P, _I64]), "vh_place_rows": (ctypes.c_void_p, [_P]),
@@ -87,14 +90,16 @@ class Kernel:
             "vh_make_host_job": (_I64, [_I64, _P, _P, _P, _P, _I64, _I64]),
             "vh_make_host_linear": (_I64, [_P, _P, _P]), "vh_make_host_embed": (_I64, [_P, _P, _P]),
             "vh_enqueue_host_job": (ctypes.c_int, [_I64, _I64]), "vh_host_calls": (_I64, []),
+            "vh_host_stats": (None, [ctypes.POINTER(_D)]), "vh_host_stats_reset": (None, []),
+            "vh_mailbox_start": (ctypes.c_int, [_P, _P]), "vh_mailbox_jobs": (_I64, []),
             "vh_attention_twin": (ctypes.c_int, [_P, _P, _P, _P, _P, _P, _P, _D, _D, _I64, _P]),
             "vh_dexp": (ctypes.c_int, [_P, _P]),
         }
         for name, (res, args) in sig.items():
             f = getattr(L, name)
             f.restype, f.argtypes = res, args
-        if L.vh_abi() != 1:
-            raise RuntimeError(f"{path}: kernel ABI {L.vh_abi()}, this vahana expects 1")
+        if L.vh_abi() != 3:
+            raise RuntimeError(f"{path}: kernel ABI {L.vh_abi()}, this vahana expects 3 (rebuild: csrc/build.py)")
         self._launch_set = False
 
     # ---- plumbing
@@ -175,6 +180,11 @@ class Kernel:
     def register_layer_nx(self, layer, packs):
         self._ok(self.lib.vh_register_layer_nx(layer, _arr(packs), len(packs)), "register_layer_nx")
 
+    def register_resident(self, layer, resident):
+        """v0.3: uint8 [E], 1 = this expert is cached on the GPU (moe_cached then computes the mask itself)."""
+        self._ok(self.lib.vh_register_resident(layer, _desc(resident.to(torch.uint8).contiguous())),
+                 "register_resident")
+
     def register_shared_nx(self, layer, packs):
         self._ok(self.lib.vh_register_shared_nx(layer, _arr(packs), len(packs)), "register_shared_nx")
 
@@ -193,6 +203,11 @@ class Kernel:
     def submit_moe(self, layer, x, ti, tw, out, numa):
         self._keep = (x, ti, tw, out)
         self._ok(self.lib.vh_submit_moe(layer, _desc(x), _desc(ti), _desc(tw), _desc(out), numa), "submit_moe")
+
+    def submit_moe_cached(self, layer, x, ti, tw, mask, yg, out, numa):
+        self._keep = (x, ti, tw, mask, yg, out)
+        self._ok(self.lib.vh_submit_moe_cached(layer, _desc(x), _desc(ti), _desc(tw), _opt(mask), _desc(yg),
+                                               _desc(out), numa), "submit_moe_cached")
 
     def wait_done(self):
         r = self._list(self.lib.vh_wait_done(), "worker")
@@ -235,6 +250,13 @@ class Kernel:
             raise self._err("make_host_job")
         return r
 
+    def make_host_cached(self, layer, x, ti, tw, mask, yg, out, numa):
+        r = self.lib.vh_make_host_cached(layer, _desc(x), _desc(ti), _desc(tw), _opt(mask), _desc(yg), _desc(out),
+                                         numa)
+        if r < 0:
+            raise self._err("make_host_cached")
+        return r
+
     def make_host_linear(self, W, x, out):
         r = self.lib.vh_make_host_linear(_desc(W), _desc(x), _desc(out))
         if r < 0:
@@ -250,6 +272,25 @@ class Kernel:
     def enqueue_host_job(self, stream, job):
         self._launch()
         self._ok(self.lib.vh_enqueue_host_job(stream, job), "enqueue_host_job")
+
+    def host_stats(self, reset: bool = False) -> dict:
+        """Per host-job kind: mean callback ms, count, and the worker's mean compute ms (profiling)."""
+        a = (_D * 12)()
+        self.lib.vh_host_stats(a)
+        names = ("moe", "linear", "embed", "slots")
+        r = {names[k]: {"n": int(a[4 + k]), "cb_ms": a[k] / a[4 + k] if a[4 + k] else 0.0,
+                        "job_ms": a[8 + k] / a[4 + k] if a[4 + k] else 0.0} for k in range(4) if a[4 + k]}
+        if reset:
+            self.lib.vh_host_stats_reset()
+        return r
+
+    def mailbox_start(self, req, done):
+        """Start the CPU polling thread of the GPU <-> CPU mailbox (req / done: pinned int32 [n], zeros)."""
+        self._mb = (req, done)
+        self._ok(self.lib.vh_mailbox_start(_desc(req), _desc(done)), "mailbox_start")
+
+    def mailbox_jobs(self) -> int:
+        return self.lib.vh_mailbox_jobs()
 
     def host_calls(self) -> int:
         return self.lib.vh_host_calls()

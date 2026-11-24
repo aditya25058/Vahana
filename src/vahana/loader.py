@@ -200,8 +200,11 @@ def _assemble(model, specs, get_param, get_experts, dev, cpu, folded, numa, nx, 
 
 def load(model_dir: str, gpu_budget_gb: float | None = None, device: str = "cuda", numa: int = 2, nx: bool = True,
          place: bool = True, reserve_gb: float = 1.5, force_cpu: str | None = None, log=print, experts: str = "cpu",
-         twin: bool = True):
-    """Checkpoint directory -> (Vahana model, info)."""
+         twin: bool = True, gpu_cache_gb: float | str | None = None):
+    """Checkpoint directory -> (Vahana model, info).
+    gpu_cache_gb: spare GPU memory for the most-used experts (v0.3; "auto" = what is free after loading, minus
+    reserve_gb). Popularity is profiled once on built-in text and saved next to Vahana's cache. Speed only: the
+    outputs are the same bits with or without it."""
     from accelerate import init_empty_weights
     from transformers import AutoConfig, AutoModelForCausalLM
     from transformers.conversion_mapping import get_checkpoint_conversion_mapping
@@ -259,11 +262,58 @@ def load(model_dir: str, gpu_budget_gb: float | None = None, device: str = "cuda
     info.update(model_type=cfg.model_type, moe_layers=len(specs), nonexpert_gb=total / 2**30,
                 cpu_modules=sorted(cpu), folded_shared=len(folded), load_s=time.time() - t0,
                 gpu_gb=torch.cuda.memory_allocated(dev) / 2**30 if dev.type == "cuda" else 0.0)
+    if gpu_cache_gb and dev.type == "cuda":
+        info["gpu_cache"] = _gpu_cache(model, model_dir, gpu_cache_gb, reserve_gb, log)
     return model, info
 
 
+_CALIB = ["The history of the Roman Empire spans more than a thousand years, from the founding of the city",
+          "def quicksort(arr):\n    if len(arr) <= 1:\n        return arr\n    pivot = arr[len(arr) // 2]",
+          "Explain photosynthesis to a ten-year-old in three short paragraphs.",
+          "La economía de América Latina creció lentamente durante la última década, debido a",
+          "Q: A train leaves at 3 pm travelling 60 km/h. How far has it gone by 5:30 pm?\nA: Let's think step by step.",
+          "Write a short, friendly email asking a colleague to review a pull request before Friday.",
+          "In quantum mechanics, the uncertainty principle states that",
+          "这是一个关于人工智能如何改变教育的简短讨论。"]
+
+
+def _gpu_cache(model, model_dir, gpu_cache_gb, reserve_gb, log):
+    """Profile expert popularity (once per model, saved), then cache the most-used experts in GPU memory."""
+    import hashlib
+    import json
+    import os
+    from . import cache as _cache
+    from .experts import VahanaExperts
+    free = torch.cuda.mem_get_info()[0] / 2**30
+    gb = free - reserve_gb if gpu_cache_gb == "auto" else float(gpu_cache_gb)
+    gb = min(gb, free - 0.5)
+    if gb <= 0:
+        return {"cached_experts": 0, "reason": f"no free GPU memory ({free:.1f} GB free)"}
+    layers = {m.spec.slot: m for m in model.modules() if isinstance(m, VahanaExperts)}
+    key = hashlib.sha256(json.dumps(sorted(json.load(open(os.path.join(model_dir, "config.json"))).items()),
+                                    default=str).encode()).hexdigest()[:16]
+    path = os.path.join(os.path.expanduser("~"), ".cache", "vahana", "popularity", f"{key}.json")
+    counts = None
+    if os.path.exists(path):
+        counts = {int(L): torch.tensor(v) for L, v in json.load(open(path)).items()}
+    else:
+        from transformers import AutoTokenizer
+        tok = AutoTokenizer.from_pretrained(model_dir)
+        dev = next(p.device for p in model.parameters() if p.device.type == "cuda")
+
+        def run():
+            with torch.no_grad():
+                for t in _CALIB:
+                    model(tok(t, return_tensors="pt").input_ids.to(dev))
+        counts = _cache.popularity(model, run, layers)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        json.dump({str(L): c.tolist() for L, c in counts.items()}, open(path, "w"))
+    return _cache.install(model, gb * 2**30, counts, log=log)
+
+
 def prepare(model: nn.Module, gpu_budget_gb: float | None = None, force_cpu: str | None = None, numa: int = 2,
-            nx: bool = True, place: bool = False, log=None, twin: bool = True, experts: str = "cpu"):
+            nx: bool = True, place: bool = False, log=None, twin: bool = True, experts: str = "cpu",
+            gpu_cache_frac: float | None = None):
     """A model already in memory -> Vahana model, in place. The model's device is where non-expert weights run
     (a CUDA device, or the CPU for a CPU-only machine). twin: the device-twin arithmetic everywhere (P2), so the
     result is the same bits on any CPU or GPU."""
@@ -277,4 +327,7 @@ def prepare(model: nn.Module, gpu_budget_gb: float | None = None, force_cpu: str
     info = _assemble(model, specs, lambda n: src[n], lambda s: exp[s.path], dev, cpu, folded, numa, nx, place, log,
                      experts, twin)
     info.update(cpu_modules=sorted(cpu), folded_shared=len(folded))
+    if gpu_cache_frac and dev.type == "cuda":         # tests: cache this fraction of every layer's experts
+        from . import cache as _cache
+        info["gpu_cache"] = _cache.install(model, 0, None, frac=gpu_cache_frac)
     return model, info

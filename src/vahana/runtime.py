@@ -2,8 +2,10 @@
 
 Every CPU operation runs one of two ways with identical arithmetic:
   eager   copy inputs to the CPU, run the job on the persistent worker, copy the result back (synchronous);
-  graph   while a CUDA graph is being captured (GRAPH["on"]): device->pinned copies, a host node that runs the job
-          (csrc make_host_* / enqueue_host_job), pinned->device copy; no Python on the replay path.
+  graph   while a CUDA graph is being captured (GRAPH["on"]): one mailbox kernel per job (v0.3) moves the inputs into
+          pinned host memory, signals the kernel's CPU polling thread and waits, then moves the output back (~12 us per
+          round trip; VAHANA_MAILBOX=0 uses the older device->pinned copies + CUDA host node + copy back, ~1.4 ms).
+          No Python on the replay path.
 Linears: CPU-resident weights use the CPU twin linear; GPU weights without bias use the GPU twin linear (same bits
 as the CPU one); anything else (biases, fp32) uses the batch-invariant GEMM.
 """
@@ -13,6 +15,7 @@ import torch
 import torch.nn as nn
 
 from . import hybrid as _hy
+from ._triton import tl, triton
 from .invariant import inv_linear
 from .twinlin import gpu_linear
 
@@ -28,6 +31,76 @@ def _pin(shape, dtype):
 
 def _stream() -> int:
     return torch.cuda.current_stream().cuda_stream
+
+
+# ---- v0.3 mailbox (default in graph decode; VAHANA_MAILBOX=0 uses CUDA host nodes instead)
+_MB: dict = {}
+_MAXJ = 4096
+
+
+@triton.jit
+def _mb_copy(src, dst, n, BLK: tl.constexpr):
+    for s0 in range(0, n, BLK):
+        i = s0 + tl.arange(0, BLK)
+        m = i < n
+        tl.store(dst + i, tl.load(src + i, mask=m, volatile=True), mask=m)
+
+
+@triton.jit
+def _mb_rt(counter, req, done, job, d0, h0, n0, d1, h1, n1, d2, h2, n2, d3, h3, n3, oh, od, no, BLK: tl.constexpr):
+    """One CPU round trip in stream order: inputs device -> pinned host (UVA stores), publish seq for `job` (system-
+    scope release), poll until the CPU thread stores done[job] = seq, acquire, then output pinned host -> device."""
+    _mb_copy(d0, h0, n0, BLK)
+    _mb_copy(d1, h1, n1, BLK)
+    _mb_copy(d2, h2, n2, BLK)
+    _mb_copy(d3, h3, n3, BLK)
+    seq = tl.atomic_add(counter + job, 1) + 1
+    tl.atomic_xchg(req + job, seq, sem="release", scope="sys")
+    cur = tl.load(done + job, volatile=True)
+    while cur != seq:
+        cur = tl.load(done + job, volatile=True)
+    tl.atomic_add(done + job, 0, sem="acquire", scope="sys")
+    _mb_copy(oh, od, no, BLK)
+
+
+def mailbox_on() -> bool:
+    import os
+    return os.environ.get("VAHANA_MAILBOX", "1") != "0"
+
+
+def _words(t: torch.Tensor) -> torch.Tensor:
+    """A flat view for word copies: int32 when the byte count allows, else uint8."""
+    f = t.reshape(-1)
+    return f.view(torch.int32) if (f.numel() * f.element_size()) % 4 == 0 else f.view(torch.uint8)
+
+
+def roundtrip(job: int, ins, oh: torch.Tensor, od: torch.Tensor) -> None:
+    """Run host job `job` on (device input, pinned host buffer) pairs `ins` and copy its pinned output `oh` into the
+    device tensor `od`, in stream order (capturable). Mailbox by default; VAHANA_MAILBOX=0: copies + a host node."""
+    k = _hy.ext()
+    if not mailbox_on():
+        for d, h in ins:
+            h.copy_(d, non_blocking=True)
+        k.enqueue_host_job(_stream(), job)
+        od.copy_(oh, non_blocking=True)
+        return
+    if not _MB:
+        dev = torch.device("cuda", torch.cuda.current_device())
+        _MB["counter"] = torch.zeros(_MAXJ, dtype=torch.int32, device=dev)
+        _MB["req"] = torch.zeros(_MAXJ, dtype=torch.int32).pin_memory()
+        _MB["done"] = torch.zeros(_MAXJ, dtype=torch.int32).pin_memory()
+        k.mailbox_start(_MB["req"], _MB["done"])
+    assert job < _MAXJ, "too many host jobs for the mailbox"
+    args = []
+    for d, h in ins:
+        dv = _words(d.to(h.dtype).contiguous())
+        hv = _words(h)
+        assert dv.dtype == hv.dtype and dv.numel() == hv.numel()
+        args += [dv, hv, dv.numel()]
+    while len(args) < 12:
+        args += [_MB["counter"], _MB["counter"], 0]
+    ov, hov = _words(od), _words(oh)
+    _mb_rt[(1,)](_MB["counter"], _MB["req"], _MB["done"], job, *args, hov, ov, ov.numel(), BLK=1024)
 
 
 def weights_arg(w: torch.Tensor) -> torch.Tensor:
@@ -56,12 +129,38 @@ def moe(slot: int, x: torch.Tensor, ti: torch.Tensor, tw: torch.Tensor, numa: in
              _pin((N, H), torch.bfloat16))
         _BUF[key] = b + (k.make_host_job(slot, *b, numa, False),)
     xb, tib, twb, ob, job = _BUF[key]
-    xb.copy_(x, non_blocking=True)
-    tib.copy_(ti, non_blocking=True)
-    twb.copy_(tw, non_blocking=True)
-    k.enqueue_host_job(_stream(), job)
     out = torch.empty((N, H), dtype=torch.bfloat16, device=x.device)
-    out.copy_(ob, non_blocking=True)
+    roundtrip(job, [(x, xb), (ti, tib), (tw, twb)], ob, out)
+    return out
+
+
+def moe_cached(slot: int, x: torch.Tensor, ti: torch.Tensor, tw: torch.Tensor, yg: torch.Tensor,
+               numa: int) -> torch.Tensor:
+    """v0.3 (GPU expert cache): slots whose expert is not GPU-resident (the set registered with register_resident) run
+    on the CPU kernel; the resident ones arrive in yg [N, K, H] (GPU, twin arithmetic). The CPU kernel combines all
+    slots as moe_fused does."""
+    k = _hy.ext()
+    tw = weights_arg(tw)
+    N, H = x.shape
+    K = ti.shape[1]
+    if not GRAPH["on"]:
+        c = lambda t, dt=None: t.detach().to("cpu", dt or t.dtype).contiguous()
+        xc, tic, twc, ygc = c(x, torch.bfloat16), c(ti, torch.int64), c(tw), c(yg)
+        out = torch.empty((N, H), dtype=torch.bfloat16)
+        for s in range(0, N, ROWS):
+            k.submit_moe_cached(slot, xc[s:s + ROWS], tic[s:s + ROWS], twc[s:s + ROWS], None, ygc[s:s + ROWS],
+                                out[s:s + ROWS], numa)
+            k.wait_done()
+        return out.to(x.device)
+    assert N <= ROWS, "graph decode: at most 16 rows per step"
+    key = ("cached", slot, N, K, tw.dtype)
+    if key not in _BUF:
+        b = (_pin((N, H), torch.bfloat16), _pin((N, K), torch.int64), _pin((N, K), tw.dtype),
+             _pin((N, K, H), torch.bfloat16), _pin((N, H), torch.bfloat16))
+        _BUF[key] = b + (k.make_host_cached(slot, b[0], b[1], b[2], None, b[3], b[4], numa),)
+    xb, tib, twb, ygb, ob, job = _BUF[key]
+    out = torch.empty((N, H), dtype=torch.bfloat16, device=x.device)
+    roundtrip(job, [(x, xb), (ti, tib), (tw, twb), (yg, ygb)], ob, out)
     return out
 
 
@@ -84,10 +183,8 @@ def cpu_linear(W: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
         xb, ob = _pin((n, W.shape[1]), torch.bfloat16), _pin((n, R), torch.bfloat16)
         _BUF[key] = (xb, ob, k.make_host_linear(W, xb, ob))
     xb, ob, job = _BUF[key]
-    xb.copy_(x2, non_blocking=True)
-    k.enqueue_host_job(_stream(), job)
     out = torch.empty((n, R), dtype=torch.bfloat16, device=x2.device)
-    out.copy_(ob, non_blocking=True)
+    roundtrip(job, [(x2, xb)], ob, out)
     return out
 
 
@@ -102,10 +199,8 @@ def cpu_embed(W: torch.Tensor, ids: torch.Tensor, device) -> torch.Tensor:
         idb, ob = _pin((n,), torch.int64), _pin((n, W.shape[1]), W.dtype)
         _BUF[key] = (idb, ob, _hy.ext().make_host_embed(W, idb, ob))
     idb, ob, job = _BUF[key]
-    idb.copy_(ids.reshape(-1), non_blocking=True)
-    _hy.ext().enqueue_host_job(_stream(), job)
     out = torch.empty((n, W.shape[1]), dtype=W.dtype, device=device)
-    out.copy_(ob, non_blocking=True)
+    roundtrip(job, [(ids.reshape(-1).to(torch.int64), idb)], ob, out)
     return out.view(*shp, W.shape[1])
 
 

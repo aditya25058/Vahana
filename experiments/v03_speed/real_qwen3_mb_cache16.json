@@ -1,0 +1,90 @@
+{
+ "model": "Qwen3-30B-A3B",
+ "device": "cuda",
+ "torch": "2.4.0+cu121",
+ "platform": "linux",
+ "ram_available_gb_before": 473.7207489013672,
+ "load_s": 56.13168239593506,
+ "load": {
+  "nonexpert_gb": 2.8705101013183594,
+  "gpu_gb": 2.8715105056762695,
+  "nx_layers": 48,
+  "cpu_modules": 0,
+  "moe_layers": 48
+ },
+ "gpu_cache": {
+  "cached_experts": 1820,
+  "layers": 48,
+  "gb": 15.99609375,
+  "profile_hit": 0.6613051470588235
+ },
+ "kernel": "avx512",
+ "gens": [
+  {
+   "ids": [
+    576,
+    729,
+    1265,
+    1896,
+    458,
+    7546,
+    308,
+    438,
+    1946,
+    323,
+    470,
+    279,
+    12159,
+    79683,
+    1372,
+    13
+   ],
+   "logits": "79db58a8952352f33d5b",
+   "wall_s": 2.8459830284118652,
+   "prefill_s": 0.8059384590014815,
+   "step_ms_median": 94.97880190610886,
+   "tok_s": 9.24384408564301,
+   "graph": true,
+   "text": " The function should take an integer n as input and return the corresponding Fibonacci number."
+  },
+  {
+   "ids": [
+    576,
+    12884,
+    7952,
+    6303,
+    2337,
+    279,
+    1899,
+    1576,
+    23327,
+    92859,
+    315,
+    3100,
+    11,
+    1741,
+    438,
+    6303
+   ],
+   "logits": "ac26fd54b8ed2b303af9",
+   "wall_s": 2.212972640991211,
+   "prefill_s": 0.5267805866897106,
+   "step_ms_median": 85.22225078195333,
+   "tok_s": 11.023677730048515,
+   "graph": true,
+   "text": " The sky appears blue during the day because shorter wavelengths of light, such as blue"
+  }
+ ],
+ "prefill": [
+  "c4c79648875151fc2114",
+  "1e87a9fb6d24e7da41fa",
+  "7f77cbc97dbc49d6f11f",
+  "ab337d9ba98c3a3517fb",
+  "0c5b81ac10c76dda8db5",
+  "e5b8e9de2d121b0c3f31",
+  "928c3f131d4f981b4bb2",
+  "ecbdbdfe15f7304a2a15"
+ ],
+ "prefill_s": 3.963498592376709,
+ "ram_available_gb_after": 432.5649604797363
+}

@@ -311,7 +311,8 @@ std::vector<double> phase_ms() { return std::vector<double>(g_ph, g_ph + 5); }
 #include <map>
 namespace {
 struct LayerW { std::vector<torch::Tensor> g, u, d; std::vector<torch::Tensor> sg, su, sd; std::vector<torch::Tensor> nx, snx;
-                int act = 0; float alpha = 1.702f, limit = 7.0f; std::vector<torch::Tensor> bg, bu, bd; };
+                int act = 0; float alpha = 1.702f, limit = 7.0f; std::vector<torch::Tensor> bg, bu, bd;
+                std::vector<uint8_t> resident; };                // v0.3: experts cached on the GPU
 std::map<int64_t, LayerW>* LAYERS = new std::map<int64_t, LayerW>();
 }
 void register_layer(int64_t layer, std::vector<torch::Tensor> g, std::vector<torch::Tensor> u,
@@ -335,6 +336,12 @@ static void build_ctx(const LayerW& L, const std::vector<int64_t>& ids, bool sha
   for (int64_t e : ids) { c.act.push_back(L.act); c.bg.push_back(ptr(L.bg, e)); c.bu.push_back(ptr(L.bu, e)); c.bd.push_back(ptr(L.bd, e)); }
 }
 // Phase 30: shared experts of a layer, computed in the same job and added (bf16 add) to the routed sum.
+// v0.3: which experts of `layer` the GPU cache holds (uint8 [E], 1 = cached); moe_cached then needs no mask input.
+void register_resident(int64_t layer, torch::Tensor r) {
+  LayerW& L = LAYERS->at(layer);
+  const uint8_t* p = r.data_ptr<uint8_t>();
+  L.resident.assign(p, p + r.numel());
+}
 void register_shared(int64_t layer, torch::Tensor g, torch::Tensor u, torch::Tensor d) {
   LayerW& L = LAYERS->at(layer);
   L.sg = {g}; L.su = {u}; L.sd = {d};
@@ -446,6 +453,115 @@ static std::vector<torch::Tensor> moe_fused(int64_t layer, torch::Tensor x, torc
   return {out};
 }
 
+// v0.3: per-slot expert outputs for the GPU expert cache. x [N, H] bf16, ti [N, K] int64, mask [N, K] uint8 (1 = this
+// slot's expert is computed here), out [N, K, H] bf16: out[b, k] = expert ti[b, k] applied to token b (the same
+// per-expert arithmetic as moe_fused: expert_mlps, or NX12 when one token per expert), zeros where mask is 0.
+// The caller combines all K slots (from here and from the GPU) in ascending expert id exactly as moe_fused does.
+static void moe_slots(int64_t layer, torch::Tensor x, torch::Tensor ti, torch::Tensor mask, torch::Tensor out,
+                      int64_t numa) {
+  const LayerW& L = LAYERS->at(layer);
+  const int N = x.size(0), H = x.size(1), K = ti.size(1);
+  TORCH_CHECK(out.dim() == 3 && out.size(0) == N && out.size(1) == K && out.size(2) == H && out.is_contiguous());
+  const int64_t* tip = ti.data_ptr<int64_t>();
+  const uint8_t* mp = mask.data_ptr<uint8_t>();
+  const uint16_t* xp = (const uint16_t*)x.data_ptr();
+  uint16_t* op = (uint16_t*)out.data_ptr();
+  std::memset(op, 0, (size_t)N * K * H * 2);
+  std::map<int64_t, std::vector<std::pair<int, int>>> rows;     // expert -> (token, slot), ascending token
+  for (int b = 0; b < N; b++) for (int k = 0; k < K; k++) if (mp[b * K + k]) rows[tip[b * K + k]].push_back({b, k});
+  if (rows.empty()) return;
+  if (N == 1 && !L.nx.empty() && H % 64 == 0) {
+    // Decode: the Phase 41 fused single-region path over just these experts (the same per-row arithmetic as
+    // expert_mlps_nx, which moe_fused also relies on), one thread-team region instead of two barriers.
+    std::vector<const torch::Tensor*> P; std::vector<int> Is; std::vector<int64_t> ids;
+    for (auto& kv : rows) { ids.push_back(kv.first); P.push_back(&L.nx[15 * kv.first]); Is.push_back(L.g[0].size(0)); }
+    thread_local std::vector<float> xf; thread_local std::vector<uint16_t> yb;
+    xf.resize(H); yb.resize(ids.size() * H);
+    for (int h = 0; h < H; h++) xf[h] = bf2f(xp[h]);
+    std::vector<uint16_t*> yv(ids.size());
+    for (size_t j = 0; j < ids.size(); j++) yv[j] = yb.data() + j * H;
+    ActCtx fc; const ActCtx* fcp = nullptr;
+    if (layer_has_ctx(L)) { build_ctx(L, ids, false, fc); fcp = &fc; }
+    experts_nx_fused(P, Is, xf.data(), H, yv, (int)numa, fcp);
+    size_t j = 0;
+    for (auto& kv : rows) { std::memcpy(op + (size_t)kv.second[0].second * H, yv[j], (size_t)H * 2); j++; }
+    return;
+  }
+  const int E = (int)rows.size();
+  int nmax = 0;
+  for (auto& kv : rows) nmax = std::max(nmax, (int)kv.second.size());
+  auto X = torch::zeros({E, nmax, H}, x.options());
+  uint16_t* Xp = (uint16_t*)X.data_ptr();
+  std::vector<torch::Tensor> g, u, d;
+  std::vector<int64_t> ids;
+  int j = 0;
+  for (auto& kv : rows) {
+    ids.push_back(kv.first);
+    g.push_back(L.g[kv.first]); u.push_back(L.u[kv.first]); d.push_back(L.d[kv.first]);
+    for (size_t t = 0; t < kv.second.size(); t++)
+      std::memcpy(Xp + ((size_t)j * nmax + t) * H, xp + (size_t)kv.second[t].first * H, (size_t)H * 2);
+    j++;
+  }
+  ActCtx gc; const ActCtx* gcp = nullptr;
+  if (layer_has_ctx(L)) { build_ctx(L, ids, false, gc); gcp = &gc; }
+  torch::Tensor Y;
+  if (nmax == 1 && !L.nx.empty()) {
+    std::vector<torch::Tensor> pk;
+    for (int64_t id : ids) for (int q = 0; q < 15; q++) pk.push_back(L.nx[15 * id + q]);
+    Y = expert_mlps_nx_ctx(X, pk, L.g[0].size(0), numa, gcp);
+  } else {
+    Y = expert_mlps_ctx(X, g, u, d, numa, gcp)[0];
+  }
+  const uint16_t* Yp = (const uint16_t*)Y.data_ptr();
+  j = 0;
+  for (auto& kv : rows) {
+    for (size_t t = 0; t < kv.second.size(); t++)
+      std::memcpy(op + ((size_t)kv.second[t].first * K + kv.second[t].second) * H, Yp + ((size_t)j * nmax + t) * H,
+                  (size_t)H * 2);
+    j++;
+  }
+}
+
+// v0.3: the GPU expert cache's job. The slots with mask 1 run here (moe_slots); the others were computed on the GPU
+// with the twin arithmetic and arrive in yg [N, K, H]. All K slots of each token are then combined exactly as
+// moe_fused combines (ascending expert id; acc = y0*w0, then acc + yj*wj with separate roundings; bf16) into out [N, H].
+static void moe_cached(int64_t layer, torch::Tensor x, torch::Tensor ti, torch::Tensor tw, torch::Tensor mask,
+                       torch::Tensor yg, torch::Tensor out, int64_t numa) {
+  const int N = x.size(0), H = x.size(1), K = ti.size(1);
+  TORCH_CHECK(yg.dim() == 3 && yg.size(0) == N && yg.size(1) == K && yg.size(2) == H && yg.is_contiguous());
+  if (mask.data_ptr() == nullptr) {                  // mask from the registered resident set: 1 = run here on the CPU
+    const LayerW& L = LAYERS->at(layer);
+    TORCH_CHECK(!L.resident.empty(), "moe_cached: no resident set registered for layer ", layer);
+    mask = torch::empty({N, K}, torch::TensorOptions().dtype(torch::kUInt8));
+    const int64_t* t0 = ti.data_ptr<int64_t>(); uint8_t* m0 = mask.data_ptr<uint8_t>();
+    for (int i = 0; i < N * K; i++) m0[i] = L.resident[(size_t)t0[i]] ? 0 : 1;
+  }
+  auto Y = torch::empty({N, K, H}, x.options());
+  moe_slots(layer, x, ti, mask, Y, numa);
+  uint16_t* yp = (uint16_t*)Y.data_ptr();
+  const uint16_t* gp = (const uint16_t*)yg.data_ptr();
+  const uint8_t* mp = mask.data_ptr<uint8_t>();
+  for (int i = 0; i < N * K; i++) if (!mp[i]) std::memcpy(yp + (size_t)i * H, gp + (size_t)i * H, (size_t)H * 2);
+  const int64_t* tip = ti.data_ptr<int64_t>();
+  const bool twf = tw.scalar_type() == torch::kFloat;
+  const float* twfp = twf ? tw.data_ptr<float>() : nullptr;
+  const uint16_t* twp = (const uint16_t*)tw.data_ptr();
+  uint16_t* op = (uint16_t*)out.data_ptr();
+  std::vector<float> acc(H);
+  for (int b = 0; b < N; b++) {
+    std::vector<std::pair<int64_t, int>> ek;
+    for (int k = 0; k < K; k++) ek.push_back({tip[b * K + k], k});
+    std::sort(ek.begin(), ek.end());
+    for (int q = 0; q < K; q++) {
+      const uint16_t* yr = yp + ((size_t)b * K + ek[q].second) * H;
+      const float w = twf ? twfp[b * K + ek[q].second] : bf2f(twp[b * K + ek[q].second]);
+      if (q == 0) { for (int h = 0; h < H; h++) acc[h] = bf2f(yr[h]) * w; }
+      else { for (int h = 0; h < H; h++) { float p = bf2f(yr[h]) * w; acc[h] = acc[h] + p; } }
+    }
+    for (int h = 0; h < H; h++) op[(size_t)b * H + h] = f2bf(acc[h]);
+  }
+}
+
 // Phase 30: twin linear on the CPU. y[t, r] = bf16( tree16( 16 IEEE-fma lanes over k ascending ) ),
 // the same per-row arithmetic as the expert kernel (and the GPU twin). x [n, K] bf16, W [R, K] bf16.
 #include <unordered_map>
@@ -512,11 +628,14 @@ torch::Tensor linear_twin(torch::Tensor x, torch::Tensor W) {
 #include <chrono>
 namespace {
 struct Job { torch::Tensor x; std::vector<torch::Tensor> g, u, d; int64_t numa; bool fused = false; bool linear = false;
-             int64_t layer = 0; torch::Tensor ti, tw, out; };
+             int64_t layer = 0; torch::Tensor ti, tw, out; bool slots = false; torch::Tensor mk, yg; };
 // Heap-allocated and never freed: no static destructor runs while the worker waits at exit.
 struct State { std::mutex mu; std::condition_variable cv; bool has_job = false, done = true; Job job;
                std::vector<torch::Tensor> result; double last_ms = 0.0; std::string err; };
 State* S = new State();
+}
+double g_job_ms[4] = {0, 0, 0, 0};                 // worker compute ms per job kind (0 moe/experts, 1 linear, 3 slots)
+namespace {
 std::thread* worker = nullptr;
 void loop() {
   vh_mark_job_thread();
@@ -528,9 +647,11 @@ void loop() {
     std::string err;
     try {
       if (j.linear) { j.out.copy_(linear_twin(j.x, j.ti)); r = {j.out}; }
+      else if (j.slots) { moe_cached(j.layer, j.x, j.ti, j.tw, j.mk, j.yg, j.out, j.numa); r = {j.out}; }
       else r = j.fused ? moe_fused(j.layer, j.x, j.ti, j.tw, j.out, j.numa) : expert_mlps(j.x, j.g, j.u, j.d, j.numa);
     } catch (const std::exception& e) { err = e.what(); }
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    g_job_ms[j.slots ? 3 : (j.linear ? 1 : 0)] += ms;
     j = Job();
     { std::lock_guard<std::mutex> l(S->mu); S->result = std::move(r); S->last_ms = ms; S->err = err; S->done = true; }
     S->cv.notify_all();
@@ -568,6 +689,18 @@ void submit_moe(int64_t layer, torch::Tensor x, torch::Tensor ti, torch::Tensor 
   TORCH_CHECK(S->done && !S->has_job, "cpu_moe: a job is already in flight");
   if (!worker) { worker = new std::thread(loop); worker->detach(); }
   S->job = Job{x, {}, {}, {}, numa, true, false, layer, ti, tw, out};
+  S->has_job = true; S->done = false;
+  l.unlock(); S->cv.notify_all();
+}
+// v0.3: per-slot expert outputs on the worker (see moe_slots).
+void submit_moe_cached(int64_t layer, torch::Tensor x, torch::Tensor ti, torch::Tensor tw, torch::Tensor mask,
+                       torch::Tensor yg, torch::Tensor out, int64_t numa) {
+  std::unique_lock<std::mutex> l(S->mu);
+  TORCH_CHECK(S->done && !S->has_job, "cpu_moe: a job is already in flight");
+  if (!worker) { worker = new std::thread(loop); worker->detach(); }
+  Job jb; jb.x = x; jb.numa = numa; jb.slots = true; jb.layer = layer; jb.ti = ti; jb.tw = tw; jb.mk = mask;
+  jb.yg = yg; jb.out = out;
+  S->job = jb;
   S->has_job = true; S->done = false;
   l.unlock(); S->cv.notify_all();
 }
@@ -978,16 +1111,29 @@ double read_bw(std::vector<torch::Tensor> packs, int64_t numa) {
 namespace {
 typedef int (*LaunchHostFn)(void* stream, void (*fn)(void*), void* data);
 LaunchHostFn g_launch_host = nullptr;
-struct HostJob { int64_t layer; torch::Tensor x, ti, tw, out; int64_t numa; bool noop; int kind = 0; };
+struct HostJob { int64_t layer; torch::Tensor x, ti, tw, out; int64_t numa; bool noop; int kind = 0; torch::Tensor mk, yg; };
 std::vector<HostJob*>* HOST_JOBS = new std::vector<HostJob*>();
 std::atomic<long long> g_host_calls{0};
+double g_host_ms[4] = {0, 0, 0, 0}; long long g_host_n[4] = {0, 0, 0, 0};    // per kind: callback wall time
+void host_cb_inner(void* p);
 void host_cb(void* p) {
+  const double t0 = now_ms();
+  host_cb_inner(p);
+  const int k = static_cast<HostJob*>(p)->kind;
+  g_host_ms[k & 3] += now_ms() - t0; g_host_n[k & 3]++;
+}
+void host_cb_inner(void* p) {
   HostJob* j = static_cast<HostJob*>(p);
   g_host_calls++;
   if (j->noop) return;
   if (j->kind == 1) {                                                                  // ti holds W
     try { submit_linear(j->x, j->ti, j->out); wait_done(); }
     catch (const std::exception& e) { std::fprintf(stderr, "vahana host linear failed: %s\n", e.what()); std::fflush(stderr); std::abort(); }
+    return;
+  }
+  if (j->kind == 3) {                                                                  // v0.3 GPU expert cache
+    try { submit_moe_cached(j->layer, j->x, j->ti, j->tw, j->mk, j->yg, j->out, j->numa); wait_done(); }
+    catch (const std::exception& e) { std::fprintf(stderr, "vahana host slots job failed: %s\n", e.what()); std::fflush(stderr); std::abort(); }
     return;
   }
   if (j->kind == 2) {                                                                  // embedding rows
@@ -1022,6 +1168,67 @@ void enqueue_host_job(int64_t stream, int64_t id) {
   TORCH_CHECK(rc == 0, "cudaLaunchHostFunc failed: ", rc);
 }
 int64_t host_calls() { return g_host_calls.load(); }
+
+// ---- v0.3 mailbox: req / done are int32 [n] in pinned host memory (owned by Python), indexed by host-job id.
+namespace {
+std::atomic<int32_t>* g_req = nullptr;
+std::atomic<int32_t>* g_done = nullptr;
+std::atomic<int64_t> g_mb_n{0};
+std::thread* g_mb_thread = nullptr;
+std::atomic<long long> g_mb_jobs{0};
+void run_job_direct(HostJob* j) {                  // the same work as host_cb, on this thread (no worker hand-off)
+  if (j->noop) return;
+  if (j->kind == 1) { j->out.copy_(linear_twin(j->x, j->ti)); return; }
+  if (j->kind == 3) { moe_cached(j->layer, j->x, j->ti, j->tw, j->mk, j->yg, j->out, j->numa); return; }
+  if (j->kind == 2) {
+    const int64_t n = j->x.numel(), H = j->ti.size(1);
+    const int64_t* ids = j->x.data_ptr<int64_t>();
+    const char* w = (const char*)j->ti.data_ptr(); char* o = (char*)j->out.data_ptr();
+    const size_t rb = (size_t)H * j->ti.element_size();
+    for (int64_t i = 0; i < n; i++) std::memcpy(o + i * rb, w + (size_t)ids[i] * rb, rb);
+    return;
+  }
+  moe_fused(j->layer, j->x, j->ti, j->tw, j->out, j->numa);
+}
+void mailbox_loop() {
+  vh_mark_job_thread();
+  auto idle_since = std::chrono::steady_clock::now();
+  for (;;) {
+    bool any = false;
+    const int64_t n = std::min<int64_t>(g_mb_n.load(std::memory_order_acquire), (int64_t)HOST_JOBS->size());
+    for (int64_t id = 0; id < n; id++) {
+      const int32_t r = g_req[id].load(std::memory_order_acquire);
+      if (r == g_done[id].load(std::memory_order_relaxed)) continue;
+      try { run_job_direct(HOST_JOBS->at(id)); }
+      catch (const std::exception& e) {
+        std::fprintf(stderr, "vahana mailbox job %lld failed: %s\n", (long long)id, e.what()); std::fflush(stderr); std::abort();
+      }
+      g_mb_jobs++;
+      g_done[id].store(r, std::memory_order_release);
+      any = true;
+    }
+    if (any) { idle_since = std::chrono::steady_clock::now(); continue; }
+    VH_RELAX();
+    if (std::chrono::steady_clock::now() - idle_since > std::chrono::milliseconds(200))
+      std::this_thread::sleep_for(std::chrono::microseconds(50));         // idle between requests: back off
+  }
+}
+}
+// Start (once) the polling thread over req / done (int32 [n], pinned host memory, zero-initialised).
+void mailbox_start(torch::Tensor req, torch::Tensor done) {
+  TORCH_CHECK(req.scalar_type() == torch::kInt32 && done.scalar_type() == torch::kInt32 && req.numel() == done.numel());
+  if (g_mb_thread) return;
+  g_req = reinterpret_cast<std::atomic<int32_t>*>(req.data_ptr());
+  g_done = reinterpret_cast<std::atomic<int32_t>*>(done.data_ptr());
+  g_mb_n.store(req.numel(), std::memory_order_release);
+  g_mb_thread = new std::thread(mailbox_loop);
+  g_mb_thread->detach();
+}
+int64_t make_host_cached(int64_t layer, torch::Tensor x, torch::Tensor ti, torch::Tensor tw, torch::Tensor mask,
+                         torch::Tensor yg, torch::Tensor out, int64_t numa) {
+  HostJob* j = new HostJob{layer, x, ti, tw, out, numa, false}; j->kind = 3; j->mk = mask; j->yg = yg;
+  HOST_JOBS->push_back(j); return (int64_t)HOST_JOBS->size() - 1;
+}
 int64_t make_host_linear(torch::Tensor W, torch::Tensor x, torch::Tensor out) {
   HostJob* j = new HostJob{0, x, W, torch::Tensor(), out, 0, false}; j->kind = 1;
   HOST_JOBS->push_back(j); return (int64_t)HOST_JOBS->size() - 1;
@@ -1201,7 +1408,7 @@ VH_API const char* vh_isa() { return VH_ISA; }
 VH_API int vh_nx_fast() { return VH_NX_FAST; }
 VH_API int vh_have_numa() { return VH_HAVE_NUMA; }
 VH_API int vh_threads() { return vh_nthreads(); }
-VH_API int vh_abi() { return 1; }
+VH_API int vh_abi() { return 3; }                    // 3: + GPU expert cache jobs, mailbox
 VH_API int64_t vh_list_len(vh_list* l) { return l ? (int64_t)l->v.size() : 0; }
 VH_API int vh_list_get(vh_list* l, int64_t i, vh_t* out) {
   if (!l || i < 0 || i >= (int64_t)l->v.size()) { g_err = "vh_list_get: index"; return -1; }
@@ -1231,6 +1438,7 @@ VH_API int vh_register_shared(int64_t layer, const vh_t* g, const vh_t* u, const
   VH_INT(register_shared(layer, T_(g), T_(u), T_(d)))
 }
 VH_API int vh_register_layer_nx(int64_t layer, const vh_t* packs, int64_t n) { VH_INT(register_layer_nx(layer, TV_(packs, n))) }
+VH_API int vh_register_resident(int64_t layer, const vh_t* r) { VH_INT(register_resident(layer, T_(r))) }
 VH_API int vh_register_shared_nx(int64_t layer, const vh_t* packs, int64_t n) { VH_INT(register_shared_nx(layer, TV_(packs, n))) }
 VH_API int vh_register_linear_nx(const vh_t* W, const vh_t* packs, int64_t n) { VH_INT(register_linear_nx(T_(W), TV_(packs, n))) }
 VH_API int vh_submit(const vh_t* x, const vh_t* g, const vh_t* u, const vh_t* d, int64_t n, int64_t numa) {
@@ -1239,6 +1447,15 @@ VH_API int vh_submit(const vh_t* x, const vh_t* g, const vh_t* u, const vh_t* d,
 VH_API int vh_submit_linear(const vh_t* x, const vh_t* W, const vh_t* out) { VH_INT(submit_linear(T_(x), T_(W), T_(out))) }
 VH_API int vh_submit_moe(int64_t layer, const vh_t* x, const vh_t* ti, const vh_t* tw, const vh_t* out, int64_t numa) {
   VH_INT(submit_moe(layer, T_(x), T_(ti), T_(tw), T_(out), numa))
+}
+VH_API int vh_submit_moe_cached(int64_t layer, const vh_t* x, const vh_t* ti, const vh_t* tw, const vh_t* mask,
+                                const vh_t* yg, const vh_t* out, int64_t numa) {
+  VH_INT(submit_moe_cached(layer, T_(x), T_(ti), T_(tw), T_(mask), T_(yg), T_(out), numa))
+}
+VH_API int64_t vh_make_host_cached(int64_t layer, const vh_t* x, const vh_t* ti, const vh_t* tw, const vh_t* mask,
+                                   const vh_t* yg, const vh_t* out, int64_t numa) {
+  try { return make_host_cached(layer, T_(x), T_(ti), T_(tw), T_(mask), T_(yg), T_(out), numa); }
+  catch (const std::exception& e) { g_err = e.what(); return -1; }
 }
 VH_API vh_list* vh_wait_done() { VH_LIST(L_(wait_done())) }
 VH_API double vh_kernel_ms() { return kernel_ms(); }
@@ -1263,6 +1480,13 @@ VH_API int64_t vh_make_host_embed(const vh_t* W, const vh_t* ids, const vh_t* ou
 }
 VH_API int vh_enqueue_host_job(int64_t stream, int64_t id) { VH_INT(enqueue_host_job(stream, id)) }
 VH_API int64_t vh_host_calls() { return host_calls(); }
+VH_API int vh_mailbox_start(const vh_t* req, const vh_t* done) { VH_INT(mailbox_start(T_(req), T_(done))) }
+VH_API int64_t vh_mailbox_jobs() { return g_mb_jobs.load(); }
+// per host-job kind (0 moe, 1 linear, 2 embed, 3 slots): total callback ms and count; then the worker's compute ms
+VH_API void vh_host_stats(double* out12) {
+  for (int k = 0; k < 4; k++) { out12[k] = g_host_ms[k]; out12[4 + k] = (double)g_host_n[k]; out12[8 + k] = g_job_ms[k]; }
+}
+VH_API void vh_host_stats_reset() { for (int k = 0; k < 4; k++) { g_host_ms[k] = 0; g_host_n[k] = 0; g_job_ms[k] = 0; } }
 VH_API int vh_attention_twin(const vh_t* q, const vh_t* k, const vh_t* v, const vh_t* first, const vh_t* last,
                              const vh_t* mask, const vh_t* sinks, double scale, double cap, int64_t has_cap,
                              const vh_t* out) {
