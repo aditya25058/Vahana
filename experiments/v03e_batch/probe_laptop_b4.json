@@ -1,0 +1,117 @@
+{
+ "mixtral": {
+  "rows_exact": 4,
+  "B": 4,
+  "graph": true,
+  "fallback": null
+ },
+ "qwen2_moe": {
+  "rows_exact": 4,
+  "B": 4,
+  "graph": true,
+  "fallback": null
+ },
+ "qwen3_moe": {
+  "rows_exact": 4,
+  "B": 4,
+  "graph": true,
+  "fallback": null
+ },
+ "olmoe": {
+  "rows_exact": 4,
+  "B": 4,
+  "graph": true,
+  "fallback": null
+ },
+ "deepseek_v2": {
+  "rows_exact": 4,
+  "B": 4,
+  "graph": true,
+  "fallback": null
+ },
+ "deepseek_v3": {
+  "rows_exact": 4,
+  "B": 4,
+  "graph": true,
+  "fallback": null
+ },
+ "glm4_moe": {
+  "rows_exact": 4,
+  "B": 4,
+  "graph": true,
+  "fallback": null
+ },
+ "glm4_moe_lite": {
+  "rows_exact": 4,
+  "B": 4,
+  "graph": true,
+  "fallback": null
+ },
+ "minimax": {
+  "rows_exact": 4,
+  "B": 4,
+  "graph": false,
+  "fallback": "non-attention layers ['linear_attention']"
+ },
+ "minimax_m2": {
+  "rows_exact": 4,
+  "B": 4,
+  "graph": true,
+  "fallback": null
+ },
+ "hunyuan_v1_moe": {
+  "rows_exact": 4,
+  "B": 4,
+  "graph": true,
+  "fallback": null
+ },
+ "ernie4_5_moe": {
+  "rows_exact": 4,
+  "B": 4,
+  "graph": true,
+  "fallback": null
+ },
+ "cohere2_moe": {
+  "rows_exact": 4,
+  "B": 4,
+  "graph": true,
+  "fallback": null
+ },
+ "exaone_moe": {
+  "rows_exact": 4,
+  "B": 4,
+  "graph": true,
+  "fallback": null
+ },
+ "afmoe": {
+  "rows_exact": 4,
+  "B": 4,
+  "graph": true,
+  "fallback": null
+ },
+ "phimoe": {
+  "rows_exact": 4,
+  "B": 4,
+  "graph": false,
+  "fallback": "RuntimeError: Cannot copy between CPU and CUDA tensors during CUDA graph capture unless the CPU tensor is pinned. Please use tensor.pin_memory() or allocate the tensor with pin_memory=True. | File \"C:\\Users\\ADITYA~1\\AppData\\Local\\Temp\\claude\\461cdfab4cc29cd0\\53197218-0b1b-4fd1-b1ec-52049549d632\\scra"
+ },
+ "qwen3_5_moe_text": {
+  "rows_exact": 1,
+  "B": 4,
+  "graph": false,
+  "fallback": "non-attention layers ['linear_attention']"
+ },
+ "gpt_oss": {
+  "rows_exact": 4,
+  "B": 4,
+  "graph": true,
+  "fallback": null
+ },
+ "summary": {
+  "tested": 18,
+  "exact": 17,
+  "not_exact": [
+   "qwen3_5_moe_text"
+  ]
+ }
+}

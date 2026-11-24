@@ -108,7 +108,7 @@ def weights_arg(w: torch.Tensor) -> torch.Tensor:
     return w.detach() if w.dtype in (torch.float32, torch.bfloat16) else w.detach().float()
 
 
-def moe(slot: int, x: torch.Tensor, ti: torch.Tensor, tw: torch.Tensor, numa: int) -> torch.Tensor:
+def moe(slot: int, x: torch.Tensor, ti: torch.Tensor, tw: torch.Tensor, numa: int, _chunk: int = 0) -> torch.Tensor:
     """Weighted sum of the selected experts of layer `slot` (plus its folded shared expert, if registered)."""
     k = _hy.ext()
     tw = weights_arg(tw)
@@ -122,8 +122,10 @@ def moe(slot: int, x: torch.Tensor, ti: torch.Tensor, tw: torch.Tensor, numa: in
             k.submit_moe(slot, xc[s:s + ROWS], tic[s:s + ROWS], twc[s:s + ROWS], out[s:s + ROWS], numa)
             k.wait_done()
         return out.to(x.device)
-    assert N <= ROWS, "graph decode: at most 16 rows per step"
-    key = ("moe", slot, N, ti.shape[1], tw.dtype)
+    if N > ROWS:                                  # v0.3-e: one host job per 16-row chunk (rows are independent)
+        return torch.cat([moe(slot, x[s:s + ROWS], ti[s:s + ROWS], tw[s:s + ROWS], numa, _chunk=s)
+                          for s in range(0, N, ROWS)])
+    key = ("moe", slot, N, ti.shape[1], tw.dtype, _chunk)
     if key not in _BUF:
         b = (_pin((N, H), torch.bfloat16), _pin(tuple(ti.shape), torch.int64), _pin(tuple(tw.shape), tw.dtype),
              _pin((N, H), torch.bfloat16))
@@ -135,7 +137,7 @@ def moe(slot: int, x: torch.Tensor, ti: torch.Tensor, tw: torch.Tensor, numa: in
 
 
 def moe_cached(slot: int, x: torch.Tensor, ti: torch.Tensor, tw: torch.Tensor, yg: torch.Tensor,
-               numa: int) -> torch.Tensor:
+               numa: int, _chunk: int = 0) -> torch.Tensor:
     """v0.3 (GPU expert cache): slots whose expert is not GPU-resident (the set registered with register_resident) run
     on the CPU kernel; the resident ones arrive in yg [N, K, H] (GPU, twin arithmetic). The CPU kernel combines all
     slots as moe_fused does."""
@@ -152,8 +154,10 @@ def moe_cached(slot: int, x: torch.Tensor, ti: torch.Tensor, tw: torch.Tensor, y
                                 out[s:s + ROWS], numa)
             k.wait_done()
         return out.to(x.device)
-    assert N <= ROWS, "graph decode: at most 16 rows per step"
-    key = ("cached", slot, N, K, tw.dtype)
+    if N > ROWS:                                  # v0.3-e: one host job per 16-row chunk (rows are independent)
+        return torch.cat([moe_cached(slot, x[s:s + ROWS], ti[s:s + ROWS], tw[s:s + ROWS], yg[s:s + ROWS], numa,
+                                     _chunk=s) for s in range(0, N, ROWS)])
+    key = ("cached", slot, N, K, tw.dtype, _chunk)
     if key not in _BUF:
         b = (_pin((N, H), torch.bfloat16), _pin((N, K), torch.int64), _pin((N, K), tw.dtype),
              _pin((N, K, H), torch.bfloat16), _pin((N, H), torch.bfloat16))
@@ -164,7 +168,7 @@ def moe_cached(slot: int, x: torch.Tensor, ti: torch.Tensor, tw: torch.Tensor, y
     return out
 
 
-def cpu_linear(W: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
+def cpu_linear(W: torch.Tensor, x2: torch.Tensor, _chunk: int = 0) -> torch.Tensor:
     """y [n, R] = twin linear(x2 [n, K] bf16, W [R, K] bf16 in CPU RAM)."""
     k = _hy.ext()
     n, R = x2.shape[0], W.shape[0]
@@ -177,8 +181,9 @@ def cpu_linear(W: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
             k.wait_done()
             outs.append(ob)
         return torch.cat(outs).to(x2.device)
-    assert n <= ROWS
-    key = ("lin", W.data_ptr(), n)
+    if n > ROWS:                                  # v0.3-e: one host job per 16-row chunk (rows are independent)
+        return torch.cat([cpu_linear(W, x2[s:s + ROWS], _chunk=s) for s in range(0, n, ROWS)])
+    key = ("lin", W.data_ptr(), n, _chunk)
     if key not in _BUF:
         xb, ob = _pin((n, W.shape[1]), torch.bfloat16), _pin((n, R), torch.bfloat16)
         _BUF[key] = (xb, ob, k.make_host_linear(W, xb, ob))

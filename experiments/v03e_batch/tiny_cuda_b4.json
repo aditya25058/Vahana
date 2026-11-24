@@ -1,0 +1,115 @@
+{
+ "mixtral": {
+  "rows_exact": 4,
+  "B": 4,
+  "batched": true,
+  "graph": true
+ },
+ "qwen2_moe": {
+  "rows_exact": 4,
+  "B": 4,
+  "batched": true,
+  "graph": true
+ },
+ "qwen3_moe": {
+  "rows_exact": 4,
+  "B": 4,
+  "batched": true,
+  "graph": true
+ },
+ "olmoe": {
+  "rows_exact": 4,
+  "B": 4,
+  "batched": true,
+  "graph": true
+ },
+ "deepseek_v2": {
+  "rows_exact": 4,
+  "B": 4,
+  "batched": true,
+  "graph": true
+ },
+ "deepseek_v3": {
+  "rows_exact": 4,
+  "B": 4,
+  "batched": true,
+  "graph": true
+ },
+ "glm4_moe": {
+  "rows_exact": 4,
+  "B": 4,
+  "batched": true,
+  "graph": true
+ },
+ "glm4_moe_lite": {
+  "rows_exact": 4,
+  "B": 4,
+  "batched": true,
+  "graph": true
+ },
+ "minimax": {
+  "rows_exact": 4,
+  "B": 4,
+  "batched": false,
+  "graph": false
+ },
+ "minimax_m2": {
+  "rows_exact": 4,
+  "B": 4,
+  "batched": true,
+  "graph": true
+ },
+ "hunyuan_v1_moe": {
+  "rows_exact": 4,
+  "B": 4,
+  "batched": true,
+  "graph": true
+ },
+ "ernie4_5_moe": {
+  "rows_exact": 4,
+  "B": 4,
+  "batched": true,
+  "graph": true
+ },
+ "cohere2_moe": {
+  "rows_exact": 4,
+  "B": 4,
+  "batched": true,
+  "graph": true
+ },
+ "exaone_moe": {
+  "rows_exact": 4,
+  "B": 4,
+  "batched": true,
+  "graph": true
+ },
+ "afmoe": {
+  "rows_exact": 4,
+  "B": 4,
+  "batched": true,
+  "graph": true
+ },
+ "phimoe": {
+  "rows_exact": 4,
+  "B": 4,
+  "batched": true,
+  "graph": false
+ },
+ "qwen3_5_moe_text": {
+  "rows_exact": 4,
+  "B": 4,
+  "batched": false,
+  "graph": false
+ },
+ "gpt_oss": {
+  "rows_exact": 4,
+  "B": 4,
+  "batched": true,
+  "graph": true
+ },
+ "summary": {
+  "tested": 18,
+  "exact": 18,
+  "not_exact": []
+ }
+}

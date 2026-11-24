@@ -16,6 +16,7 @@ __version__ = "0.3.0.dev0"
 
 _LAZY = {
     'generate_spec': ('speculative', 'generate_spec'),
+    'generate_batch': ('batch', 'generate_batch'),
     '.offload': ('hook', '.offload'),
     'ColumnDirectory': ('directory', 'ColumnDirectory'),
     'ExpertOffloadManager': ('hook', 'ExpertOffloadManager'),
