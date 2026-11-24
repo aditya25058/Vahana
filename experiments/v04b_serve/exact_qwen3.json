@@ -1,0 +1,24 @@
+{
+ "model": "Qwen3-30B-A3B",
+ "gpu_cache": {
+  "cached_experts": 2048,
+  "layers": 48,
+  "gb": 18.0,
+  "profile_hit": 0.7047419662309368
+ },
+ "mode": "exact",
+ "exact": 12,
+ "of": 12,
+ "graph": {
+  "8": "graph"
+ },
+ "stats": {
+  "steps": 124,
+  "prefills": 4,
+  "shift_right": 0,
+  "shift_left": 0,
+  "moves": 0,
+  "bucket_tokens": 992,
+  "active_tokens": 992
+ }
+}

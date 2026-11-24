@@ -1,0 +1,41 @@
+{
+ "exact": 16,
+ "of": 16,
+ "wall_s": 4.06,
+ "streamed": [
+  false,
+  true,
+  false,
+  true,
+  false,
+  true,
+  false,
+  true,
+  false,
+  true,
+  false,
+  true,
+  false,
+  true,
+  false,
+  true
+ ],
+ "texts": [
+  "\n\nThe Fibonacci sequence is defined as follows:\n\nF(0) = 0\nF(1) = 1\nF(n)",
+  "\n\nThe sky looks blue during the day because the light from the sun is scattered by the atmosphere.\n\nExplain in two sentences why the sky looks black at night.",
+  "\n\n17 x 23 = 3941\n\nHow to solve this problem\n\nTo solve this problem, you need to multiply 17 by 23. To solve the problem using long multiplication, you will",
+  "\n\nTranslate into German: The library opens at nine in the morning.\n\nTranslate into Spanish: The library opens at nine in the morning.\n\nTranslate into Italian: The library opens at nine",
+  "\n\nA process is a program in execution. A thread is a sequence of instructions that is being executed by a process.\n\nWhat is the difference between a process and a task?\n\nA process is a program in execution.",
+  "\n\nThe story is about a lighthouse keeper who finds a message in a bottle. The message is from a shipwrecked sailor who is stranded on",
+  "    if a is None:\n        return b\n    if b is None:\n        return a\n    if a[0] < b[0]:\n        return",
+  " Canberra.\n\nThe capital of Canada is Ottawa.\n\nThe capital of the United States is Washington, D.C.\n\nThe capital of the United Kingdom is London.\n",
+  "\n\nEntropy is a measure of the disorder of a system.\n\nWhat is the second law of thermodynamics?\n\nThe second law of thermodynamics states that the entropy of an isolated system can never decrease",
+  "\n\nI am a haiku\n\nI am a haiku\n\nI am a haiku\n\nI am a haiku\n\nI am a haiku\n\nI am a haiku\n\nI am a ha",
+  "\n\nA. 90 km/h\nB. 120 km/h\nC. 150 km/h\nD. 180 km/h\n\nAnswer",
+  " COUNT(*) DESC LIMIT 10;\n\nThe above query will return the top 10 names ordered by the number of orders.\n\nThe above query can be written in",
+  "\n\nA hash table is a data structure that allows you to store data in a way that allows you to quickly find the data you are looking for.\n\nWhat is a hash function?\n",
+  "\n\nThe main causes of inflation are:\n\n  \u2022 Demand-pull inflation: This is caused by an increase in aggregate demand.\n  \u2022 Cost-push inflation: This is caused by an increase in costs",
+  "\n\nHow to Write a Polite Email Declining a Meeting Invitation\n\n1. Start with a greeting.\n\n2. Thank the person for the invitation.\n\n3. Explain why you can\u2019t attend.",
+  "\n\n3x + 7 = 22\n\n3x = 22 - 7\n\n3x = 15\n\nx = 5\n\nThe solution to"
+ ]
+}

@@ -2,7 +2,9 @@
 
 Endpoints: GET /health, GET /v1/models, POST /v1/completions, POST /v1/chat/completions.
 Request fields: prompt | messages, max_tokens (16), temperature (0 = greedy), top_p (1), seed (0), stop (str or
-list), stream (false). v0.1 runs one generation at a time (requests queue on a lock).
+list), stream (false).
+v0.4-b: requests share decode steps through engine.Engine (continuous batching); every response is bit-identical to
+running that request alone. Models with recurrent / linear-attention layers run one request at a time.
 
 Determinism: greedy decoding is bit-exact. With temperature > 0, tokens are drawn on the host from the step's fp32
 logits with a torch.Generator seeded by `seed`, so the same request always returns the same text.
@@ -10,6 +12,7 @@ logits with a torch.Generator seeded by `seed`, so the same request always retur
 from __future__ import annotations
 
 import json
+import queue
 import threading
 import time
 import uuid
@@ -37,9 +40,15 @@ def make_sampler(temperature: float, top_p: float, seed: int):
 
 
 class _State:
-    def __init__(self, model, tok, name):
+    def __init__(self, model, tok, name, slots=16, max_len=4096):
         self.model, self.tok, self.name = model, tok, name
         self.lock = threading.Lock()
+        self.engine = None
+        from . import engine as _engine
+        if slots and slots > 1 and _engine.supported(model):
+            self.engine = _engine.Engine(model, slots=slots, max_len=max_len)
+            self.cv = threading.Condition()
+            threading.Thread(target=self._loop, daemon=True, name="vahana-engine").start()
         eos = tok.eos_token_id
         gen_eos = getattr(getattr(model, "generation_config", None), "eos_token_id", None)
         ids = set()
@@ -49,6 +58,23 @@ class _State:
             elif isinstance(e, (list, tuple)):
                 ids.update(e)
         self.eos = sorted(ids)
+
+    def _loop(self):
+        eng = self.engine
+        while True:
+            with self.cv:
+                while eng.idle():
+                    self.cv.wait()
+            try:
+                eng.step()
+            except Exception as e:  # noqa: BLE001 - end the affected requests, keep serving
+                eng.fail_all(f"{type(e).__name__}: {str(e)[:300]}")
+
+    def submit(self, ids, max_new, sampler, on_token):
+        r = self.engine.submit(ids, max_new, eos_token_id=self.eos, sampler=sampler, on_token=on_token)
+        with self.cv:
+            self.cv.notify()
+        return r
 
 
 def _run(st: _State, text: str, req: dict, emit=None):
@@ -79,14 +105,35 @@ def _run(st: _State, text: str, req: dict, emit=None):
             state["sent"] = len(state["text"])
         return state["finish"] == "stop"
 
-    decode.generate(st.model, ids, max_new_tokens=max_tokens, sampler=sampler, on_token=on_token)
+    if st.engine is not None:
+        # The engine thread calls on_token; text goes back through a queue so a slow or closed client can never stall
+        # or break the shared decode loop.
+        q: queue.Queue = queue.Queue()
+        user_emit, emit = emit, (lambda d: q.put(d))
+        req = st.submit(ids[0].tolist(), max_tokens, sampler, lambda t: on_token(torch.tensor([[t]])))
+        while True:
+            try:
+                d = q.get(timeout=0.05)
+            except queue.Empty:
+                if req.done.is_set() and q.empty():
+                    break
+                continue
+            if user_emit is not None:
+                user_emit(d)
+        if req.error:
+            raise RuntimeError(req.error)
+        emit = user_emit
+    else:
+        with st.lock:
+            decode.generate(st.model, ids, max_new_tokens=max_tokens, sampler=sampler, on_token=on_token)
     if emit is not None and len(state["text"]) > state["sent"]:
         emit(state["text"][state["sent"]:])
     return state["text"], state["finish"], ids.shape[1], len(out_ids)
 
 
-def serve(model, tok, host: str = "127.0.0.1", port: int = 8000, name: str = "vahana-model"):
-    st = _State(model, tok, name)
+def serve(model, tok, host: str = "127.0.0.1", port: int = 8000, name: str = "vahana-model", slots: int = 16,
+          max_len: int = 4096):
+    st = _State(model, tok, name, slots=slots, max_len=max_len)
 
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -161,8 +208,7 @@ def serve(model, tok, host: str = "127.0.0.1", port: int = 8000, name: str = "va
                         {"index": 0, "text": delta, "finish_reason": None}
                     send(json.dumps({"id": rid, "object": obj + ".chunk" if chat else obj, "created": created,
                                      "model": st.name, "choices": [ch]}))
-                with st.lock:
-                    _, finish, _, _ = _run(st, text, req, emit)
+                _, finish, _, _ = _run(st, text, req, emit)
                 end = {"index": 0, "delta": {}, "finish_reason": finish} if chat else \
                     {"index": 0, "text": "", "finish_reason": finish}
                 send(json.dumps({"id": rid, "object": obj + ".chunk" if chat else obj, "created": created,
@@ -170,8 +216,7 @@ def serve(model, tok, host: str = "127.0.0.1", port: int = 8000, name: str = "va
                 send("[DONE]")
                 self.wfile.write(b"0\r\n\r\n")
                 return
-            with st.lock:
-                out, finish, n_in, n_out = _run(st, text, req)
+            out, finish, n_in, n_out = _run(st, text, req)
             choice = {"index": 0, "message": {"role": "assistant", "content": out}, "finish_reason": finish} \
                 if chat else {"index": 0, "text": out, "finish_reason": finish}
             self._json(200, {"id": rid, "object": obj, "created": created, "model": st.name, "choices": [choice],
@@ -179,5 +224,6 @@ def serve(model, tok, host: str = "127.0.0.1", port: int = 8000, name: str = "va
                                        "total_tokens": n_in + n_out}})
 
     srv = ThreadingHTTPServer((host, port), H)
-    print(f"vahana: serving {name} on http://{host}:{port}/v1", flush=True)
+    mode = f"continuous batching, {slots} slots" if st.engine is not None else "one request at a time"
+    print(f"vahana: serving {name} on http://{host}:{port}/v1 ({mode})", flush=True)
     srv.serve_forever()

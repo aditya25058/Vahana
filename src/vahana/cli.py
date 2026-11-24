@@ -116,6 +116,11 @@ def main(argv=None):
             s.add_argument("--host", default="127.0.0.1")
             s.add_argument("--port", type=int, default=8000)
             s.add_argument("--name", default=None, help="model name reported by the API")
+            s.add_argument("--slots", type=int, default=16,
+                           help="requests decoded together (continuous batching; 1 = one at a time). Every response "
+                                "is bit-identical to running it alone")
+            s.add_argument("--max-len", type=int, default=4096, help="KV columns shared by the slots (prompt + "
+                                                                     "max_tokens must fit)")
     args = p.parse_args(argv)
     setup = _setup(args)
     model, tok, torch = _load(args, setup)
@@ -135,7 +140,8 @@ def main(argv=None):
                   file=sys.stderr)
         return 0
     from .server import serve
-    serve(model, tok, host=args.host, port=args.port, name=args.name or os.path.basename(args.model.rstrip("/")))
+    serve(model, tok, host=args.host, port=args.port, name=args.name or os.path.basename(args.model.rstrip("/")),
+          slots=args.slots, max_len=args.max_len)
     return 0
 
 

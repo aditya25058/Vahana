@@ -1,0 +1,47 @@
+{
+ "model": "Qwen3-30B-A3B",
+ "gpu_cache": {
+  "cached_experts": 2048,
+  "layers": 48,
+  "gb": 18.0,
+  "profile_hit": 0.7047419662309368
+ },
+ "mode": "speed",
+ "engine": [
+  {
+   "decode_tok_s": 76.8,
+   "wall_s": 129.37,
+   "e2e_tok_s": 63.3,
+   "steps": 252,
+   "prefills": 4,
+   "bucket_eff": 1.0
+  },
+  {
+   "decode_tok_s": 78.8,
+   "wall_s": 125.21,
+   "e2e_tok_s": 65.4,
+   "steps": 252,
+   "prefills": 4,
+   "bucket_eff": 1.0
+  }
+ ],
+ "static": [
+  {
+   "decode_tok_s": 78.7,
+   "wall_s": 127.18,
+   "e2e_tok_s": 64.4
+  },
+  {
+   "decode_tok_s": 75.4,
+   "wall_s": 130.71,
+   "e2e_tok_s": 62.7
+  }
+ ],
+ "solo_decode_tok_s": [
+  10.4,
+  10.3
+ ],
+ "vs_static": 1.01,
+ "vs_static_e2e": 1.013,
+ "vs_solo": 7.52
+}

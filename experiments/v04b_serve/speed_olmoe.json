@@ -1,0 +1,47 @@
+{
+ "model": "OLMoE-1B-7B-0924",
+ "gpu_cache": {
+  "cached_experts": 1024,
+  "layers": 16,
+  "gb": 12.0,
+  "profile_hit": 1.0
+ },
+ "mode": "speed",
+ "engine": [
+  {
+   "decode_tok_s": 575.5,
+   "wall_s": 17.17,
+   "e2e_tok_s": 477.2,
+   "steps": 252,
+   "prefills": 4,
+   "bucket_eff": 1.0
+  },
+  {
+   "decode_tok_s": 583.8,
+   "wall_s": 16.65,
+   "e2e_tok_s": 492.0,
+   "steps": 252,
+   "prefills": 4,
+   "bucket_eff": 1.0
+  }
+ ],
+ "static": [
+  {
+   "decode_tok_s": 588.2,
+   "wall_s": 17.18,
+   "e2e_tok_s": 476.8
+  },
+  {
+   "decode_tok_s": 608.3,
+   "wall_s": 16.79,
+   "e2e_tok_s": 487.8
+  }
+ ],
+ "solo_decode_tok_s": [
+  78.1,
+  79.0
+ ],
+ "vs_static": 0.969,
+ "vs_static_e2e": 1.005,
+ "vs_solo": 7.38
+}

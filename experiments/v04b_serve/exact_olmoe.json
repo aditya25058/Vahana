@@ -1,0 +1,24 @@
+{
+ "model": "OLMoE-1B-7B-0924",
+ "gpu_cache": {
+  "cached_experts": 1024,
+  "layers": 16,
+  "gb": 12.0,
+  "profile_hit": 1.0
+ },
+ "mode": "exact",
+ "exact": 12,
+ "of": 12,
+ "graph": {
+  "8": "graph"
+ },
+ "stats": {
+  "steps": 124,
+  "prefills": 4,
+  "shift_right": 0,
+  "shift_left": 0,
+  "moves": 0,
+  "bucket_tokens": 992,
+  "active_tokens": 992
+ }
+}

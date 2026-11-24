@@ -1,0 +1,305 @@
+{
+ "mixtral": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "warm",
+   "4": "warm",
+   "2": "warm",
+   "1": "warm"
+  },
+  "stats": {
+   "steps": 47,
+   "prefills": 13,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 16,
+   "bucket_tokens": 213
+  }
+ },
+ "qwen2_moe": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "warm",
+   "4": "warm",
+   "2": "warm",
+   "1": "warm"
+  },
+  "stats": {
+   "steps": 46,
+   "prefills": 11,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 15,
+   "bucket_tokens": 212
+  }
+ },
+ "qwen3_moe": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "warm",
+   "4": "warm",
+   "2": "warm",
+   "1": "warm"
+  },
+  "stats": {
+   "steps": 46,
+   "prefills": 11,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 16,
+   "bucket_tokens": 212
+  }
+ },
+ "olmoe": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "warm",
+   "4": "warm",
+   "2": "warm",
+   "1": "warm"
+  },
+  "stats": {
+   "steps": 46,
+   "prefills": 12,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 15,
+   "bucket_tokens": 212
+  }
+ },
+ "deepseek_v2": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "warm",
+   "4": "warm",
+   "2": "warm",
+   "1": "warm"
+  },
+  "stats": {
+   "steps": 47,
+   "prefills": 12,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 17,
+   "bucket_tokens": 215
+  }
+ },
+ "deepseek_v3": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "warm",
+   "4": "warm",
+   "2": "warm",
+   "1": "warm"
+  },
+  "stats": {
+   "steps": 47,
+   "prefills": 12,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 17,
+   "bucket_tokens": 215
+  }
+ },
+ "glm4_moe": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "warm",
+   "4": "warm",
+   "2": "warm",
+   "1": "warm"
+  },
+  "stats": {
+   "steps": 46,
+   "prefills": 11,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 15,
+   "bucket_tokens": 212
+  }
+ },
+ "glm4_moe_lite": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "warm",
+   "4": "warm",
+   "2": "warm",
+   "1": "warm"
+  },
+  "stats": {
+   "steps": 47,
+   "prefills": 12,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 17,
+   "bucket_tokens": 213
+  }
+ },
+ "minimax": {
+  "skipped": "recurrent layers: the server serves these one at a time (exact)"
+ },
+ "minimax_m2": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "warm",
+   "4": "warm",
+   "2": "warm",
+   "1": "warm"
+  },
+  "stats": {
+   "steps": 46,
+   "prefills": 11,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 14,
+   "bucket_tokens": 214
+  }
+ },
+ "hunyuan_v1_moe": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "warm",
+   "4": "warm",
+   "2": "warm",
+   "1": "warm"
+  },
+  "stats": {
+   "steps": 47,
+   "prefills": 13,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 15,
+   "bucket_tokens": 213
+  }
+ },
+ "ernie4_5_moe": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "4": "warm",
+   "6": "warm",
+   "2": "warm",
+   "1": "warm"
+  },
+  "stats": {
+   "steps": 46,
+   "prefills": 11,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 13,
+   "bucket_tokens": 210
+  }
+ },
+ "cohere2_moe": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "4": "warm",
+   "6": "warm",
+   "2": "warm",
+   "1": "warm"
+  },
+  "stats": {
+   "steps": 46,
+   "prefills": 11,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 13,
+   "bucket_tokens": 210
+  }
+ },
+ "exaone_moe": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "warm",
+   "4": "warm",
+   "2": "warm",
+   "1": "warm"
+  },
+  "stats": {
+   "steps": 47,
+   "prefills": 13,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 16,
+   "bucket_tokens": 213
+  }
+ },
+ "afmoe": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "warm",
+   "4": "warm",
+   "2": "warm",
+   "1": "warm"
+  },
+  "stats": {
+   "steps": 47,
+   "prefills": 12,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 17,
+   "bucket_tokens": 215
+  }
+ },
+ "phimoe": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "warm",
+   "4": "warm",
+   "2": "warm",
+   "1": "warm"
+  },
+  "stats": {
+   "steps": 47,
+   "prefills": 13,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 15,
+   "bucket_tokens": 213
+  }
+ },
+ "qwen3_5_moe_text": {
+  "skipped": "recurrent layers: the server serves these one at a time (exact)"
+ },
+ "gpt_oss": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "warm",
+   "4": "warm",
+   "2": "warm",
+   "1": "warm"
+  },
+  "stats": {
+   "steps": 47,
+   "prefills": 13,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 15,
+   "bucket_tokens": 213
+  }
+ },
+ "summary": {
+  "tested": 16,
+  "exact": 16,
+  "skipped": [
+   "minimax",
+   "qwen3_5_moe_text"
+  ],
+  "not_exact": []
+ }
+}
