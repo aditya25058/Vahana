@@ -57,7 +57,7 @@ Pre-registered 2026-11-24, after the popularity measurement and the tiny-model e
 - **MAILBOX-MIXTRAL (H100, Mixtral-8x7B, 4 GB budget, m4_real.py, the M4/P3 settings):** steady decode step vs P3's 78.5 / 78.8 ms. Reported, with the bar ≥ 1.2× faster.
 - **CACHE-SPEED is now measured with the mailbox on:** cache18 vs no cache, bar ≥ 1.3× unchanged.
 
-## Result (H100): MAILBOX-REAL, CACHE-REAL and MAILBOX-SPEED pass; CACHE-SPEED and MAILBOX-MIXTRAL not met; CACHE-LAPTOP pending
+## Result (H100): MAILBOX-REAL, CACHE-REAL and MAILBOX-SPEED pass; CACHE-SPEED and MAILBOX-MIXTRAL not met
 | Bar | Result |
 |---|---|
 | CACHE-REAL / MAILBOX-REAL: hashes == P4 references, mailbox + 16 GB cache | **OLMoE 50/50 prefills, 4/4 generations; Qwen3 8/8, 2/2** (ids and logits) |
@@ -73,3 +73,19 @@ Pre-registered 2026-11-24, after the popularity measurement and the tiny-model e
 - **Mixtral is the opposite case:** two large experts per layer (about 16 GB of expert reads per token). Its step is CPU memory-bandwidth-bound, so the host-node cost did not show.
 - **This session's Mixtral numbers (124–131 ms) are far above P3's 78.5 ms** with the same code path and settings. The host was shared and its CPUs busy (load average 6–8 from other users' jobs). They show that the mailbox did not help Mixtral; they do not show a regression.
 - **The cache's gain is small once the mailbox is on.** With 70% of expert uses served from VRAM, the remaining step is mostly GPU work (about 22 ms) plus the CPU's share of the experts, which leaves 1.1–1.2×. The cache matters more where expert reads are the bottleneck: streaming from disk, and slower or busier CPUs.
+
+## Result (laptop): CACHE-LAPTOP passes on bits; 2.8× faster than P4
+**Setup:** Ryzen 7 4800H, RTX 3050 Ti 4 GB, native Windows 11, torch 2.11 + triton-windows. The kernel is the CI-built Windows wheel from ci/v03. OLMoE-1B-7B, experts streamed from NVMe; the cache was set to 1.6 GB because "auto" would leave less on a 4 GB card.
+
+| | Result |
+|---|---|
+| Selftest, GPU, mailbox, `--gpu-cache 0.5` | **18/18** (laptop_v3_selftest_gpu_cache05.txt) |
+| Mailbox + 1.6 GB cache (136 experts, 30% of profiled uses) vs the H100 P4 reference | **50/50 prefills, 4/4 generations** (ids and logits) |
+| Decode, mailbox, no cache (2 runs × 4 generations, 32 tokens) | mean **8.7 tok/s** (6.8–11.5) |
+| Decode, mailbox + cache (same) | mean **11.9 tok/s** (7.6–14.5), 1.36× over no cache |
+| P4 on this laptop (host nodes, no cache) | 4.1–4.4 tok/s |
+
+**Reading:**
+- **Same bits, about 2.8× faster** than P4 on the same laptop and model.
+- **The mailbox works on Windows with a consumer GPU** (system-scope atomics on pinned host memory under WDDM).
+- **Here the cache adds 1.36×,** more than on the H100 (1.12×). On the laptop, expert reads (RAM / disk) are the bottleneck.

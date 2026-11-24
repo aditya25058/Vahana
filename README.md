@@ -22,7 +22,11 @@ Its answers are **bit-identical** wherever the work runs. The same tokens come o
 >   - CPU-only machines, with the same bits as a GPU (P2);
 >   - Linux, Windows and macOS: no libtorch or OpenMP dependency, one wheel per platform, and `vahana selftest` (P3);
 >   - `vahana doctor`, and models bigger than RAM streamed from disk, still exact (P4). Qwen3-30B (57 GB) runs on a 15 GB laptop and gives the H100's logits bit for bit.
-> - **Next:** speed (v0.3): hot experts in spare VRAM, prefetching, exact speculative decoding, batched serving.
+>   - v0.3-a, speed at the same bits:
+>     - a GPU<->CPU mailbox replaces CUDA host callbacks (about 1.3 ms -> 12 us per layer), so Qwen3-30B decodes 1.7x faster on the H100;
+>     - hot experts live in spare VRAM (`gpu_cache_gb`);
+>     - on a 4 GB laptop GPU, OLMoE runs 2.8x faster than in P4.
+> - **Next:** exact speculative decoding (GPU-resident models), expert prefetch for disk streaming, batched serving.
 
 ## Quick start
 ```bash
