@@ -1,0 +1,171 @@
+{
+ "model": "Qwen3-30B-A3B",
+ "gpu_cache": {
+  "cached_experts": 2048,
+  "layers": 48,
+  "gb": 18.0,
+  "profile_hit": 0.7047419662309368
+ },
+ "min_draft": 2,
+ "prompts": [
+  {
+   "kind": "copy",
+   "plain_tok_s": [
+    12.1,
+    12.97
+   ],
+   "spec_tok_s": [
+    14.28,
+    14.37
+   ],
+   "ids_equal": true,
+   "logits_equal": true,
+   "tokens_per_step": 3.15,
+   "graph": [
+    true,
+    true
+   ],
+   "text": "def summarize(orders):\n    revenue = 0\n    count = 0\n    for order in orders:\n        if order[\"status\"] == \"paid\":\n            revenue += order[\"amount\"]\n     "
+  },
+  {
+   "kind": "copy",
+   "plain_tok_s": [
+    14.98,
+    17.45
+   ],
+   "spec_tok_s": [
+    10.58,
+    10.62
+   ],
+   "ids_equal": true,
+   "logits_equal": true,
+   "tokens_per_step": 1.26,
+   "graph": [
+    true,
+    true
+   ],
+   "text": " committee received the reports on Wednesday and decided to postpone the meeting until the following week, because several members were not available.\n\nOkay, le"
+  },
+  {
+   "kind": "copy",
+   "plain_tok_s": [
+    14.9,
+    14.92
+   ],
+   "spec_tok_s": [
+    10.21,
+    9.99
+   ],
+   "ids_equal": true,
+   "logits_equal": true,
+   "tokens_per_step": 1.5,
+   "graph": [
+    true,
+    true
+   ],
+   "text": " apples from the north farm\n2. pears from the south farm\n3. plums from the east farm\n4. cherries from the west farm\n\nOkay, so the user wants me to convert a lis"
+  },
+  {
+   "kind": "copy",
+   "plain_tok_s": [
+    14.77,
+    16.66
+   ],
+   "spec_tok_s": [
+    10.45,
+    10.68
+   ],
+   "ids_equal": true,
+   "logits_equal": true,
+   "tokens_per_step": 1.97,
+   "graph": [
+    true,
+    true
+   ],
+   "text": "| 2004 | Springfield | 107,450 |\n| 2005 | Springfield | 108,700 |\n| 2006 | Springfield | 109,900 |\n| 2007 | Springfield | "
+  },
+  {
+   "kind": "m5",
+   "plain_tok_s": [
+    15.12,
+    17.52
+   ],
+   "spec_tok_s": [
+    9.19,
+    9.35
+   ],
+   "ids_equal": true,
+   "logits_equal": true,
+   "tokens_per_step": 1.21,
+   "graph": [
+    true,
+    true
+   ],
+   "text": " The function should take an integer n as input and return the corresponding Fibonacci number. The Fibonacci sequence is defined as F(0) = 0, F(1) = 1, and F(n)"
+  },
+  {
+   "kind": "m5",
+   "plain_tok_s": [
+    15.87,
+    16.53
+   ],
+   "spec_tok_s": [
+    9.01,
+    8.66
+   ],
+   "ids_equal": true,
+   "logits_equal": true,
+   "tokens_per_step": 1.09,
+   "graph": [
+    true,
+    true
+   ],
+   "text": " The sky appears blue during the day because shorter wavelengths of light, such as blue and violet, are scattered more by the Earth's atmosphere. This scattered"
+  },
+  {
+   "kind": "m5",
+   "plain_tok_s": [
+    16.17,
+    17.97
+   ],
+   "spec_tok_s": [
+    18.5,
+    19.38
+   ],
+   "ids_equal": true,
+   "logits_equal": true,
+   "tokens_per_step": 2.86,
+   "graph": [
+    true,
+    true
+   ],
+   "text": " Also, what is 17 times 23? What is 23 times 17? What is 17 times 23? What is 17 times 23? What is 17 times 23? What is 17 times 23? What is"
+  },
+  {
+   "kind": "m5",
+   "plain_tok_s": [
+    16.2,
+    17.65
+   ],
+   "spec_tok_s": [
+    10.79,
+    10.6
+   ],
+   "ids_equal": true,
+   "logits_equal": true,
+   "tokens_per_step": 1.19,
+   "graph": [
+    true,
+    true
+   ],
+   "text": " \n\nOkay, I need to translate the sentence \"The library opens at nine in the morning.\" into French. Let me start by breaking down the sentence structure. \n\nFirst"
+  }
+ ],
+ "copy_speedup": 0.768,
+ "copy_plain_tok_s": 14.84,
+ "copy_spec_tok_s": 11.4,
+ "m5_speedup": 0.718,
+ "m5_plain_tok_s": 16.63,
+ "m5_spec_tok_s": 11.94,
+ "exact": true
+}

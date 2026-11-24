@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vahana"
-version = "0.2.0.dev0"
+version = "0.3.0.dev0"
 description = "Exact inference for MoE models too big for your GPU"
 readme = "README.md"
 requires-python = ">=3.10"

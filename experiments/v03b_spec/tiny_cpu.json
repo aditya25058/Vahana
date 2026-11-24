@@ -1,0 +1,384 @@
+{
+ "mixtral": {
+  "lookup_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 1.92,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 4.6,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k7": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 7.67,
+   "graph": false,
+   "fallback": null
+  }
+ },
+ "qwen2_moe": {
+  "lookup_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 1.77,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 4.6,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k7": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 7.67,
+   "graph": false,
+   "fallback": null
+  }
+ },
+ "qwen3_moe": {
+  "lookup_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 1.92,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 4.6,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k7": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 7.67,
+   "graph": false,
+   "fallback": null
+  }
+ },
+ "olmoe": {
+  "lookup_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 1.92,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 4.6,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k7": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 7.67,
+   "graph": false,
+   "fallback": null
+  }
+ },
+ "deepseek_v2": {
+  "lookup_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 1.77,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 4.6,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k7": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 7.67,
+   "graph": false,
+   "fallback": null
+  }
+ },
+ "deepseek_v3": {
+  "lookup_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 1.05,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 4.6,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k7": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 7.67,
+   "graph": false,
+   "fallback": null
+  }
+ },
+ "glm4_moe": {
+  "lookup_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 1.92,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 4.6,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k7": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 7.67,
+   "graph": false,
+   "fallback": null
+  }
+ },
+ "glm4_moe_lite": {
+  "lookup_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 1.44,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 4.6,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k7": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 7.67,
+   "graph": false,
+   "fallback": null
+  }
+ },
+ "minimax": {
+  "skipped": "recurrent / linear-attention layers (speculative decoding needs a position-indexed cache)"
+ },
+ "minimax_m2": {
+  "lookup_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 1.77,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 4.6,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k7": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 7.67,
+   "graph": false,
+   "fallback": null
+  }
+ },
+ "hunyuan_v1_moe": {
+  "lookup_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 1.77,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 4.6,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k7": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 7.67,
+   "graph": false,
+   "fallback": null
+  }
+ },
+ "ernie4_5_moe": {
+  "lookup_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 1.92,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 4.6,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k7": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 7.67,
+   "graph": false,
+   "fallback": null
+  }
+ },
+ "cohere2_moe": {
+  "lookup_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 1.77,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 4.6,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k7": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 7.67,
+   "graph": false,
+   "fallback": null
+  }
+ },
+ "exaone_moe": {
+  "lookup_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 1.92,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 4.6,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k7": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 7.67,
+   "graph": false,
+   "fallback": null
+  }
+ },
+ "afmoe": {
+  "lookup_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 1.21,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 4.6,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k7": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 7.67,
+   "graph": false,
+   "fallback": null
+  }
+ },
+ "phimoe": {
+  "lookup_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 1.35,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 4.6,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k7": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 7.67,
+   "graph": false,
+   "fallback": null
+  }
+ },
+ "qwen3_5_moe_text": {
+  "skipped": "recurrent / linear-attention layers (speculative decoding needs a position-indexed cache)"
+ },
+ "gpt_oss": {
+  "lookup_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 1.53,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k4": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 4.6,
+   "graph": false,
+   "fallback": null
+  },
+  "oracle_k7": {
+   "ids": true,
+   "logits": true,
+   "tokens_per_step": 7.67,
+   "graph": false,
+   "fallback": null
+  }
+ },
+ "summary": {
+  "tested": 16,
+  "exact": 16,
+  "skipped": [
+   "minimax",
+   "qwen3_5_moe_text"
+  ]
+ }
+}

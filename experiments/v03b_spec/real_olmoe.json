@@ -1,0 +1,170 @@
+{
+ "model": "OLMoE-1B-7B-0924",
+ "gpu_cache": {
+  "cached_experts": 1024,
+  "layers": 16,
+  "gb": 12.0,
+  "profile_hit": 1.0
+ },
+ "prompts": [
+  {
+   "kind": "copy",
+   "plain_tok_s": [
+    70.6,
+    72.39
+   ],
+   "spec_tok_s": [
+    78.81,
+    86.97
+   ],
+   "ids_equal": true,
+   "logits_equal": true,
+   "tokens_per_step": 2.25,
+   "graph": [
+    true,
+    true
+   ],
+   "text": "    def summarize(orders):\n        total = 0\n        count = 0\n        for order in orders:\n            if order[\"status\"] == \"paid\":\n                total += o"
+  },
+  {
+   "kind": "copy",
+   "plain_tok_s": [
+    78.56,
+    72.43
+   ],
+   "spec_tok_s": [
+    83.96,
+    77.65
+   ],
+   "ids_equal": true,
+   "logits_equal": true,
+   "tokens_per_step": 2.25,
+   "graph": [
+    true,
+    true
+   ],
+   "text": " committee received the reports on Wednesday and decided to postpone the meeting until the following week, because several members were not available.\n\nThe corr"
+  },
+  {
+   "kind": "copy",
+   "plain_tok_s": [
+    72.69,
+    70.88
+   ],
+   "spec_tok_s": [
+    100.72,
+    101.35
+   ],
+   "ids_equal": true,
+   "logits_equal": true,
+   "tokens_per_step": 3.15,
+   "graph": [
+    true,
+    true
+   ],
+   "text": " apples from the north farm\n2. pears from the south farm\n3. plums from the east farm\n4. cherries from the west farm\n\nNumbered list:\n1. apples from the north far"
+  },
+  {
+   "kind": "copy",
+   "plain_tok_s": [
+    75.27,
+    71.83
+   ],
+   "spec_tok_s": [
+    48.63,
+    49.34
+   ],
+   "ids_equal": true,
+   "logits_equal": true,
+   "tokens_per_step": 1.21,
+   "graph": [
+    true,
+    true
+   ],
+   "text": "| 2004 | Springfield | 107,500 |\n\n## Exercise 2: Create a new table\n\nCreate a new table called `population_table` with the following columns:\n\n| column | type |"
+  },
+  {
+   "kind": "m5",
+   "plain_tok_s": [
+    73.38,
+    73.3
+   ],
+   "spec_tok_s": [
+    57.28,
+    58.21
+   ],
+   "ids_equal": true,
+   "logits_equal": true,
+   "tokens_per_step": 1.47,
+   "graph": [
+    true,
+    true
+   ],
+   "text": "\n\nThe Fibonacci sequence is defined as follows:\n\nF(0) = 0\nF(1) = 1\nF(n) = F(n-1) + F(n-2)\n\nFor example, F(2) = F(1) + F(0"
+  },
+  {
+   "kind": "m5",
+   "plain_tok_s": [
+    74.45,
+    72.22
+   ],
+   "spec_tok_s": [
+    74.04,
+    69.78
+   ],
+   "ids_equal": true,
+   "logits_equal": true,
+   "tokens_per_step": 1.91,
+   "graph": [
+    true,
+    true
+   ],
+   "text": "\n\nThe sky looks blue during the day because the light from the sun is scattered by the atmosphere.\n\nExplain in two sentences why the sky looks black at night.\n\n"
+  },
+  {
+   "kind": "m5",
+   "plain_tok_s": [
+    72.77,
+    78.75
+   ],
+   "spec_tok_s": [
+    45.41,
+    46.98
+   ],
+   "ids_equal": true,
+   "logits_equal": true,
+   "tokens_per_step": 1.12,
+   "graph": [
+    true,
+    true
+   ],
+   "text": "\n\n17 x 23 = 3941\n\nHow to solve this problem\n\nTo solve this problem, you need to multiply 17 by 23. To solve the problem using long multiplication, you will firs"
+  },
+  {
+   "kind": "m5",
+   "plain_tok_s": [
+    74.94,
+    83.37
+   ],
+   "spec_tok_s": [
+    112.65,
+    112.06
+   ],
+   "ids_equal": true,
+   "logits_equal": true,
+   "tokens_per_step": 3.5,
+   "graph": [
+    true,
+    true
+   ],
+   "text": "\n\nTranslate into German: The library opens at nine in the morning.\n\nTranslate into Spanish: The library opens at nine in the morning.\n\nTranslate into Italian: T"
+  }
+ ],
+ "copy_speedup": 1.073,
+ "copy_plain_tok_s": 73.08,
+ "copy_spec_tok_s": 78.43,
+ "m5_speedup": 0.956,
+ "m5_plain_tok_s": 75.4,
+ "m5_spec_tok_s": 72.05,
+ "exact": true
+}

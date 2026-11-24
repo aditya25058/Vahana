@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import importlib
 
-__version__ = "0.1.0"
+__version__ = "0.3.0.dev0"
 
 _LAZY = {
+    'generate_spec': ('speculative', 'generate_spec'),
     '.offload': ('hook', '.offload'),
     'ColumnDirectory': ('directory', 'ColumnDirectory'),
     'ExpertOffloadManager': ('hook', 'ExpertOffloadManager'),
