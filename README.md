@@ -13,7 +13,7 @@ Its answers are **bit-identical** wherever and however the work runs. The same t
 
 Other engines change a request's output when the batch around it changes. In Vahana, a request served alongside 63 others gives exactly the bits it gives alone, and that is measured, not assumed ([benchmarks](docs/benchmarks.md)).
 
-> **Status: 1.0.** Validated on real checkpoints up to DeepSeek-V2 236B; 18 model families in the selftest.
+> **Status: 1.0 (beta).** The exactness guarantee is stable and validated on real checkpoints up to DeepSeek-V2 236B, with 18 model families in the selftest. Expect rough edges outside the tested setups below; please open an issue.
 > Every claim here comes from a pre-registered experiment in [`experiments/`](experiments), including the bars it missed.
 > See the [changelog](CHANGELOG.md).
 
@@ -83,7 +83,7 @@ Vahana finds the experts by structure (transformers' `experts(hidden, indices, w
   - **Cost:** +1.8% per GPU decode step.
 
 ## Requirements and limits
-- **Python 3.10+, PyTorch 2.4+, transformers 5.** NVIDIA GPUs need Triton (`vahana[gpu]`). CPU-only works everywhere.
+- **Python 3.10+, PyTorch 2.4+, transformers 5.12–5.24.** Vahana uses transformers internals (cache classes, model code), so new transformers releases are admitted only after CI passes on them. NVIDIA GPUs need Triton (`vahana[gpu]`). CPU-only works everywhere.
 - **RAM:**
   - **Fast:** room for the experts, plus page cache.
   - **Less RAM still works, exactly:** experts stream from disk at disk speed. A saturated NVMe caps decode; for example Qwen3-30B on a 15 GB laptop runs at about 1 tok/s.

@@ -75,7 +75,7 @@ jobs:
           "$PY" -m pip install --no-deps dist/*.whl
           cd "$RUNNER_TEMP"
           "$PY" -c "import vahana, os; print(os.listdir(os.path.join(os.path.dirname(vahana.__file__), '_build')))"
-          "$PY" -c "import torch, vahana.hybrid as h; k = h.ext(); print('kernel', k.path, k.isa(), 'threads', k.threads(), 'torch', torch.__version__)"
+          "$PY" -c "import torch, transformers, vahana.hybrid as h; k = h.ext(); print('kernel', k.path, k.isa(), 'threads', k.threads(), 'torch', torch.__version__, 'transformers', transformers.__version__)"
 
       - name: vahana selftest (every kernel build this CPU runs)
         shell: bash
@@ -104,6 +104,38 @@ jobs:
         run: |
           cd "$RUNNER_TEMP"
           "$PY" -m pytest -q -p no:cacheprovider "$GITHUB_WORKSPACE/tests/test_twin.py" "$GITHUB_WORKSPACE/tests/test_modelspec.py" "$GITHUB_WORKSPACE/tests/test_doctor.py"
+
+  # v1.0: which transformers releases give the reference bits. Vahana runs transformers' own model code, and a model's
+  # definition can change between releases (found on a clean install: 5.20.2 differs for gpt_oss and qwen3_5_moe_text),
+  # so the supported range in pyproject.toml is the set this job passes. Linux x86-64, Python 3.12, CPU torch.
+  compat:
+    name: transformers ${{ matrix.tf }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        tf: ["5.12.1", "5.13.1", "5.14.1", "5.15.1", "5.16.1", "5.17.0", "5.18.0", "5.19.0", "5.20.2", "5.21.1",
+             "5.22.2", "5.23.0", "5.24.1"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Vahana (from source, avx2 + scalar kernels) with transformers ${{ matrix.tf }}
+        env:
+          VAHANA_ISAS: "avx2 scalar"
+        run: |
+          python -m pip install -q torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -q --no-deps .
+          python -m pip install -q "transformers==${{ matrix.tf }}" "accelerate>=1.0" "safetensors>=0.4" "numpy>=1.24"
+          python -c "import torch, transformers; print('torch', torch.__version__, 'transformers', transformers.__version__)"
+      - name: vahana selftest (CPU)
+        run: |
+          cd /tmp
+          vahana selftest --device cpu | tee st.txt
+          echo "::notice title=transformers ${{ matrix.tf }}::$(tail -1 st.txt) $(grep DIFFERENT st.txt | awk '{print $1}' | tr '
+' ' ')"
+          grep -q "18/18" st.txt
 
   # v1.0: source distribution (the wheels carry the prebuilt kernels; the sdist builds them with a C++20 compiler)
   sdist:
