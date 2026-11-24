@@ -40,7 +40,7 @@ def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None
     other = kinds - {"full_attention", "sliding_attention", "attention"}
     if other:                                     # recurrent / linear-attention layers: their own cache, eager only
         return _generate_dynamic(model, input_ids, attention_mask, max_new_tokens, return_logits, sampler, on_token,
-                                 reason=f"non-attention layers {sorted(other)}")
+                                 eos_token_id=eos_token_id, reason=f"non-attention layers {sorted(other)}")
     cache = StaticCache(config=model.config, max_cache_len=L)
     # Sliding-window static layers keep their fill position in a Python int, which a captured graph would freeze;
     # a full-length static layer is position-indexed, and the window is still enforced by the attention mask.
@@ -54,7 +54,7 @@ def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None
         if "cache" not in str(e).lower():
             raise
         return _generate_dynamic(model, input_ids, attention_mask, max_new_tokens, return_logits, sampler, on_token,
-                                 reason=f"own cache class: {str(e)[:160]}")
+                                 eos_token_id=eos_token_id, reason=f"own cache class: {str(e)[:160]}")
     _sync(dev)
     prefill_s = time.perf_counter() - t0
     logit = out.logits[:, -1].float()
@@ -153,7 +153,8 @@ def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None
 
 
 @torch.no_grad()
-def _generate_dynamic(model, input_ids, attention_mask, max_new_tokens, return_logits, sampler, on_token, reason):
+def _generate_dynamic(model, input_ids, attention_mask, max_new_tokens, return_logits, sampler, on_token, reason,
+                      eos_token_id=None):
     """Eager decode with the model's own cache (models that reject a static cache)."""
     dev = input_ids.device
     B, T = input_ids.shape
@@ -168,8 +169,10 @@ def _generate_dynamic(model, input_ids, attention_mask, max_new_tokens, return_l
     tok = pick(logit)
     ids, logits, lat = [tok], [logit] if return_logits else [], []
     stop = on_token is not None and bool(on_token(tok))
+    eos = set(eos_token_id) if isinstance(eos_token_id, (list, tuple, set)) else (
+        set() if eos_token_id is None else {eos_token_id})
     for _ in range(max_new_tokens - 1):
-        if stop:
+        if stop or B == 1 and int(ids[-1][0, 0]) in eos:     # v0.4-c: stop at EOS as the static path does
             break
         _sync(dev)
         t = time.perf_counter()

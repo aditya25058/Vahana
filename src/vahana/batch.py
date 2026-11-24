@@ -3,8 +3,8 @@ gets when decoded alone.
 
 Why it is exact: every Vahana kernel computes each row (token) separately with a fixed operation order (twin
 linears, experts, glue), and attention visits each query's own keys in blocks anchored at its first allowed key,
-so left padding and the other rows of the batch never move a rounding. Recurrent / linear-attention layers would
-run over the padding, so models with them decode each request alone.
+so left padding and the other rows of the batch never move a rounding. Models with recurrent / linear-attention
+layers batch through engine.HybridEngine (v0.4-c: each request prefilled alone, decode steps shared).
 """
 from __future__ import annotations
 
@@ -47,6 +47,17 @@ def generate_batch(model, prompts, max_new_tokens: int = 64, eos_token_id=None, 
             o["logits"] = lg[:n]
         return o
 
+    if _recurrent(model) and len(ps) > 1:
+        # v0.4-c: recurrent / linear-attention models batch through HybridEngine (each request prefilled alone,
+        # decode steps shared; exact)
+        from . import engine as _engine
+        if _engine.hybrid_supported(model):
+            eng = _engine.HybridEngine(model, slots=len(ps), max_len=1 << 30)
+            hs = [eng.submit(p.tolist(), max_new_tokens, eos_token_id=eos_token_id, record_logits=return_logits)
+                  for p in ps]
+            eng.run()
+            outs = [trim(h.ids, torch.stack(h.logits).to(dev) if return_logits else None) for h in hs]
+            return {"outputs": outs, "step_ms": eng.stats["step_ms"], "batched": True, "graph_used": False}
     if _recurrent(model) or len(ps) == 1:
         outs, steps, gu = [], [], True
         for p in ps:

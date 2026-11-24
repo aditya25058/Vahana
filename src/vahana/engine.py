@@ -12,7 +12,7 @@ and every other kernel is row-wise, so a row computes exactly what a solo run co
           the shared cache. If c reaches C, every row is shifted left by the smallest start (a copy).
   leave   a finished row is replaced by the last active row (a copy), so rows 0..n-1 stay packed.
 Shifts and moves copy KV; positions never change, so nothing a row computes depends on where it sits.
-Models with recurrent / linear-attention layers are not supported here (their state would run over the padding).
+Models with recurrent / linear-attention layers use HybridEngine below (v0.4-c); make() picks the right one.
 """
 from __future__ import annotations
 
@@ -362,3 +362,197 @@ class Engine:
     def graph_info(self) -> dict:
         return {b: ("graph" if v["graph"] is not None else ("eager: " + v["fallback"] if v["fallback"] else "warm"))
                 for b, v in self._b.items()}
+
+
+# ---- v0.4-c: models with recurrent / linear-attention layers -------------------------------------------------------
+_KV = ("keys", "values")                              # [B, H, T, D]: length on dim 2, left-padded to a common length
+_STATE = ("conv_states", "recurrent_states")          # [B, ...]: one state per row, no length
+
+
+def _fields(cache):
+    """Every per-row tensor of a dynamic (hybrid) cache: (holder, name or index, is_kv)."""
+    out = []
+    for L in cache.layers:
+        extra = [k for k, v in vars(L).items() if isinstance(v, torch.Tensor) and k not in _KV + _STATE]
+        if extra:
+            raise ValueError(f"unknown per-row cache state {extra} in {type(L).__name__}")
+        for k in _KV + _STATE:
+            if isinstance(getattr(L, k, None), torch.Tensor):
+                out.append((L, k, k in _KV))
+    lc = getattr(cache, "linear_cache", None)          # MiniMaxCache keeps its linear-attention state here
+    if isinstance(lc, list):
+        for i, v in enumerate(lc):
+            if isinstance(v, torch.Tensor):
+                out.append((lc, i, False))
+    return out
+
+
+def _get(h, k):
+    return h[k] if isinstance(h, list) else getattr(h, k)
+
+
+def _set(h, k, v):
+    if isinstance(h, list):
+        h[k] = v
+    else:
+        setattr(h, k, v)
+
+
+def hybrid_supported(model) -> bool:
+    kinds = set(getattr(model.config.get_text_config(), "layer_types", None) or [])
+    return bool(kinds) and kinds <= {"full_attention", "linear_attention"}
+
+
+class HybridEngine:
+    """Continuous batching for models with recurrent / linear-attention layers (eager; their cache is dynamic).
+
+    Exact without padding the recurrence: every request is prefilled alone (B = 1, exactly its solo prefill), and only
+    decode steps are batched, where each row processes its own one token. Recurrent state is per row (concatenated
+    along the batch); attention KV is left-padded to a common length with the mask zero there (attention is anchored
+    at each query's first allowed key, so padding never moves a rounding). Rows that finish are removed by index.
+    """
+
+    def __init__(self, model, slots: int = 16, max_len: int = 4096, graph: bool = False):
+        if not hybrid_supported(model):
+            raise ValueError("HybridEngine is for full + linear attention models")
+        self.model = model
+        self.dev = next(p.device for p in model.parameters() if p.device.type == "cuda") \
+            if any(p.is_cuda for p in model.parameters()) else torch.device("cpu")
+        self.S, self.C = int(slots), int(max_len)
+        self.waiting: collections.deque[Request] = collections.deque()
+        self.lock = threading.Lock()
+        self.active: list[Request] = []
+        self._ids = itertools.count()
+        self.cache = None
+        self.am = self.tok = self.pos = None
+        self.stats = {"steps": 0, "step_ms": [], "prefills": 0, "active_tokens": 0, "bucket_tokens": 0, "trims": 0}
+
+    submit = Engine.submit
+    idle = Engine.idle
+    run = Engine.run
+
+    def graph_info(self) -> dict:
+        return {"eager": "dynamic cache (recurrent layers)"}
+
+    def fail_all(self, err: str):
+        with self.lock:
+            reqs = list(self.active) + list(self.waiting)
+            self.waiting.clear()
+        self.active.clear()
+        self.cache = self.am = self.tok = self.pos = None
+        for r in reqs:
+            r.error, r.finish = err, "error"
+            r.done.set()
+
+    def close(self):
+        self.cache = self.am = self.tok = self.pos = None
+        self.active.clear()
+
+    @staticmethod
+    def _pad_kv(t, d):
+        if d == 0:
+            return t
+        z = torch.zeros(t.shape[:2] + (d,) + t.shape[3:], dtype=t.dtype, device=t.device)
+        return torch.cat([z, t], 2)
+
+    def _merge(self, cache, am, tok, pos):
+        """Add a prefilled batch (cache, am [b, T], tok, pos) to the running one, aligning both at the right edge."""
+        if self.cache is None:
+            self.cache, self.am, self.tok, self.pos = cache, am, tok, pos
+            return
+        T0, T1 = self.am.shape[1], am.shape[1]
+        T = max(T0, T1)
+        fa, fb = _fields(self.cache), _fields(cache)
+        assert len(fa) == len(fb), "cache layouts differ"
+        for (ha, ka, kv), (hb, kb, _) in zip(fa, fb):
+            a, b = _get(ha, ka), _get(hb, kb)
+            if kv:
+                a, b = self._pad_kv(a, T - T0), self._pad_kv(b, T - T1)
+            _set(ha, ka, torch.cat([a, b], 0))
+
+        def z(m, d):
+            return torch.cat([torch.zeros(m.shape[0], d, dtype=m.dtype, device=m.device), m], 1) if d else m
+        self.am = torch.cat([z(self.am, T - T0), z(am, T - T1)], 0)
+        self.tok = torch.cat([self.tok, tok], 0)
+        self.pos = torch.cat([self.pos, pos], 0)
+
+    def _select(self, keep):
+        if not keep:
+            self.cache = self.am = self.tok = self.pos = None
+            return
+        idx = torch.tensor(keep, device=self.dev)
+        for h, k, _ in _fields(self.cache):
+            _set(h, k, _get(h, k).index_select(0, idx))
+        self.am, self.tok, self.pos = self.am[idx], self.tok[idx], self.pos[idx]
+        lead = int((self.am.sum(0) == 0).long().cumprod(0).sum())      # columns no row uses any more
+        if lead:
+            for h, k, kv in _fields(self.cache):
+                if kv:
+                    _set(h, k, _get(h, k)[:, :, lead:].contiguous())
+            self.am = self.am[:, lead:].contiguous()
+            self.stats["trims"] += 1
+
+    def _admit(self):
+        with self.lock:
+            k = min(self.S - len(self.active), len(self.waiting))
+            new = [self.waiting.popleft() for _ in range(k)]
+        for r in new:                                   # each alone: its recurrence never sees padding
+            ids = torch.tensor([r.prompt], device=self.dev)
+            am = torch.ones_like(ids)
+            out = self.model(ids, attention_mask=am, position_ids=(am.cumsum(-1) - 1), use_cache=True,
+                             logits_to_keep=1)
+            self.stats["prefills"] += 1
+            logit = out.logits[:, -1].float()
+            t = int(logit.argmax(-1)) if r.sampler is None else int(r.sampler(logit).view(-1)[0])
+            if r._emit(t, logit[0]):
+                r.done.set()
+                continue
+            self._merge(out.past_key_values, am, torch.tensor([[t]], device=self.dev),
+                        torch.tensor([[len(r.prompt)]], device=self.dev))
+            self.active.append(r)
+
+    @torch.no_grad()
+    def step(self):
+        self._admit()
+        if not self.active:
+            return
+        import time
+        n = len(self.active)
+        _sync(self.dev)
+        t0 = time.perf_counter()
+        self.am = torch.cat([self.am, torch.ones(n, 1, dtype=self.am.dtype, device=self.dev)], 1)
+        o = self.model(self.tok, attention_mask=self.am, position_ids=self.pos, past_key_values=self.cache,
+                       use_cache=True, logits_to_keep=1)
+        self.cache = o.past_key_values
+        lg = o.logits[:, -1].float()
+        self.tok = lg.argmax(-1, keepdim=True)
+        self.pos = self.pos + 1
+        _sync(self.dev)
+        self.stats["step_ms"].append((time.perf_counter() - t0) * 1e3)
+        self.stats["steps"] += 1
+        self.stats["active_tokens"] += n
+        self.stats["bucket_tokens"] += n
+        toks = self.tok[:, 0].tolist()
+        keep = []
+        for r, req in enumerate(self.active):
+            t = toks[r]
+            if req.sampler is not None:
+                t = int(req.sampler(lg[r:r + 1]).view(-1)[0])
+                self.tok[r, 0] = t
+            if req._emit(t, lg[r] if req.record else None):
+                req.done.set()
+            else:
+                keep.append(r)
+        if len(keep) < n:
+            self.active = [self.active[r] for r in keep]
+            self._select(keep)
+
+
+def make(model, slots: int = 16, max_len: int = 4096, graph: bool = True):
+    """The continuous-batching engine for this model: Engine (attention-only, CUDA graphs) or HybridEngine
+    (recurrent / linear-attention layers); None if neither applies."""
+    if supported(model):
+        return Engine(model, slots=slots, max_len=max_len, graph=graph)
+    if hybrid_supported(model):
+        return HybridEngine(model, slots=slots, max_len=max_len)
+    return None

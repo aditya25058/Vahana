@@ -1,0 +1,321 @@
+{
+ "mixtral": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "graph",
+   "4": "graph",
+   "2": "graph",
+   "1": "graph"
+  },
+  "stats": {
+   "steps": 47,
+   "prefills": 13,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 16,
+   "bucket_tokens": 213,
+   "active_tokens": 201
+  }
+ },
+ "qwen2_moe": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "graph",
+   "4": "graph",
+   "2": "graph",
+   "1": "graph"
+  },
+  "stats": {
+   "steps": 46,
+   "prefills": 11,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 15,
+   "bucket_tokens": 212,
+   "active_tokens": 196
+  }
+ },
+ "qwen3_moe": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "graph",
+   "4": "graph",
+   "2": "graph",
+   "1": "graph"
+  },
+  "stats": {
+   "steps": 46,
+   "prefills": 11,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 16,
+   "bucket_tokens": 212,
+   "active_tokens": 198
+  }
+ },
+ "olmoe": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "graph",
+   "4": "graph",
+   "2": "graph",
+   "1": "graph"
+  },
+  "stats": {
+   "steps": 46,
+   "prefills": 12,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 15,
+   "bucket_tokens": 212,
+   "active_tokens": 199
+  }
+ },
+ "deepseek_v2": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "graph",
+   "4": "graph",
+   "2": "graph",
+   "1": "graph"
+  },
+  "stats": {
+   "steps": 47,
+   "prefills": 12,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 17,
+   "bucket_tokens": 215,
+   "active_tokens": 204
+  }
+ },
+ "deepseek_v3": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "graph",
+   "4": "graph",
+   "2": "graph",
+   "1": "graph"
+  },
+  "stats": {
+   "steps": 47,
+   "prefills": 12,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 17,
+   "bucket_tokens": 215,
+   "active_tokens": 204
+  }
+ },
+ "glm4_moe": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "graph",
+   "4": "graph",
+   "2": "graph",
+   "1": "graph"
+  },
+  "stats": {
+   "steps": 46,
+   "prefills": 11,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 15,
+   "bucket_tokens": 212,
+   "active_tokens": 197
+  }
+ },
+ "glm4_moe_lite": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "graph",
+   "4": "graph",
+   "2": "graph",
+   "1": "graph"
+  },
+  "stats": {
+   "steps": 47,
+   "prefills": 12,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 17,
+   "bucket_tokens": 213,
+   "active_tokens": 203
+  }
+ },
+ "minimax": {
+  "skipped": "recurrent layers: the server serves these one at a time (exact)"
+ },
+ "minimax_m2": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "graph",
+   "4": "graph",
+   "2": "graph",
+   "1": "graph"
+  },
+  "stats": {
+   "steps": 46,
+   "prefills": 11,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 14,
+   "bucket_tokens": 214,
+   "active_tokens": 200
+  }
+ },
+ "hunyuan_v1_moe": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "graph",
+   "4": "graph",
+   "2": "graph",
+   "1": "graph"
+  },
+  "stats": {
+   "steps": 47,
+   "prefills": 13,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 15,
+   "bucket_tokens": 213,
+   "active_tokens": 198
+  }
+ },
+ "ernie4_5_moe": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "4": "graph",
+   "6": "graph",
+   "2": "graph",
+   "1": "graph"
+  },
+  "stats": {
+   "steps": 46,
+   "prefills": 11,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 13,
+   "bucket_tokens": 210,
+   "active_tokens": 194
+  }
+ },
+ "cohere2_moe": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "4": "graph",
+   "6": "graph",
+   "2": "graph",
+   "1": "graph"
+  },
+  "stats": {
+   "steps": 46,
+   "prefills": 11,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 13,
+   "bucket_tokens": 210,
+   "active_tokens": 194
+  }
+ },
+ "exaone_moe": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "graph",
+   "4": "graph",
+   "2": "graph",
+   "1": "graph"
+  },
+  "stats": {
+   "steps": 47,
+   "prefills": 13,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 16,
+   "bucket_tokens": 213,
+   "active_tokens": 201
+  }
+ },
+ "afmoe": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "graph",
+   "4": "graph",
+   "2": "graph",
+   "1": "graph"
+  },
+  "stats": {
+   "steps": 47,
+   "prefills": 12,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 17,
+   "bucket_tokens": 215,
+   "active_tokens": 204
+  }
+ },
+ "phimoe": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "eager: RuntimeError: CUDA error: operation failed due to a previous error during capture\nCUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.\nFor debuggin",
+   "4": "eager: RuntimeError: CUDA error: operation failed due to a previous error during capture\nCUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.\nFor debuggin",
+   "2": "eager: RuntimeError: CUDA error: operation failed due to a previous error during capture\nCUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.\nFor debuggin",
+   "1": "eager: RuntimeError: CUDA error: operation failed due to a previous error during capture\nCUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.\nFor debuggin"
+  },
+  "stats": {
+   "steps": 47,
+   "prefills": 13,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 15,
+   "bucket_tokens": 213,
+   "active_tokens": 201
+  }
+ },
+ "qwen3_5_moe_text": {
+  "skipped": "recurrent layers: the server serves these one at a time (exact)"
+ },
+ "gpt_oss": {
+  "exact": 20,
+  "of": 20,
+  "graph": {
+   "6": "graph",
+   "4": "graph",
+   "2": "graph",
+   "1": "graph"
+  },
+  "stats": {
+   "steps": 47,
+   "prefills": 13,
+   "shift_right": 1,
+   "shift_left": 1,
+   "moves": 15,
+   "bucket_tokens": 213,
+   "active_tokens": 200
+  }
+ },
+ "summary": {
+  "tested": 16,
+  "exact": 16,
+  "skipped": [
+   "minimax",
+   "qwen3_5_moe_text"
+  ],
+  "not_exact": []
+ }
+}

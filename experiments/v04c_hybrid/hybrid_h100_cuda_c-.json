@@ -1,0 +1,38 @@
+{
+ "minimax": {
+  "exact": 20,
+  "of": 20,
+  "engine": "HybridEngine",
+  "graph": {
+   "eager": "dynamic cache (recurrent layers)"
+  },
+  "stats": {
+   "steps": 47,
+   "prefills": 20,
+   "active_tokens": 204,
+   "bucket_tokens": 204,
+   "trims": 5
+  }
+ },
+ "qwen3_5_moe_text": {
+  "exact": 20,
+  "of": 20,
+  "engine": "HybridEngine",
+  "graph": {
+   "eager": "dynamic cache (recurrent layers)"
+  },
+  "stats": {
+   "steps": 47,
+   "prefills": 20,
+   "active_tokens": 204,
+   "bucket_tokens": 204,
+   "trims": 5
+  }
+ },
+ "summary": {
+  "tested": 2,
+  "exact": 2,
+  "skipped": [],
+  "not_exact": []
+ }
+}

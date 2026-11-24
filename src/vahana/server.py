@@ -4,7 +4,7 @@ Endpoints: GET /health, GET /v1/models, POST /v1/completions, POST /v1/chat/comp
 Request fields: prompt | messages, max_tokens (16), temperature (0 = greedy), top_p (1), seed (0), stop (str or
 list), stream (false).
 v0.4-b: requests share decode steps through engine.Engine (continuous batching); every response is bit-identical to
-running that request alone. Models with recurrent / linear-attention layers run one request at a time.
+running that request alone (v0.4-c: also for models with recurrent / linear-attention layers).
 
 Determinism: greedy decoding is bit-exact. With temperature > 0, tokens are drawn on the host from the step's fp32
 logits with a torch.Generator seeded by `seed`, so the same request always returns the same text.
@@ -45,8 +45,9 @@ class _State:
         self.lock = threading.Lock()
         self.engine = None
         from . import engine as _engine
-        if slots and slots > 1 and _engine.supported(model):
-            self.engine = _engine.Engine(model, slots=slots, max_len=max_len)
+        if slots and slots > 1:
+            self.engine = _engine.make(model, slots=slots, max_len=max_len)     # None: one request at a time
+        if self.engine is not None:
             self.cv = threading.Condition()
             threading.Thread(target=self._loop, daemon=True, name="vahana-engine").start()
         eos = tok.eos_token_id
