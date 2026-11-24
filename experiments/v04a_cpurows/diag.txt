@@ -1,0 +1,4 @@
+rows=64 B=8: step 237.5 ms; expert kernel calls 904 setup 958 pass0 2947 pass1 1936 tail 1 ms total -> per step ~343.6 ms in the expert kernel
+rows=64 B=64: step 1534.6 ms; expert kernel calls 1776 setup 11641 pass0 25469 pass1 15816 tail 3 ms total -> per step ~3113.5 ms in the expert kernel
+rows=16 B=8: step 221.1 ms; expert kernel calls 1288 setup 906 pass0 2144 pass1 1544 tail 1 ms total -> per step ~270.3 ms in the expert kernel
+rows=16 B=64: step 1295.6 ms; expert kernel calls 7104 setup 8552 pass0 16124 pass1 12508 tail 6 ms total -> per step ~2187.7 ms in the expert kernel

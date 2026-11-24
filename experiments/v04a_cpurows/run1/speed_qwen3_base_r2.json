@@ -1,0 +1,16 @@
+{
+ "model": "Qwen3-30B-A3B",
+ "gpu_cache": {
+  "cached_experts": 2048,
+  "layers": 48,
+  "gb": 18.0,
+  "profile_hit": 0.7047419662309368
+ },
+ "mode": "speed",
+ "speed": {
+  "1": 11.44,
+  "8": 35.94,
+  "32": 47.65,
+  "64": 50.13
+ }
+}

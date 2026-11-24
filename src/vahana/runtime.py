@@ -11,6 +11,8 @@ as the CPU one); anything else (biases, fp32) uses the batch-invariant GEMM.
 """
 from __future__ import annotations
 
+import os
+
 import torch
 import torch.nn as nn
 
@@ -22,6 +24,7 @@ from .twinlin import gpu_linear
 GRAPH = {"on": False}
 TWIN = {"on": False}         # P2: every linear in twin arithmetic (set by loader when twin=True)
 ROWS = 16                    # rows per CPU job (the kernel's per-expert / per-linear batch limit)
+MOE_ROWS = int(os.environ.get("VAHANA_MOE_ROWS", "64"))   # v0.4-a: rows per CPU expert job (kernel limit 256); chunks never change bits
 _BUF: dict = {}
 
 
@@ -118,13 +121,13 @@ def moe(slot: int, x: torch.Tensor, ti: torch.Tensor, tw: torch.Tensor, numa: in
         tic = ti.detach().to("cpu", torch.int64).contiguous()
         twc = tw.to("cpu").contiguous()
         out = torch.empty((N, H), dtype=torch.bfloat16)
-        for s in range(0, N, ROWS):               # rows are independent: chunking never changes bits
-            k.submit_moe(slot, xc[s:s + ROWS], tic[s:s + ROWS], twc[s:s + ROWS], out[s:s + ROWS], numa)
+        for s in range(0, N, MOE_ROWS):               # rows are independent: chunking never changes bits
+            k.submit_moe(slot, xc[s:s + MOE_ROWS], tic[s:s + MOE_ROWS], twc[s:s + MOE_ROWS], out[s:s + MOE_ROWS], numa)
             k.wait_done()
         return out.to(x.device)
-    if N > ROWS:                                  # v0.3-e: one host job per 16-row chunk (rows are independent)
-        return torch.cat([moe(slot, x[s:s + ROWS], ti[s:s + ROWS], tw[s:s + ROWS], numa, _chunk=s)
-                          for s in range(0, N, ROWS)])
+    if N > MOE_ROWS:                                  # one host job per MOE_ROWS-row chunk (rows are independent)
+        return torch.cat([moe(slot, x[s:s + MOE_ROWS], ti[s:s + MOE_ROWS], tw[s:s + MOE_ROWS], numa, _chunk=s)
+                          for s in range(0, N, MOE_ROWS)])
     key = ("moe", slot, N, ti.shape[1], tw.dtype, _chunk)
     if key not in _BUF:
         b = (_pin((N, H), torch.bfloat16), _pin(tuple(ti.shape), torch.int64), _pin(tuple(tw.shape), tw.dtype),
@@ -149,14 +152,14 @@ def moe_cached(slot: int, x: torch.Tensor, ti: torch.Tensor, tw: torch.Tensor, y
         c = lambda t, dt=None: t.detach().to("cpu", dt or t.dtype).contiguous()
         xc, tic, twc, ygc = c(x, torch.bfloat16), c(ti, torch.int64), c(tw), c(yg)
         out = torch.empty((N, H), dtype=torch.bfloat16)
-        for s in range(0, N, ROWS):
-            k.submit_moe_cached(slot, xc[s:s + ROWS], tic[s:s + ROWS], twc[s:s + ROWS], None, ygc[s:s + ROWS],
-                                out[s:s + ROWS], numa)
+        for s in range(0, N, MOE_ROWS):
+            k.submit_moe_cached(slot, xc[s:s + MOE_ROWS], tic[s:s + MOE_ROWS], twc[s:s + MOE_ROWS], None, ygc[s:s + MOE_ROWS],
+                                out[s:s + MOE_ROWS], numa)
             k.wait_done()
         return out.to(x.device)
-    if N > ROWS:                                  # v0.3-e: one host job per 16-row chunk (rows are independent)
-        return torch.cat([moe_cached(slot, x[s:s + ROWS], ti[s:s + ROWS], tw[s:s + ROWS], yg[s:s + ROWS], numa,
-                                     _chunk=s) for s in range(0, N, ROWS)])
+    if N > MOE_ROWS:                                  # one host job per MOE_ROWS-row chunk (rows are independent)
+        return torch.cat([moe_cached(slot, x[s:s + MOE_ROWS], ti[s:s + MOE_ROWS], tw[s:s + MOE_ROWS], yg[s:s + MOE_ROWS], numa,
+                                     _chunk=s) for s in range(0, N, MOE_ROWS)])
     key = ("cached", slot, N, K, tw.dtype, _chunk)
     if key not in _BUF:
         b = (_pin((N, H), torch.bfloat16), _pin((N, K), torch.int64), _pin((N, K), tw.dtype),
@@ -181,7 +184,7 @@ def cpu_linear(W: torch.Tensor, x2: torch.Tensor, _chunk: int = 0) -> torch.Tens
             k.wait_done()
             outs.append(ob)
         return torch.cat(outs).to(x2.device)
-    if n > ROWS:                                  # v0.3-e: one host job per 16-row chunk (rows are independent)
+    if n > ROWS:                                  # one host job per MOE_ROWS-row chunk (rows are independent)
         return torch.cat([cpu_linear(W, x2[s:s + ROWS], _chunk=s) for s in range(0, n, ROWS)])
     key = ("lin", W.data_ptr(), n, _chunk)
     if key not in _BUF:

@@ -1,0 +1,6 @@
+cpu avx512: vahana selftest: 18/18 families give the same bits as the reference machine
+cpu avx2: vahana selftest: 18/18 families give the same bits as the reference machine
+cpu scalar: vahana selftest: 18/18 families give the same bits as the reference machine
+cuda cache=-: vahana selftest: 18/18 families give the same bits as the reference machine
+cuda cache=0.5: vahana selftest: 18/18 families give the same bits as the reference machine
+cuda cache=1.0: vahana selftest: 18/18 families give the same bits as the reference machine

@@ -48,6 +48,7 @@ static inline long move_pages(int, unsigned long count, void** pages, const int*
 #include <atomic>
 #include <vector>
 #include <algorithm>
+#include <memory>
 #include <limits>
 #include <type_traits>
 
@@ -209,13 +210,21 @@ static inline uint16_t down_o(const ActCtx* c, int j, int r, float dot) {
 }
 std::vector<torch::Tensor> expert_mlps_ctx(torch::Tensor x, std::vector<torch::Tensor> gate,
                                        std::vector<torch::Tensor> up, std::vector<torch::Tensor> down,
-                                       int64_t numa, const ActCtx* ctx) {
+                                       int64_t numa, const ActCtx* ctx, const std::vector<int>* ne) {
+  // ne (v0.4-a): rows actually used per expert (x is padded to n rows); padded rows are neither converted nor computed,
+  // and their outputs are left unset (callers read only the used rows). A used row's arithmetic is unchanged.
   const double T0 = now_ms();
   const int E = x.size(0), n = x.size(1), H = x.size(2), I = gate[0].size(0);
-  TORCH_CHECK(n <= 16 && H % 16 == 0 && I % 16 == 0);
-  std::vector<float> xf((size_t)E * n * H), hf((size_t)E * n * I);
+  TORCH_CHECK(n <= 256 && H % 16 == 0 && I % 16 == 0);   // v0.4-a: up to 256 rows per expert, in 16-row sub-blocks
+  auto rows_of = [&](int e) { return ne ? (*ne)[e] : n; };
+  std::unique_ptr<float[]> xf_(new float[(size_t)E * n * H]), hf_(new float[(size_t)E * n * I]);
+  float* xf = xf_.get();
+  float* hf = hf_.get();
   const uint16_t* xp = (const uint16_t*)x.data_ptr();
-  for (size_t i = 0; i < xf.size(); i++) xf[i] = bf2f(xp[i]);
+  for (int e = 0; e < E; e++) {
+    const size_t o = (size_t)e * n * H, c = (size_t)rows_of(e) * H;
+    for (size_t i = 0; i < c; i++) xf[o + i] = bf2f(xp[o + i]);
+  }
   auto y = torch::empty({E, n, H}, x.options());
   uint16_t* yp = (uint16_t*)y.data_ptr();
   std::vector<int> enode(E, 0);
@@ -268,16 +277,22 @@ std::vector<torch::Tensor> expert_mlps_ctx(torch::Tensor x, std::vector<torch::T
             }
             continue;
           }
+          // v0.4-a: tokens in sub-blocks of 16 against each weight row (the row stays in L1 across sub-blocks, so a
+          // weight is read from memory once for all n tokens). Each token's dot is unchanged.
           for (int r = b * 16; r < b * 16 + 16; r++) {
-            if (pass == 0) {
-              row_dots((const uint16_t*)gate[e].data_ptr() + (size_t)r * H, &xf[(size_t)e * n * H], n, H, g);
-              row_dots((const uint16_t*)up[e].data_ptr() + (size_t)r * H, &xf[(size_t)e * n * H], n, H, u);
-              for (int t = 0; t < n; t++) {
-                hf[((size_t)e * n + t) * I + r] = act_h(ctx, e, r, g[t], u[t]);
+            const int ne_e = rows_of(e);
+            for (int t0 = 0; t0 < ne_e; t0 += 16) {
+              const int m = std::min(16, ne_e - t0);
+              if (pass == 0) {
+                row_dots((const uint16_t*)gate[e].data_ptr() + (size_t)r * H, &xf[((size_t)e * n + t0) * H], m, H, g);
+                row_dots((const uint16_t*)up[e].data_ptr() + (size_t)r * H, &xf[((size_t)e * n + t0) * H], m, H, u);
+                for (int t = 0; t < m; t++) {
+                  hf[((size_t)e * n + t0 + t) * I + r] = act_h(ctx, e, r, g[t], u[t]);
+                }
+              } else {
+                row_dots((const uint16_t*)down[e].data_ptr() + (size_t)r * I, &hf[((size_t)e * n + t0) * I], m, I, d);
+                for (int t = 0; t < m; t++) yp[((size_t)e * n + t0 + t) * H + r] = down_o(ctx, e, r, d[t]);
               }
-            } else {
-              row_dots((const uint16_t*)down[e].data_ptr() + (size_t)r * I, &hf[(size_t)e * n * I], n, I, d);
-              for (int t = 0; t < n; t++) yp[((size_t)e * n + t) * H + r] = down_o(ctx, e, r, d[t]);
             }
           }
         }
@@ -293,7 +308,7 @@ std::vector<torch::Tensor> expert_mlps_ctx(torch::Tensor x, std::vector<torch::T
 }
 std::vector<torch::Tensor> expert_mlps(torch::Tensor x, std::vector<torch::Tensor> gate,
                                        std::vector<torch::Tensor> up, std::vector<torch::Tensor> down, int64_t numa) {
-  return expert_mlps_ctx(x, gate, up, down, numa, nullptr);
+  return expert_mlps_ctx(x, gate, up, down, numa, nullptr, nullptr);
 }
 std::vector<double> phase_ms() { return std::vector<double>(g_ph, g_ph + 5); }
 
@@ -400,7 +415,9 @@ static std::vector<torch::Tensor> moe_fused(int64_t layer, torch::Tensor x, torc
   const int E = (int)rows.size();
   int nmax = 0;
   for (auto& kv : rows) nmax = std::max(nmax, (int)kv.second.size());
-  auto X = torch::zeros({E, nmax, H}, x.options());
+  auto X = torch::empty({E, nmax, H}, x.options());     // v0.4-a: padding rows are never read
+  std::vector<int> ne_rows;
+  for (auto& kv : rows) ne_rows.push_back((int)kv.second.size());
   uint16_t* Xp = (uint16_t*)X.data_ptr();
   std::vector<torch::Tensor> g, u, d;
   std::vector<int64_t> ids;
@@ -420,7 +437,7 @@ static std::vector<torch::Tensor> moe_fused(int64_t layer, torch::Tensor x, torc
     for (int64_t id : ids) for (int q = 0; q < 15; q++) pk.push_back(L.nx[15 * id + q]);
     Y = expert_mlps_nx_ctx(X, pk, L.g[0].size(0), numa, gcp);
   } else {
-    Y = expert_mlps_ctx(X, g, u, d, numa, gcp)[0];
+    Y = expert_mlps_ctx(X, g, u, d, numa, gcp, &ne_rows)[0];
   }
   const uint16_t* Yp = (const uint16_t*)Y.data_ptr();
   // per token: its K (expert, weight, row-in-expert) in ascending expert id
@@ -490,7 +507,9 @@ static void moe_slots(int64_t layer, torch::Tensor x, torch::Tensor ti, torch::T
   const int E = (int)rows.size();
   int nmax = 0;
   for (auto& kv : rows) nmax = std::max(nmax, (int)kv.second.size());
-  auto X = torch::zeros({E, nmax, H}, x.options());
+  auto X = torch::empty({E, nmax, H}, x.options());     // v0.4-a: padding rows are never read
+  std::vector<int> ne_rows;
+  for (auto& kv : rows) ne_rows.push_back((int)kv.second.size());
   uint16_t* Xp = (uint16_t*)X.data_ptr();
   std::vector<torch::Tensor> g, u, d;
   std::vector<int64_t> ids;
@@ -510,7 +529,7 @@ static void moe_slots(int64_t layer, torch::Tensor x, torch::Tensor ti, torch::T
     for (int64_t id : ids) for (int q = 0; q < 15; q++) pk.push_back(L.nx[15 * id + q]);
     Y = expert_mlps_nx_ctx(X, pk, L.g[0].size(0), numa, gcp);
   } else {
-    Y = expert_mlps_ctx(X, g, u, d, numa, gcp)[0];
+    Y = expert_mlps_ctx(X, g, u, d, numa, gcp, &ne_rows)[0];
   }
   const uint16_t* Yp = (const uint16_t*)Y.data_ptr();
   j = 0;
