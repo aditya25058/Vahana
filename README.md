@@ -105,4 +105,4 @@ Vahana finds the experts by structure (transformers' `experts(hidden, indices, w
 - **Design:** `docs/design/`. **Evidence:** `experiments/` (M0–M5, P1–P4, v0.3-a … v0.5).
 
 ## License
-Apache License 2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE). Copyright 2026 aditya25058.
+Apache License 2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE). Copyright 2026 Aditya Sai Teja B.

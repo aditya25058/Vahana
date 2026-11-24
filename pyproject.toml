@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "Exact, bit-reproducible inference and serving for Mixture-of-Experts models too big for your GPU"
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [{ name = "aditya25058" }]
+authors = [{ name = "Aditya Sai Teja B" }]
 license = { text = "Apache-2.0" }
 keywords = ["llm", "inference", "mixture-of-experts", "moe", "deterministic", "reproducible", "serving"]
 classifiers = [
@@ -33,9 +33,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/aditya25058/Vahana"
-Source = "https://github.com/aditya25058/Vahana"
-Changelog = "https://github.com/aditya25058/Vahana/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/vahana-ai/Vahana"
+Source = "https://github.com/vahana-ai/Vahana"
+Changelog = "https://github.com/vahana-ai/Vahana/blob/main/CHANGELOG.md"
 
 [project.scripts]
 vahana = "vahana.cli:main"

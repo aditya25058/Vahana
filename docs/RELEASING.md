@@ -5,7 +5,7 @@ The wheels are built and checked by CI (`.github/workflows/wheels.yml`): one per
 ## One-time setup (the PyPI account owner)
 1. Log in at https://pypi.org, open *Your account → Publishing*, and add a **pending publisher** (the project does not exist on PyPI yet):
    - PyPI project name: `vahana`
-   - Owner: `aditya25058`, repository: `Vahana`
+   - Owner: `vahana-ai` (the GitHub organization), repository: `Vahana`
    - Workflow name: `wheels.yml`
    - Environment name: `pypi`
 2. On GitHub, open *Settings → Environments* and create an environment named `pypi`. Optionally require your own approval before each publish.
