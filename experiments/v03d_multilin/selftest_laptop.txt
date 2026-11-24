@@ -1,0 +1,3 @@
+selftest cache=-: vahana selftest: 18/18 families give the same bits as the reference machine
+selftest cache=0.5: vahana selftest: 18/18 families give the same bits as the reference machine
+selftest cache=1.0: vahana selftest: 18/18 families give the same bits as the reference machine

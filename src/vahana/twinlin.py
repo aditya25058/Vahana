@@ -58,6 +58,73 @@ def _lin(x, w, y, K, R, BR: tl.constexpr, U: tl.constexpr):
     tl.store(y + t * R + rows, _tree16(acc, BR).to(tl.bfloat16))
 
 
+# v0.3-d: several tokens per program. MT separate accumulators; each weight tile is loaded once and used for MT
+# tokens. Each token's arithmetic is _lin's (16 fma lanes, k ascending, tree16, bf16 RNE), so the bits are the same.
+@triton.jit
+def _acc_t(acc, wv, x, t, n, K, kk, ln):
+    xv = tl.load(x + t * K + kk + ln, mask=(ln < 16) & (t < n), other=0.0).to(tl.float32)
+    return tl.fma(wv, xv[None, :], acc)
+
+
+@triton.jit
+def _st_t(y, t, n, R, rows, acc, BR: tl.constexpr):
+    tl.store(y + t * R + rows, _tree16(acc, BR).to(tl.bfloat16), mask=(rows >= 0) & (t < n))
+
+
+@triton.jit
+def _linm(x, w, y, n, K, R, BR: tl.constexpr, MT: tl.constexpr, U: tl.constexpr):
+    rb = tl.program_id(0).to(tl.int64)
+    t0 = tl.program_id(1).to(tl.int64) * MT
+    rows = rb * BR + tl.arange(0, BR).to(tl.int64)
+    ln = tl.arange(0, 16)
+    a0 = tl.zeros((BR, 16), dtype=tl.float32)
+    a1 = tl.zeros((BR, 16), dtype=tl.float32)
+    a2 = tl.zeros((BR, 16), dtype=tl.float32)
+    a3 = tl.zeros((BR, 16), dtype=tl.float32)
+    a4 = tl.zeros((BR, 16), dtype=tl.float32)
+    a5 = tl.zeros((BR, 16), dtype=tl.float32)
+    a6 = tl.zeros((BR, 16), dtype=tl.float32)
+    a7 = tl.zeros((BR, 16), dtype=tl.float32)
+    for k0 in range(0, K, 16 * U):
+        for u in tl.static_range(U):
+            kk = k0 + 16 * u
+            wv = tl.load(w + rows[:, None] * K + kk + ln[None, :]).to(tl.float32)
+            a0 = _acc_t(a0, wv, x, t0, n, K, kk, ln)
+            if MT >= 2:
+                a1 = _acc_t(a1, wv, x, t0 + 1, n, K, kk, ln)
+            if MT >= 4:
+                a2 = _acc_t(a2, wv, x, t0 + 2, n, K, kk, ln)
+                a3 = _acc_t(a3, wv, x, t0 + 3, n, K, kk, ln)
+            if MT >= 8:
+                a4 = _acc_t(a4, wv, x, t0 + 4, n, K, kk, ln)
+                a5 = _acc_t(a5, wv, x, t0 + 5, n, K, kk, ln)
+                a6 = _acc_t(a6, wv, x, t0 + 6, n, K, kk, ln)
+                a7 = _acc_t(a7, wv, x, t0 + 7, n, K, kk, ln)
+    _st_t(y, t0, n, R, rows, a0, BR)
+    if MT >= 2:
+        _st_t(y, t0 + 1, n, R, rows, a1, BR)
+    if MT >= 4:
+        _st_t(y, t0 + 2, n, R, rows, a2, BR)
+        _st_t(y, t0 + 3, n, R, rows, a3, BR)
+    if MT >= 8:
+        _st_t(y, t0 + 4, n, R, rows, a4, BR)
+        _st_t(y, t0 + 5, n, R, rows, a5, BR)
+        _st_t(y, t0 + 6, n, R, rows, a6, BR)
+        _st_t(y, t0 + 7, n, R, rows, a7, BR)
+
+
+def _cfg_m(n: int, R: int, K: int, MT: int | None = None):
+    """Multi-token launch shape (v03d_multilin bench); every choice gives the same bits."""
+    br, U, _ = _cfg(R, K)
+    if MT is None:
+        MT = 8 if (n >= 32 or (R >= 8192 and n >= 4)) else 2
+    BR = br
+    if MT == 8:
+        while BR * 2 <= min(32, br * 4) and R % (BR * 2) == 0:
+            BR *= 2
+    return MT, BR, U, (1 if MT == 8 else 4)
+
+
 def _cfg(R: int, K: int):
     """Launch shape only (every choice gives the same bits; Phase 30a measured the fast ones)."""
     if K >= 4096:
@@ -72,12 +139,16 @@ def _cfg(R: int, K: int):
     return max(BR, 2), U, nw
 
 
-def gpu_linear(x2: torch.Tensor, W: torch.Tensor) -> torch.Tensor:
+def gpu_linear(x2: torch.Tensor, W: torch.Tensor, MT: int | None = None) -> torch.Tensor:
     n, K = x2.shape
     R = W.shape[0]
-    BR, U, nw = _cfg(R, K)
     y = torch.empty((n, R), dtype=torch.bfloat16, device=x2.device)
-    _lin[(R // BR, n)](x2, W, y, K, R, BR=BR, U=U, num_warps=nw)
+    if n == 1 and MT is None or MT == 1:
+        BR, U, nw = _cfg(R, K)
+        _lin[(R // BR, n)](x2, W, y, K, R, BR=BR, U=U, num_warps=nw)
+    elif n:
+        MT, BR, U, nw = _cfg_m(n, R, K, MT)
+        _linm[(R // BR, triton.cdiv(n, MT))](x2, W, y, n, K, R, BR=BR, MT=MT, U=U, num_warps=nw)
     return y
 
 
