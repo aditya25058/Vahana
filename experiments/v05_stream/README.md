@@ -56,6 +56,8 @@ GPU 0 was held (49.8 GB) by another user's vLLM server running outside the sched
 | RAM-resident OLMoE (all experts on the CPU), mode 2 vs mode 0, alternated (bar ≥ 0.97×) | **0.958×, not met** (60.7 vs 63.3 tok/s; per run: mode 0 62.1 / 64.5, mode 2 57.6 / 63.8). On this box the experts are in-RAM NX packs, so `prefetch_job` returns at once: the gap is run-to-run noise, not prefetch cost |
 | DOCTOR H100 Qwen3-30B: `--measure` within ±20% of a full run | **0.90×, met** (56.4 vs 62.6 tok/s) |
 
+Code note: the H100 runs used the kernel as first pre-registered (prediction width 2K, auto-enable when streaming); the top-K / off-by-default change came after them. It does not affect these H100 results: every run forced the mode explicitly, and on this box prefetch is a no-op (NX packs in RAM). The H100 checkout has since been rebuilt from the committed code.
+
 The first (killed) H100 run had computed on GPU 0 beside that vLLM server: OLMoE there ran 34 tok/s, against 63 on GPU 1 here.
 
 **Overall v0.5:**
