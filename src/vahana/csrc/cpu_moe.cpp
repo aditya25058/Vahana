@@ -1267,6 +1267,20 @@ double read_bw(std::vector<torch::Tensor> packs, int64_t numa) {
   return tot / ms / 1e6;
 }
 
+// v1.1: the CPU half of the GPU expert cache, for overlap. The slots whose expert is NOT GPU-resident (registered
+// resident set) run here into out [N, K, H] (zeros elsewhere); the GPU computes its cached slots meanwhile and combines
+// all K on the GPU with the same operations as moe_cached's combine. Same per-slot arithmetic as moe_cached.
+static void moe_cpu_slots(int64_t layer, torch::Tensor x, torch::Tensor ti, torch::Tensor out, int64_t numa) {
+  const LayerW& L = LAYERS->at(layer);
+  TORCH_CHECK(!L.resident.empty(), "moe_cpu_slots: no resident set registered for layer ", layer);
+  const int N = x.size(0), K = ti.size(1);
+  auto mask = torch::empty({N, K}, torch::TensorOptions().dtype(torch::kUInt8));
+  const int64_t* t0 = ti.data_ptr<int64_t>(); uint8_t* m0 = mask.data_ptr<uint8_t>();
+  for (int i = 0; i < N * K; i++) m0[i] = L.resident[(size_t)t0[i]] ? 0 : 1;
+  prefetch_job(layer, L, (const uint16_t*)x.data_ptr(), N, (int)x.size(1), t0, K, m0);
+  moe_slots(layer, x, ti, mask, out, numa);
+}
+
 // ============================================================================ M0: host-node jobs
 namespace {
 typedef int (*LaunchHostFn)(void* stream, void (*fn)(void*), void* data);
@@ -1289,6 +1303,11 @@ void host_cb_inner(void* p) {
   if (j->kind == 1) {                                                                  // ti holds W
     try { submit_linear(j->x, j->ti, j->out); wait_done(); }
     catch (const std::exception& e) { std::fprintf(stderr, "vahana host linear failed: %s\n", e.what()); std::fflush(stderr); std::abort(); }
+    return;
+  }
+  if (j->kind == 4) {                                                                  // v1.1 CPU slots only
+    try { moe_cpu_slots(j->layer, j->x, j->ti, j->out, j->numa); }
+    catch (const std::exception& e) { std::fprintf(stderr, "vahana host cpu-slots job failed: %s\n", e.what()); std::fflush(stderr); std::abort(); }
     return;
   }
   if (j->kind == 3) {                                                                  // v0.3 GPU expert cache
@@ -1340,6 +1359,7 @@ void run_job_direct(HostJob* j) {                  // the same work as host_cb, 
   if (j->noop) return;
   if (j->kind == 1) { j->out.copy_(linear_twin(j->x, j->ti)); return; }
   if (j->kind == 3) { moe_cached(j->layer, j->x, j->ti, j->tw, j->mk, j->yg, j->out, j->numa); return; }
+  if (j->kind == 4) { moe_cpu_slots(j->layer, j->x, j->ti, j->out, j->numa); return; }
   if (j->kind == 2) {
     const int64_t n = j->x.numel(), H = j->ti.size(1);
     const int64_t* ids = j->x.data_ptr<int64_t>();
@@ -1387,6 +1407,11 @@ void mailbox_start(torch::Tensor req, torch::Tensor done) {
 int64_t make_host_cached(int64_t layer, torch::Tensor x, torch::Tensor ti, torch::Tensor tw, torch::Tensor mask,
                          torch::Tensor yg, torch::Tensor out, int64_t numa) {
   HostJob* j = new HostJob{layer, x, ti, tw, out, numa, false}; j->kind = 3; j->mk = mask; j->yg = yg;
+  HOST_JOBS->push_back(j); return (int64_t)HOST_JOBS->size() - 1;
+}
+int64_t make_host_cpu_slots(int64_t layer, torch::Tensor x, torch::Tensor ti, torch::Tensor out, int64_t numa) {
+  TORCH_CHECK(out.dim() == 3 && out.is_contiguous() && ti.scalar_type() == torch::kLong);
+  HostJob* j = new HostJob{layer, x, ti, torch::Tensor(), out, numa, false}; j->kind = 4;
   HOST_JOBS->push_back(j); return (int64_t)HOST_JOBS->size() - 1;
 }
 int64_t make_host_linear(torch::Tensor W, torch::Tensor x, torch::Tensor out) {
@@ -1618,6 +1643,10 @@ VH_API int vh_submit_moe_cached(int64_t layer, const vh_t* x, const vh_t* ti, co
 VH_API int64_t vh_make_host_cached(int64_t layer, const vh_t* x, const vh_t* ti, const vh_t* tw, const vh_t* mask,
                                    const vh_t* yg, const vh_t* out, int64_t numa) {
   try { return make_host_cached(layer, T_(x), T_(ti), T_(tw), T_(mask), T_(yg), T_(out), numa); }
+  catch (const std::exception& e) { g_err = e.what(); return -1; }
+}
+VH_API int64_t vh_make_host_cpu_slots(int64_t layer, const vh_t* x, const vh_t* ti, const vh_t* out, int64_t numa) {
+  try { return make_host_cpu_slots(layer, T_(x), T_(ti), T_(out), numa); }
   catch (const std::exception& e) { g_err = e.what(); return -1; }
 }
 VH_API vh_list* vh_wait_done() { VH_LIST(L_(wait_done())) }

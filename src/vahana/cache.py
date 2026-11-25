@@ -222,6 +222,14 @@ class CachedExperts(nn.Module):
         from . import runtime
         x = hidden_states.to(torch.bfloat16).contiguous()
         ti = top_k_index.to(torch.int64).contiguous()
+        if runtime.overlap_on():
+            # v1.1: post the CPU slots first, run the cached slots on the GPU while the CPU works, then combine on the
+            # GPU with the CPU kernel's combine operations (cache.combine). Same bits as the sequential path below.
+            hs = runtime.cpu_slots_post(self.spec.slot, x, ti, self.numa)
+            y_gpu = gpu_slots(x, ti, self.lut, self.G, self.U, self.D)
+            y_cpu = runtime.cpu_slots_wait(hs, x.device)
+            y = torch.where((self.lut[ti] >= 0).unsqueeze(-1), y_gpu, y_cpu)
+            return combine(y, ti, runtime.weights_arg(top_k_weights)).to(hidden_states.dtype)
         y_gpu = gpu_slots(x, ti, self.lut, self.G, self.U, self.D)       # cached slots (zeros elsewhere)
         # The CPU job runs the other slots and combines all K (nothing but one copy follows the CUDA-graph host node:
         # kernels queued behind a host node are expensive)

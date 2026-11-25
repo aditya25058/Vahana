@@ -66,6 +66,35 @@ def _mb_rt(counter, req, done, job, d0, h0, n0, d1, h1, n1, d2, h2, n2, d3, h3, 
     _mb_copy(oh, od, no, BLK)
 
 
+@triton.jit
+def _mb_post(counter, req, job, d0, h0, n0, d1, h1, n1, BLK: tl.constexpr):
+    """v1.1: the first half of a round trip: inputs device -> pinned host, publish seq for `job`; does not wait, so the
+    GPU goes on with other work while the CPU runs the job (_mb_wait collects it)."""
+    _mb_copy(d0, h0, n0, BLK)
+    _mb_copy(d1, h1, n1, BLK)
+    seq = tl.atomic_add(counter + job, 1) + 1
+    tl.atomic_xchg(req + job, seq, sem="release", scope="sys")
+
+
+@triton.jit
+def _mb_wait(counter, done, job, oh, od, no, BLK: tl.constexpr):
+    """v1.1: the second half: poll until the CPU thread stores done[job] = seq (the seq _mb_post published), acquire,
+    then output pinned host -> device."""
+    seq = tl.load(counter + job, volatile=True)
+    cur = tl.load(done + job, volatile=True)
+    while cur != seq:
+        cur = tl.load(done + job, volatile=True)
+    tl.atomic_add(done + job, 0, sem="acquire", scope="sys")
+    _mb_copy(oh, od, no, BLK)
+
+
+def overlap_on() -> bool:
+    """v1.1: GPU-cached and CPU experts of a layer run at the same time (graph decode, mailbox, kernel support).
+    VAHANA_OVERLAP=0 restores the sequential v0.3 path; both give the same bits."""
+    return (os.environ.get("VAHANA_OVERLAP", "1") != "0" and mailbox_on() and GRAPH["on"]
+            and getattr(_hy.ext(), "has_cpu_slots", False))
+
+
 def mailbox_on() -> bool:
     import os
     return os.environ.get("VAHANA_MAILBOX", "1") != "0"
@@ -169,6 +198,49 @@ def moe_cached(slot: int, x: torch.Tensor, ti: torch.Tensor, tw: torch.Tensor, y
     out = torch.empty((N, H), dtype=torch.bfloat16, device=x.device)
     roundtrip(job, [(x, xb), (ti, tib), (tw, twb), (yg, ygb)], ob, out)
     return out
+
+
+def _mb_init():
+    k = _hy.ext()
+    if not _MB:
+        dev = torch.device("cuda", torch.cuda.current_device())
+        _MB["counter"] = torch.zeros(_MAXJ, dtype=torch.int32, device=dev)
+        _MB["req"] = torch.zeros(_MAXJ, dtype=torch.int32).pin_memory()
+        _MB["done"] = torch.zeros(_MAXJ, dtype=torch.int32).pin_memory()
+        k.mailbox_start(_MB["req"], _MB["done"])
+
+
+def cpu_slots_post(slot: int, x: torch.Tensor, ti: torch.Tensor, numa: int) -> list:
+    """v1.1 (graph only): start the CPU part of a GPU-cached layer: the slots whose expert is not GPU-resident, computed
+    by the CPU kernel into [N, K, H] (zeros elsewhere). Returns handles for cpu_slots_wait; the GPU is free meanwhile."""
+    k = _hy.ext()
+    _mb_init()
+    N, H = x.shape
+    K = ti.shape[1]
+    hs = []
+    for s0 in range(0, N, MOE_ROWS):                  # one job per MOE_ROWS-row chunk (rows are independent)
+        n = min(MOE_ROWS, N - s0)
+        key = ("cslots", slot, n, K, s0)
+        if key not in _BUF:
+            b = (_pin((n, H), torch.bfloat16), _pin((n, K), torch.int64), _pin((n, K, H), torch.bfloat16))
+            _BUF[key] = b + (k.make_host_cpu_slots(slot, b[0], b[1], b[2], numa),)
+        xb, tib, yb, job = _BUF[key]
+        assert job < _MAXJ, "too many host jobs for the mailbox"
+        dv, hv = _words(x[s0:s0 + n].to(torch.bfloat16).contiguous()), _words(xb)
+        tv, thv = _words(ti[s0:s0 + n].to(torch.int64).contiguous()), _words(tib)
+        _mb_post[(1,)](_MB["counter"], _MB["req"], job, dv, hv, dv.numel(), tv, thv, tv.numel(), BLK=1024)
+        hs.append((job, yb, n))
+    return hs
+
+
+def cpu_slots_wait(hs: list, device) -> torch.Tensor:
+    outs = []
+    for job, yb, n in hs:
+        out = torch.empty(tuple(yb.shape), dtype=torch.bfloat16, device=device)
+        ov, hov = _words(out), _words(yb)
+        _mb_wait[(1,)](_MB["counter"], _MB["done"], job, hov, ov, ov.numel(), BLK=1024)
+        outs.append(out)
+    return outs[0] if len(outs) == 1 else torch.cat(outs)
 
 
 def cpu_linear(W: torch.Tensor, x2: torch.Tensor, _chunk: int = 0) -> torch.Tensor:

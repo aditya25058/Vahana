@@ -104,6 +104,9 @@ class Kernel:
         for name, (res, args) in (opt.items() if self.has_prefetch else ()):
             f = getattr(L, name)
             f.restype, f.argtypes = res, args
+        self.has_cpu_slots = hasattr(L, "vh_make_host_cpu_slots")                                       # v1.1
+        if self.has_cpu_slots:
+            L.vh_make_host_cpu_slots.restype, L.vh_make_host_cpu_slots.argtypes = _I64, [_I64, _P, _P, _P, _I64]
         if L.vh_abi() != 3:
             raise RuntimeError(f"{path}: kernel ABI {L.vh_abi()}, this vahana expects 3 (rebuild: csrc/build.py)")
         self._launch_set = False
@@ -272,6 +275,13 @@ class Kernel:
         r = self.lib.vh_make_host_job(layer, _desc(x), _desc(ti), _desc(tw), _desc(out), numa, int(noop))
         if r < 0:
             raise self._err("make_host_job")
+        return r
+
+    def make_host_cpu_slots(self, layer, x, ti, out, numa):
+        """v1.1: a host job running the non-resident slots of `layer` into out [N, K, H] (zeros elsewhere)."""
+        r = self.lib.vh_make_host_cpu_slots(layer, _desc(x), _desc(ti), _desc(out), numa)
+        if r < 0:
+            raise self._err("make_host_cpu_slots")
         return r
 
     def make_host_cached(self, layer, x, ti, tw, mask, yg, out, numa):

@@ -2,6 +2,13 @@
 
 Each version's evidence is in `experiments/` (pre-registered bars, run logs, raw results). Missed bars are recorded there too.
 
+## Unreleased
+- **GPU-cached and CPU experts now run at the same time.** Previously the GPU's cached experts ran first and the CPU part ran after.
+  - Qwen3-30B on an H100 with a 16 GB expert cache: median decode 13.2 → 18.0 tok/s, on a shared and noisy machine; about 1.16× at matched load.
+  - Same bits. `VAHANA_OVERLAP=0` restores the old path.
+  - No gain when the cache holds little, for example a 4 GB laptop GPU.
+  - Details: [experiments/v11_overlap](experiments/v11_overlap/README.md).
+
 ## 1.0.1 (2026-11-25)
 - The macOS wheel is tagged `macosx_11_0_arm64` instead of `universal2`. It only ever contained Apple-silicon kernels, so on an Intel Mac pip would install 1.0.0 and its kernel would fail to load. Intel Macs can build from the source distribution.
 
