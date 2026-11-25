@@ -216,6 +216,8 @@ class CachedExperts(nn.Module):
     @staticmethod
     def supported(base) -> bool:
         s = base.spec
+        if getattr(base, "q4", False):                   # v1.2: no GPU cache for twin-q4 experts yet
+            return False
         return s.act == "silu_glu" and not s.bias and base.shared is None and s.H % 16 == 0 and s.I % 16 == 0
 
     def forward(self, hidden_states, top_k_index, top_k_weights):

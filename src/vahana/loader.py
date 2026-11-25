@@ -213,6 +213,9 @@ def load(model_dir: str, gpu_budget_gb: float | None = None, device: str = "cuda
     t0 = time.time()
     dev = torch.device(device)
     cfg = AutoConfig.from_pretrained(model_dir)
+    qcfg = getattr(cfg, "quantization_config", None)
+    if qcfg is not None:                       # v1.2: Vahana reads quantized tensors itself (twin-q4 experts)
+        del cfg.quantization_config
     with init_empty_weights(include_buffers=False):
         model = AutoModelForCausalLM.from_config(cfg, dtype=torch.bfloat16)
     specs = inspect(model)
@@ -236,10 +239,49 @@ def load(model_dir: str, gpu_budget_gb: float | None = None, device: str = "cuda
         if k.startswith("model.language_model."):
             ck.setdefault("model." + k[len("model.language_model."):], k)
 
+    from . import q4 as _q4
+
     def get_param(n):
+        if n not in ck and n + "_packed" in ck:       # v1.2: pack-quantized non-expert weight -> bf16(q * s)
+            return _q4.dequant_compressed(h.get_tensor(ck[n + "_packed"]), h.get_tensor(ck[n + "_scale"])).to(
+                torch.bfloat16)
         if n not in ck:
             raise KeyError(f"no checkpoint tensor for {n}")
         return h.get_tensor(ck[n])
+
+    q4root = []
+
+    def q4_layer_file(L):
+        """v1.2: twin-q4 records of every expert of layer L, converted once from the pack-quantized checkpoint into
+        ~/.cache/vahana/q4/<model>/layer<L>.safetensors and then memory-mapped read-only (paged by the OS like the
+        bf16 checkpoint views; converting into RAM would need the whole expert set resident)."""
+        import hashlib
+        import os
+        if not q4root:
+            idx = open(os.path.join(model_dir, "model.safetensors.index.json"), "rb").read()
+            q4root.append(os.path.join(os.path.expanduser("~"), ".cache", "vahana", "q4",
+                                       hashlib.sha256(idx).hexdigest()[:16]))
+            os.makedirs(q4root[0], exist_ok=True)
+        path = os.path.join(q4root[0], f"layer{L}.safetensors")
+        if not os.path.exists(path):
+            from safetensors.torch import save_file
+            pre = f"model.layers.{L}.mlp.experts."
+            out = {}
+            for kk in ck:
+                if kk.startswith(pre) and kk.endswith(".weight_packed"):
+                    base = kk[: -len("_packed")]
+                    out[base[len(pre):]] = _q4.from_compressed(h.get_tensor(ck[kk]), h.get_tensor(ck[base + "_scale"]))
+            save_file(out, path + ".tmp")
+            os.replace(path + ".tmp", path)
+        return path
+
+    def get_expert(k):
+        """One expert matrix: a bf16 view, or (v1.2) twin-q4 records (memory-mapped cache) for a pack-quantized one."""
+        if k not in ck and k + "_packed" in ck:
+            from .loading import ShardMap
+            L = int(k.split(".layers.", 1)[1].split(".", 1)[0])
+            return ShardMap.get(q4_layer_file(L)).view_tensor(k.split(".mlp.experts.", 1)[1])
+        return h.get_tensor(ck[k])
 
     def get_experts(s):
         got = {}
@@ -250,7 +292,7 @@ def load(model_dir: str, gpu_budget_gb: float | None = None, device: str = "cuda
             if not pname.endswith(tail):
                 continue
             base = pname[: -len(tail)]
-            got[leaf] = [[h.get_tensor(ck[base + (p if p.startswith(".") else "." + p).replace("*", str(e))])
+            got[leaf] = [[get_expert(base + (p if p.startswith(".") else "." + p).replace("*", str(e)))
                           for e in range(s.E)] for p in src]
         if not got and f"{s.path}.gate_up_proj" in ck and f"{s.path}.down_proj" in ck:
             # v0.4-c: fused 3-D expert tensors as the module stores them: gate_up_proj [E, 2I, H] (gate = rows :I,

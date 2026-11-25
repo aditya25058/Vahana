@@ -60,7 +60,8 @@ class VahanaExperts(nn.Module):
         below margin_gb + 8."""
         super().__init__()
         self.spec, self.numa = spec, numa
-        cpu = lambda ts: [t if (t.device.type == "cpu" and t.dtype == torch.bfloat16 and t.is_contiguous())
+        cpu = lambda ts: [t if (t.device.type == "cpu" and t.dtype in (torch.bfloat16, torch.uint8) and t.is_contiguous())
+                          else t.to("cpu").contiguous() if t.dtype == torch.uint8      # v1.2: twin-q4 records
                           else t.to("cpu", torch.bfloat16).contiguous() for t in ts]
         g, u, d, bg, bu, bd = weights if weights is not None else expert_weights(spec, ex)
         self.g, self.u, self.d = cpu(g), cpu(u), cpu(d)
@@ -77,7 +78,8 @@ class VahanaExperts(nn.Module):
         mats = [w for trip in zip(self.g, self.u, self.d) for w in trip] + (self.shared or [])
         need_gb = sum(w.numel() * 2 for w in mats) * 0.76 / 2**30
         nx_fast = getattr(k, "nx_fast", lambda: True)()      # portable builds: raw BF16 is faster than NX12
-        self.nx = nx and nx_fast and spec.H % 64 == 0 and spec.I % 64 == 0 and \
+        self.q4 = self.g[0].dtype == torch.uint8           # v1.2: twin-q4 experts (no NX12 for them)
+        self.nx = nx and nx_fast and not self.q4 and spec.H % 64 == 0 and spec.I % 64 == 0 and \
             _hy.mem_available_gb() - need_gb >= margin_gb + 8
         if self.nx:
             pk = lambda W: _hy.nx_pack(W, place) if place else list(k.encode_nx(W))

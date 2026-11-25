@@ -3,6 +3,11 @@
 Each version's evidence is in `experiments/` (pre-registered bars, run logs, raw results). Missed bars are recorded there too.
 
 ## Unreleased
+- **Exact 4-bit experts (twin-q4).** Vahana runs 4-bit MoE checkpoints (compressed-tensors pack-quantized int4, e.g. GPTQ w4a16) with identical bits on every CPU instruction set and machine.
+  - Qwen3-30B-A3B w4a16 on a 4 GB laptop GPU with 15 GB RAM: 0.96 → 4.66 tok/s, disk traffic per token 1.8 → 0.09 GB.
+  - Identical output hashes on an Intel laptop (Windows, AVX2) and an AMD EPYC server (Linux, AVX-512).
+  - Quality is the checkpoint's own.
+  - Details: [experiments/v12_q4](experiments/v12_q4/README.md).
 - **GPU-cached and CPU experts now run at the same time.** Previously the GPU's cached experts ran first and the CPU part ran after.
   - Qwen3-30B on an H100 with a 16 GB expert cache: median decode 13.2 → 18.0 tok/s, on a shared and noisy machine; about 1.16× at matched load.
   - Same bits. `VAHANA_OVERLAP=0` restores the old path.

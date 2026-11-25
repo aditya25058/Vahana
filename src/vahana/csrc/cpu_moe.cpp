@@ -65,6 +65,7 @@ static inline uint16_t f2bf(float f) {
 #endif
 #if !defined(VH_FORCE_SCALAR) && defined(__AVX512F__)
 #define VH_ISA "avx512"
+#define VH_ISA_AVX512 1
 typedef __m512 V16;
 static inline V16 v_zero() { return _mm512_setzero_ps(); }
 static inline V16 v_loadf(const float* p) { return _mm512_loadu_ps(p); }
@@ -76,6 +77,7 @@ static inline V16 v_fma(V16 a, V16 b, V16 c) { return _mm512_fmadd_ps(a, b, c); 
 static inline void v_store(float* a, V16 v) { _mm512_storeu_ps(a, v); }
 #elif !defined(VH_FORCE_SCALAR) && defined(__AVX2__) && defined(__FMA__)
 #define VH_ISA "avx2"
+#define VH_ISA_AVX2 1
 struct V16 { __m256 lo, hi; };                      // lanes 0-7, 8-15
 static inline V16 v_zero() { return {_mm256_setzero_ps(), _mm256_setzero_ps()}; }
 static inline V16 v_loadf(const float* p) { return {_mm256_loadu_ps(p), _mm256_loadu_ps(p + 8)}; }
@@ -172,6 +174,62 @@ static inline void row_dots4_n1(const uint16_t* w0, const uint16_t* w1, const ui
   }
   out[0] = tree16(a0); out[1] = tree16(a1); out[2] = tree16(a2); out[3] = tree16(a3);
 }
+// v1.2 twin-q4: 4-bit expert weights with Vahana's twin arithmetic. A weight row is a record of K/2 nibble bytes
+// followed by K/G bf16 scales. In each 32-weight block, byte b holds k = b (low nibble) and k = b + 16 (high nibble),
+// both stored as q + 8 (q in [-8, 7]). The weight value q * s is exact in fp32 (<= 12 significant bits) and its product
+// with a bf16 activation is exact (<= 20 bits), so the dot is the twin rule unchanged: 16 lanes, lane l takes
+// k = 16j + l in ascending j with fma, tree16, and bf16 rounding by the caller. Identical bits on every ISA and on the GPU.
+static inline void v_q4_pair(const uint8_t* b, float s, V16& lo, V16& hi) {
+#if defined(VH_ISA_AVX512)
+  const __m512i v = _mm512_cvtepu8_epi32(_mm_loadu_si128((const __m128i*)b));
+  const __m512i e8 = _mm512_set1_epi32(8), m4 = _mm512_set1_epi32(15);
+  const __m512 sv = _mm512_set1_ps(s);
+  lo = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_sub_epi32(_mm512_and_si512(v, m4), e8)), sv);
+  hi = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_sub_epi32(_mm512_srli_epi32(v, 4), e8)), sv);
+#elif defined(VH_ISA_AVX2)
+  const __m128i v = _mm_loadu_si128((const __m128i*)b), m4 = _mm_set1_epi8(0x0F);
+  const __m128i bl = _mm_and_si128(v, m4), bh = _mm_and_si128(_mm_srli_epi16(v, 4), m4);
+  const __m256i e8 = _mm256_set1_epi32(8);
+  const __m256 sv = _mm256_set1_ps(s);
+  lo.lo = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(_mm256_cvtepu8_epi32(bl), e8)), sv);
+  lo.hi = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(_mm256_cvtepu8_epi32(_mm_srli_si128(bl, 8)), e8)), sv);
+  hi.lo = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(_mm256_cvtepu8_epi32(bh), e8)), sv);
+  hi.hi = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(_mm256_cvtepu8_epi32(_mm_srli_si128(bh, 8)), e8)), sv);
+#else
+  float a[16], c[16];
+  for (int i = 0; i < 16; i++) { a[i] = (float)((int)(b[i] & 15) - 8) * s; c[i] = (float)((int)(b[i] >> 4) - 8) * s; }
+  lo = v_loadf(a); hi = v_loadf(c);
+#endif
+}
+static inline void row_dots_q4(const uint8_t* rec, const float* X, int n, int K, int G, float* out) {
+  const uint16_t* sc = (const uint16_t*)(rec + K / 2);
+  V16 acc[16];
+  for (int t = 0; t < n; t++) acc[t] = v_zero();
+  for (int k0 = 0; k0 < K; k0 += 32) {
+    V16 wl, wh;
+    v_q4_pair(rec + k0 / 2, bf2f(sc[k0 / G]), wl, wh);
+    for (int t = 0; t < n; t++) {
+      acc[t] = v_fma(wl, v_loadf(X + (size_t)t * K + k0), acc[t]);
+      acc[t] = v_fma(wh, v_loadf(X + (size_t)t * K + k0 + 16), acc[t]);
+    }
+  }
+  for (int t = 0; t < n; t++) out[t] = tree16(acc[t]);
+}
+static inline void row_dots4_n1_q4(const uint8_t* r0, const uint8_t* r1, const uint8_t* r2, const uint8_t* r3,
+                                   const float* X, int K, int G, float* out) {
+  const uint8_t* R[4] = {r0, r1, r2, r3};
+  V16 a[4] = {v_zero(), v_zero(), v_zero(), v_zero()};
+  for (int k0 = 0; k0 < K; k0 += 32) {
+    const V16 x0 = v_loadf(X + k0), x1 = v_loadf(X + k0 + 16);
+    for (int i = 0; i < 4; i++) {
+      V16 wl, wh;
+      v_q4_pair(R[i] + k0 / 2, bf2f(((const uint16_t*)(R[i] + K / 2))[k0 / G]), wl, wh);
+      a[i] = v_fma(wl, x0, a[i]);
+      a[i] = v_fma(wh, x1, a[i]);
+    }
+  }
+  for (int i = 0; i < 4; i++) out[i] = tree16(a[i]);
+}
 static int node_of(const void* p) {
   void* page = (void*)((uintptr_t)p & ~(uintptr_t)4095);
   int status = -1;
@@ -216,6 +274,12 @@ std::vector<torch::Tensor> expert_mlps_ctx(torch::Tensor x, std::vector<torch::T
   const double T0 = now_ms();
   const int E = x.size(0), n = x.size(1), H = x.size(2), I = gate[0].size(0);
   TORCH_CHECK(n <= 256 && H % 16 == 0 && I % 16 == 0);   // v0.4-a: up to 256 rows per expert, in 16-row sub-blocks
+  // v1.2: uint8 weights = twin-q4 row records (see row_dots_q4); rbH / rbI = bytes per row, GH / GI = group sizes
+  const bool q4 = gate[0].scalar_type() == torch::kUInt8;
+  const size_t rbH = q4 ? (size_t)gate[0].size(1) : 0, rbI = q4 ? (size_t)down[0].size(1) : 0;
+  const int GH = q4 ? (int)(2 * (size_t)H / (rbH - H / 2)) : 0, GI = q4 ? (int)(2 * (size_t)I / (rbI - I / 2)) : 0;
+  TORCH_CHECK(!q4 || (H % 32 == 0 && I % 32 == 0 && rbH == (size_t)H / 2 + 2 * (size_t)H / GH && rbI == (size_t)I / 2 + 2 * (size_t)I / GI),
+              "twin-q4: bad row records");
   auto rows_of = [&](int e) { return ne ? (*ne)[e] : n; };
   std::unique_ptr<float[]> xf_(new float[(size_t)E * n * H]), hf_(new float[(size_t)E * n * I]);
   float* xf = xf_.get();
@@ -260,18 +324,23 @@ std::vector<torch::Tensor> expert_mlps_ctx(torch::Tensor x, std::vector<torch::T
             if (pass == 0) {
               const uint16_t* G = (const uint16_t*)gate[e].data_ptr();
               const uint16_t* U = (const uint16_t*)up[e].data_ptr();
+              const uint8_t* Gq = (const uint8_t*)gate[e].data_ptr();
+              const uint8_t* Uq = (const uint8_t*)up[e].data_ptr();
               const float* xe = &xf[(size_t)e * H];
               for (int r = b * 16; r < b * 16 + 16; r += 2) {
-                row_dots4_n1(G + (size_t)r * H, G + (size_t)(r + 1) * H, U + (size_t)r * H, U + (size_t)(r + 1) * H, xe, H, o);
+                if (q4) row_dots4_n1_q4(Gq + r * rbH, Gq + (r + 1) * rbH, Uq + r * rbH, Uq + (r + 1) * rbH, xe, H, GH, o);
+                else row_dots4_n1(G + (size_t)r * H, G + (size_t)(r + 1) * H, U + (size_t)r * H, U + (size_t)(r + 1) * H, xe, H, o);
                 for (int q = 0; q < 2; q++) {
                   hf[(size_t)e * I + r + q] = act_h(ctx, e, r + q, o[q], o[2 + q]);
                 }
               }
             } else {
               const uint16_t* Dw = (const uint16_t*)down[e].data_ptr();
+              const uint8_t* Dq = (const uint8_t*)down[e].data_ptr();
               const float* he = &hf[(size_t)e * I];
               for (int r = b * 16; r < b * 16 + 16; r += 4) {
-                row_dots4_n1(Dw + (size_t)r * I, Dw + (size_t)(r + 1) * I, Dw + (size_t)(r + 2) * I, Dw + (size_t)(r + 3) * I, he, I, o);
+                if (q4) row_dots4_n1_q4(Dq + r * rbI, Dq + (r + 1) * rbI, Dq + (r + 2) * rbI, Dq + (r + 3) * rbI, he, I, GI, o);
+                else row_dots4_n1(Dw + (size_t)r * I, Dw + (size_t)(r + 1) * I, Dw + (size_t)(r + 2) * I, Dw + (size_t)(r + 3) * I, he, I, o);
                 for (int q = 0; q < 4; q++) yp[(size_t)e * H + r + q] = down_o(ctx, e, r + q, o[q]);
               }
             }
@@ -284,13 +353,19 @@ std::vector<torch::Tensor> expert_mlps_ctx(torch::Tensor x, std::vector<torch::T
             for (int t0 = 0; t0 < ne_e; t0 += 16) {
               const int m = std::min(16, ne_e - t0);
               if (pass == 0) {
-                row_dots((const uint16_t*)gate[e].data_ptr() + (size_t)r * H, &xf[((size_t)e * n + t0) * H], m, H, g);
-                row_dots((const uint16_t*)up[e].data_ptr() + (size_t)r * H, &xf[((size_t)e * n + t0) * H], m, H, u);
+                if (q4) {
+                  row_dots_q4((const uint8_t*)gate[e].data_ptr() + r * rbH, &xf[((size_t)e * n + t0) * H], m, H, GH, g);
+                  row_dots_q4((const uint8_t*)up[e].data_ptr() + r * rbH, &xf[((size_t)e * n + t0) * H], m, H, GH, u);
+                } else {
+                  row_dots((const uint16_t*)gate[e].data_ptr() + (size_t)r * H, &xf[((size_t)e * n + t0) * H], m, H, g);
+                  row_dots((const uint16_t*)up[e].data_ptr() + (size_t)r * H, &xf[((size_t)e * n + t0) * H], m, H, u);
+                }
                 for (int t = 0; t < m; t++) {
                   hf[((size_t)e * n + t0 + t) * I + r] = act_h(ctx, e, r, g[t], u[t]);
                 }
               } else {
-                row_dots((const uint16_t*)down[e].data_ptr() + (size_t)r * I, &hf[((size_t)e * n + t0) * I], m, I, d);
+                if (q4) row_dots_q4((const uint8_t*)down[e].data_ptr() + r * rbI, &hf[((size_t)e * n + t0) * I], m, I, GI, d);
+                else row_dots((const uint16_t*)down[e].data_ptr() + (size_t)r * I, &hf[((size_t)e * n + t0) * I], m, I, d);
                 for (int t = 0; t < m; t++) yp[((size_t)e * n + t0 + t) * H + r] = down_o(ctx, e, r, d[t]);
               }
             }
@@ -502,6 +577,9 @@ void register_shared(int64_t layer, torch::Tensor g, torch::Tensor u, torch::Ten
 torch::Tensor expert_mlps_nx(torch::Tensor x, std::vector<torch::Tensor> packs, int64_t I_, int64_t numa);
 torch::Tensor expert_mlps_nx_ctx(torch::Tensor x, std::vector<torch::Tensor> packs, int64_t I_, int64_t numa,
                                  const ActCtx* ctx);
+static void experts_q4_fused(const std::vector<const torch::Tensor*>& Gt, const std::vector<const torch::Tensor*>& Ut,
+                             const std::vector<const torch::Tensor*>& Dt, int I, const float* xf, int H,
+                             const std::vector<uint16_t*>& y, int numa, const ActCtx* ctx);
 static void experts_nx_fused(const std::vector<const torch::Tensor*>& P, const std::vector<int>& Is, const float* xf,
                              int H, const std::vector<uint16_t*>& y, int numa, const ActCtx* ctx);
 static std::vector<torch::Tensor> moe_fused(int64_t layer, torch::Tensor x, torch::Tensor ti, torch::Tensor tw,
@@ -515,6 +593,37 @@ static std::vector<torch::Tensor> moe_fused(int64_t layer, torch::Tensor x, torc
   const uint16_t* xp = (const uint16_t*)x.data_ptr();
   prefetch_job(layer, L, xp, N, H, tip, K, nullptr);           // v0.5: hints only (no-op unless enabled)
   static const bool fuse = [] { const char* v = std::getenv("VAHANA_FUSE"); return !(v && v[0] == '0'); }();
+  const bool q4L = !L.g.empty() && L.g[0].scalar_type() == torch::kUInt8;
+  if (fuse && N == 1 && q4L && L.sg.empty()) {
+    // v1.2: twin-q4 decode, one region; the same combine as below.
+    std::vector<std::pair<int64_t, int>> ek;
+    for (int k = 0; k < K; k++) ek.push_back({tip[k], k});
+    std::sort(ek.begin(), ek.end());
+    const int I = L.g[0].size(0);
+    std::vector<const torch::Tensor*> Gt, Ut, Dt;
+    for (int q = 0; q < K; q++) { Gt.push_back(&L.g[ek[q].first]); Ut.push_back(&L.u[ek[q].first]); Dt.push_back(&L.d[ek[q].first]); }
+    thread_local std::vector<float> xq; thread_local std::vector<uint16_t> yq;
+    xq.resize(H); yq.resize((size_t)K * H);
+    for (int h = 0; h < H; h++) xq[h] = bf2f(xp[h]);
+    std::vector<uint16_t*> yv(K);
+    for (int j = 0; j < K; j++) yv[j] = yq.data() + (size_t)j * H;
+    ActCtx fc; const ActCtx* fcp = nullptr;
+    if (layer_has_ctx(L)) {
+      std::vector<int64_t> v; for (int q = 0; q < K; q++) v.push_back(ek[q].first);
+      build_ctx(L, v, false, fc); fcp = &fc;
+    }
+    experts_q4_fused(Gt, Ut, Dt, I, xq.data(), H, yv, (int)numa, fcp);
+    uint16_t* op = (uint16_t*)out.data_ptr();
+    std::vector<float> acc(H);
+    for (int q = 0; q < K; q++) {
+      const uint16_t* yr = yv[q];
+      const float w = twf ? twfp[ek[q].second] : bf2f(twp[ek[q].second]);
+      if (q == 0) { for (int h = 0; h < H; h++) acc[h] = bf2f(yr[h]) * w; }
+      else { for (int h = 0; h < H; h++) { float p = bf2f(yr[h]) * w; acc[h] = acc[h] + p; } }
+    }
+    for (int h = 0; h < H; h++) op[h] = f2bf(acc[h]);
+    return {out};
+  }
   if (fuse && N == 1 && !L.nx.empty() && (L.sg.empty() || !L.snx.empty()) && H % 64 == 0) {
     // Phase 41: routed + shared in one region; same per-row arithmetic and the same combine as below.
     std::vector<std::pair<int64_t, int>> ek;                  // (expert, k) ascending expert id
@@ -1226,6 +1335,61 @@ static void experts_nx_fused(const std::vector<const torch::Tensor*>& P, const s
         for (int r = b * 16; r < b * 16 + 16; r += 4) {
           const NXm* m4[4] = {&D[j], &D[j], &D[j], &D[j]}; const int r4[4] = {r, r + 1, r + 2, r + 3};
           dots4_nx(m4, r4, hj, o);
+          for (int q = 0; q < 4; q++) y[j][r + q] = down_o(ctx, j, r + q, o[q]);
+        }
+      }
+    }
+  });
+}
+
+// v1.2: decode (one token) over twin-q4 experts in one thread-team region, like experts_nx_fused: gate/up rows feed
+// the activation, and an expert's down rows start as soon as its hidden vector is complete (per-expert counters, no
+// barrier). Same per-row arithmetic as expert_mlps_ctx's q4 branch (row_dots4_n1_q4), so the same bits.
+static void experts_q4_fused(const std::vector<const torch::Tensor*>& Gt, const std::vector<const torch::Tensor*>& Ut,
+                             const std::vector<const torch::Tensor*>& Dt, int I, const float* xf, int H,
+                             const std::vector<uint16_t*>& y, int numa, const ActCtx* ctx) {
+  const int E = (int)Gt.size();
+  const size_t rbH = (size_t)Gt[0]->size(1), rbI = (size_t)Dt[0]->size(1);
+  const int GH = (int)(2 * (size_t)H / (rbH - H / 2)), GI = (int)(2 * (size_t)I / (rbI - I / 2));
+  std::vector<float> hf((size_t)E * I);
+  std::vector<int> ta[2], tb[2];
+  for (int j = 0; j < E; j++) {
+    for (int b = 0; b < I / 16; b++) ta[numa == 2 ? (b >= I / 32) : 0].push_back(j << 16 | b);
+    for (int b = 0; b < H / 16; b++) tb[numa == 2 ? (b >= H / 32) : 0].push_back(j << 16 | b);
+  }
+  std::vector<PadAt> done(E);
+  for (int j = 0; j < E; j++) done[j].v = 0;
+  PadAt ca[2], cb[2];
+  ca[0].v = 0; ca[1].v = 0; cb[0].v = 0; cb[1].v = 0;
+  const int nh = numa == 2 ? 2 : 1;
+  vh_parallel([&](int, int) {
+    const int nd = numa == 2 ? ((vh_cpu() >= 32) ? 1 : 0) : 0;
+    float o[4];
+    for (int hop = 0; hop < nh; hop++) {
+      const int Ls = nd ^ hop;
+      const std::vector<int>& T = ta[Ls];
+      for (int i = ca[Ls].v.fetch_add(1); i < (int)T.size(); i = ca[Ls].v.fetch_add(1)) {
+        const int j = T[i] >> 16, b = T[i] & 0xFFFF;
+        const uint8_t* G = (const uint8_t*)Gt[j]->data_ptr();
+        const uint8_t* U = (const uint8_t*)Ut[j]->data_ptr();
+        float* hj = &hf[(size_t)j * I];
+        for (int r = b * 16; r < b * 16 + 16; r += 2) {
+          row_dots4_n1_q4(G + r * rbH, G + (r + 1) * rbH, U + r * rbH, U + (r + 1) * rbH, xf, H, GH, o);
+          for (int q = 0; q < 2; q++) hj[r + q] = act_h(ctx, j, r + q, o[q], o[2 + q]);
+        }
+        done[j].v.fetch_add(1, std::memory_order_release);
+      }
+    }
+    for (int hop = 0; hop < nh; hop++) {
+      const int Ls = nd ^ hop;
+      const std::vector<int>& T = tb[Ls];
+      for (int i = cb[Ls].v.fetch_add(1); i < (int)T.size(); i = cb[Ls].v.fetch_add(1)) {
+        const int j = T[i] >> 16, b = T[i] & 0xFFFF;
+        while (done[j].v.load(std::memory_order_acquire) < I / 16) VH_PAUSE();
+        const uint8_t* D = (const uint8_t*)Dt[j]->data_ptr();
+        const float* hj = &hf[(size_t)j * I];
+        for (int r = b * 16; r < b * 16 + 16; r += 4) {
+          row_dots4_n1_q4(D + r * rbI, D + (r + 1) * rbI, D + (r + 2) * rbI, D + (r + 3) * rbI, hj, I, GI, o);
           for (int q = 0; q < 4; q++) y[j][r + q] = down_o(ctx, j, r + q, o[q]);
         }
       }
