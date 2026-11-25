@@ -735,6 +735,22 @@ static void moe_slots(int64_t layer, torch::Tensor x, torch::Tensor ti, torch::T
   std::map<int64_t, std::vector<std::pair<int, int>>> rows;     // expert -> (token, slot), ascending token
   for (int b = 0; b < N; b++) for (int k = 0; k < K; k++) if (mp[b * K + k]) rows[tip[b * K + k]].push_back({b, k});
   if (rows.empty()) return;
+  if (N == 1 && !L.g.empty() && L.g[0].scalar_type() == torch::kUInt8) {
+    // v1.2: twin-q4 decode over just these experts in one region (experts_q4_fused; same per-row arithmetic).
+    std::vector<const torch::Tensor*> Gt, Ut, Dt; std::vector<int64_t> ids;
+    for (auto& kv : rows) { ids.push_back(kv.first); Gt.push_back(&L.g[kv.first]); Ut.push_back(&L.u[kv.first]); Dt.push_back(&L.d[kv.first]); }
+    thread_local std::vector<float> xq; thread_local std::vector<uint16_t> yq;
+    xq.resize(H); yq.resize(ids.size() * H);
+    for (int h = 0; h < H; h++) xq[h] = bf2f(xp[h]);
+    std::vector<uint16_t*> yv(ids.size());
+    for (size_t j = 0; j < ids.size(); j++) yv[j] = yq.data() + j * H;
+    ActCtx fc; const ActCtx* fcp = nullptr;
+    if (layer_has_ctx(L)) { build_ctx(L, ids, false, fc); fcp = &fc; }
+    experts_q4_fused(Gt, Ut, Dt, (int)L.g[0].size(0), xq.data(), H, yv, (int)numa, fcp);
+    size_t j = 0;
+    for (auto& kv : rows) { std::memcpy(op + (size_t)kv.second[0].second * H, yv[j], (size_t)H * 2); j++; }
+    return;
+  }
   if (N == 1 && !L.nx.empty() && H % 64 == 0) {
     // Decode: the Phase 41 fused single-region path over just these experts (the same per-row arithmetic as
     // expert_mlps_nx, which moe_fused also relies on), one thread-team region instead of two barriers.

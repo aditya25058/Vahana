@@ -36,3 +36,21 @@ Vahana runs 4-bit MoE checkpoints (compressed-tensors "pack-quantized" symmetric
 This is the published checkpoint's quality; Vahana does not change it.
 - Publisher: about 98% MMLU recovery.
 - Our strict short-prompt metric: 86% top-1 agreement with bf16 and +21% perplexity, the same as any plain or calibrated int4 we measured (`research`, private).
+
+## GPU expert cache for 4-bit layers
+- **Kernels:** twin-q4 versions of the cache kernels (`_cgate_up_q4`, `_cdown_q4`, grouped `_g_q4`). They decode in the CPU kernel's lane order, so the bits are the same. The CPU computes the slots the cache misses with the fused one-token q4 routine (`moe_slots` → `experts_q4_fused`).
+- **Budget:** counts real 4-bit bytes, so about 3.8× more experts fit than with bf16.
+
+**H100 box, Qwen3-30B-A3B w4a16, 3 prompts × 32 tokens:**
+
+| | experts cached | routing hits | tok/s | hashes |
+|---|---|---|---|---|
+| 4-bit, CPU only | 0 | 0% | 22.4 | `bf4974f1…`, `e7800dd3…`, `36e8f396…` |
+| 4-bit, 2 GB cache (before the fused miss path) | 882 | 42% | 9.2 | same |
+| 4-bit, 8 GB cache (before the fused miss path) | 3530 | 91% | 9.9 | same |
+| **4-bit, 8 GB cache** | 3530 | 91% | **25.8** | same |
+| bf16, CPU only (NX12) | 0 | 0% | 20.8 | (bf16 model) |
+| bf16, 16 GB cache, overlap (v1.1) | 1820 | 66% | 18–20 | (bf16 model) |
+
+- The output is identical with the cache off, at 2 GB and at 8 GB, and identical to the laptop.
+- On the laptop no GPU memory is free for a cache (0.3 GB after the non-expert weights), so laptop numbers are unchanged.

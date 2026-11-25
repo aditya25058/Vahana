@@ -155,6 +155,160 @@ def _cdown_g(hh, ti, lut, order, rpos, d, y, H, I, NK, BR: tl.constexpr, MT: tl.
         tl.store(y + pj * H + rows, out, mask=vj)
 
 
+# ---- v1.2 twin-q4 cached experts. Weights are row records (vahana.q4): K/2 nibble bytes then K/GS bf16 scales; in
+# each 32-weight block byte b holds k = b (low) and k = b + 16 (high), as q + 8. Per lane the fma order is k0 + l then
+# k0 + 16 + l, k0 ascending: exactly the CPU kernel's row_dots_q4, so the same bits.
+@triton.jit
+def _q4w(rec, rows, RB, k0, KH, GS: tl.constexpr):
+    """Weight values (q*s, exact fp32) of k0..k0+15 (lo) and k0+16..k0+31 (hi) for tile rows; rec: uint8 base."""
+    ln = tl.arange(0, 16)
+    base = rec + rows * RB
+    b = tl.load(base[:, None] + k0 // 2 + ln[None, :]).to(tl.int32)
+    so = base + KH // 2 + 2 * (k0 // GS)
+    sb = tl.load(so).to(tl.int32) | (tl.load(so + 1).to(tl.int32) << 8)
+    sc = (sb << 16).to(tl.float32, bitcast=True)                  # bf16 bits -> fp32 (exact)
+    wlo = ((b & 15) - 8).to(tl.float32) * sc[:, None]
+    whi = ((b >> 4) - 8).to(tl.float32) * sc[:, None]
+    return wlo, whi
+
+
+@triton.jit
+def _cgate_up_q4(x, ti, lut, g, u, h, H, I, K, RBH, BR: tl.constexpr, GS: tl.constexpr, LOG2E: tl.constexpr,
+                 LN2HI: tl.constexpr, LN2LO: tl.constexpr, P0: tl.constexpr, P1: tl.constexpr, P2: tl.constexpr,
+                 P3: tl.constexpr, P4: tl.constexpr, P5: tl.constexpr):
+    rb = tl.program_id(0).to(tl.int64)
+    sl = tl.program_id(1).to(tl.int64)
+    t = sl // K
+    c = tl.load(lut + tl.load(ti + sl)).to(tl.int64)
+    cs = tl.maximum(c, 0)
+    rows = rb * BR + tl.arange(0, BR).to(tl.int64)
+    ln = tl.arange(0, 16)
+    ag = tl.zeros((BR, 16), dtype=tl.float32)
+    au = tl.zeros((BR, 16), dtype=tl.float32)
+    xb = x + t * H
+    gb_ = g + cs * I * RBH
+    ub_ = u + cs * I * RBH
+    for k0 in range(0, H, 32):
+        xlo = tl.load(xb + k0 + ln).to(tl.float32)
+        xhi = tl.load(xb + k0 + 16 + ln).to(tl.float32)
+        glo, ghi = _q4w(gb_, rows, RBH, k0, H, GS)
+        ulo, uhi = _q4w(ub_, rows, RBH, k0, H, GS)
+        ag = tl.fma(glo, xlo[None, :], ag)
+        au = tl.fma(ulo, xlo[None, :], au)
+        ag = tl.fma(ghi, xhi[None, :], ag)
+        au = tl.fma(uhi, xhi[None, :], au)
+    gb = _tree16(ag, BR).to(tl.bfloat16).to(tl.float32)
+    ub = _tree16(au, BR).to(tl.bfloat16).to(tl.float32)
+    ex = _dexp(-gb, LOG2E, LN2HI, LN2LO, P0, P1, P2, P3, P4, P5)
+    s = div_rn(gb, 1.0 + ex).to(tl.bfloat16).to(tl.float32)
+    tl.store(h + sl * I + rows, (s * ub).to(tl.bfloat16))
+
+
+@triton.jit
+def _cdown_q4(hh, ti, lut, d, y, H, I, RBI, BR: tl.constexpr, GS: tl.constexpr):
+    rb = tl.program_id(0).to(tl.int64)
+    sl = tl.program_id(1).to(tl.int64)
+    c = tl.load(lut + tl.load(ti + sl)).to(tl.int64)
+    cs = tl.maximum(c, 0)
+    rows = rb * BR + tl.arange(0, BR).to(tl.int64)
+    ln = tl.arange(0, 16)
+    acc = tl.zeros((BR, 16), dtype=tl.float32)
+    hb = hh + sl * I
+    db = d + cs * H * RBI
+    for k0 in range(0, I, 32):
+        hlo = tl.load(hb + k0 + ln).to(tl.float32)
+        hhi = tl.load(hb + k0 + 16 + ln).to(tl.float32)
+        wlo, whi = _q4w(db, rows, RBI, k0, I, GS)
+        acc = tl.fma(wlo, hlo[None, :], acc)
+        acc = tl.fma(whi, hhi[None, :], acc)
+    out = _tree16(acc, BR).to(tl.bfloat16)
+    out = tl.where(c >= 0, out, tl.zeros_like(out))
+    tl.store(y + sl * H + rows, out)
+
+
+@triton.jit
+def _cgate_up_g_q4(x, ti, lut, order, rpos, g, u, h, H, I, K, NK, RBH, BR: tl.constexpr, MT: tl.constexpr,
+                   GS: tl.constexpr, LOG2E: tl.constexpr, LN2HI: tl.constexpr, LN2LO: tl.constexpr, P0: tl.constexpr,
+                   P1: tl.constexpr, P2: tl.constexpr, P3: tl.constexpr, P4: tl.constexpr, P5: tl.constexpr):
+    rb = tl.program_id(0).to(tl.int64)
+    s = tl.program_id(1).to(tl.int64)
+    c, lead, pj, vj, ij = _members(s, order, rpos, ti, lut, NK, BR, MT)
+    if lead & (c >= 0):
+        tj = pj // K
+        rows = rb * BR + ij
+        ln = tl.arange(0, 16)
+        ag = tl.zeros((MT * BR, 16), dtype=tl.float32)
+        au = tl.zeros((MT * BR, 16), dtype=tl.float32)
+        gb_ = g + c * I * RBH
+        ub_ = u + c * I * RBH
+        for k0 in range(0, H, 32):
+            xlo = tl.load(x + tj[:, None] * H + k0 + ln[None, :], mask=vj[:, None], other=0.0).to(tl.float32)
+            xhi = tl.load(x + tj[:, None] * H + k0 + 16 + ln[None, :], mask=vj[:, None], other=0.0).to(tl.float32)
+            glo, ghi = _q4w(gb_, rows, RBH, k0, H, GS)
+            ulo, uhi = _q4w(ub_, rows, RBH, k0, H, GS)
+            ag = tl.fma(glo, xlo, ag)
+            au = tl.fma(ulo, xlo, au)
+            ag = tl.fma(ghi, xhi, ag)
+            au = tl.fma(uhi, xhi, au)
+        gb = _tree16(ag, MT * BR).to(tl.bfloat16).to(tl.float32)
+        ub = _tree16(au, MT * BR).to(tl.bfloat16).to(tl.float32)
+        ex = _dexp(-gb, LOG2E, LN2HI, LN2LO, P0, P1, P2, P3, P4, P5)
+        sg = div_rn(gb, 1.0 + ex).to(tl.bfloat16).to(tl.float32)
+        tl.store(h + pj * I + rows, (sg * ub).to(tl.bfloat16), mask=vj)
+
+
+@triton.jit
+def _cdown_g_q4(hh, ti, lut, order, rpos, d, y, H, I, NK, RBI, BR: tl.constexpr, MT: tl.constexpr, GS: tl.constexpr):
+    rb = tl.program_id(0).to(tl.int64)
+    s = tl.program_id(1).to(tl.int64)
+    c, lead, pj, vj, ij = _members(s, order, rpos, ti, lut, NK, BR, MT)
+    rows = rb * BR + ij
+    if lead:
+        if c >= 0:
+            ln = tl.arange(0, 16)
+            acc = tl.zeros((MT * BR, 16), dtype=tl.float32)
+            db = d + c * H * RBI
+            for k0 in range(0, I, 32):
+                hlo = tl.load(hh + pj[:, None] * I + k0 + ln[None, :], mask=vj[:, None], other=0.0).to(tl.float32)
+                hhi = tl.load(hh + pj[:, None] * I + k0 + 16 + ln[None, :], mask=vj[:, None], other=0.0).to(tl.float32)
+                wlo, whi = _q4w(db, rows, RBI, k0, I, GS)
+                acc = tl.fma(wlo, hlo, acc)
+                acc = tl.fma(whi, hhi, acc)
+            out = _tree16(acc, MT * BR).to(tl.bfloat16)
+        else:
+            out = tl.zeros((MT * BR,), dtype=tl.bfloat16)
+        tl.store(y + pj * H + rows, out, mask=vj)
+
+
+def gpu_slots_q4(x, ti, lut, G, U, D, H, I, BR: int = 16, MT: int | None = None, grouped: bool | None = None):
+    """twin-q4 version of gpu_slots: G/U uint8 [C, I, RBH] and D uint8 [C, H, RBI] row records."""
+    N = x.shape[0]
+    K = ti.shape[1]
+    RBH, RBI = G.shape[2], D.shape[2]
+    GSH, GSI = 2 * H // (RBH - H // 2), 2 * I // (RBI - I // 2)
+    assert GSH == GSI, "one group size per layer"
+    ti = ti.contiguous()
+    h = torch.empty((N * K, I), dtype=torch.bfloat16, device=x.device)
+    y = torch.empty((N, K, H), dtype=torch.bfloat16, device=x.device)
+    if grouped is None:
+        grouped = N > 1
+    if MT is None:
+        MT = 2 if N < 32 else 8
+    c = dict(LOG2E=C_LOG2E, LN2HI=C_LN2HI, LN2LO=C_LN2LO, P0=P0, P1=P1, P2=P2, P3=P3, P4=P4, P5=P5)
+    if grouped:
+        NK = N * K
+        order = torch.empty(NK, dtype=torch.int64, device=x.device)
+        rpos = torch.empty(NK, dtype=torch.int32, device=x.device)
+        _cgroup[(NK,)](ti, lut, order, rpos, NK, BLOCK=min(1024, triton.next_power_of_2(NK)), num_warps=4)
+        _cgate_up_g_q4[(I // BR, NK)](x, ti, lut, order, rpos, G, U, h, H, I, K, NK, RBH, BR=BR, MT=MT, GS=GSH,
+                                      num_warps=4, **c)
+        _cdown_g_q4[(H // BR, NK)](h, ti, lut, order, rpos, D, y, H, I, NK, RBI, BR=BR, MT=MT, GS=GSI, num_warps=4)
+        return y
+    _cgate_up_q4[(I // BR, N * K)](x, ti, lut, G, U, h, H, I, K, RBH, BR=BR, GS=GSH, num_warps=4, **c)
+    _cdown_q4[(H // BR, N * K)](h, ti, lut, D, y, H, I, RBI, BR=BR, GS=GSI, num_warps=4)
+    return y
+
+
 def gpu_slots(x, ti, lut, G, U, D, BR: int = 16, MT: int | None = None, grouped: bool | None = None):
     """x [N, H] bf16, ti [N, K] int64 (device), lut [E] int64, G/U [C, I, H], D [C, H, I] -> y [N, K, H] bf16."""
     N, H = x.shape
@@ -204,7 +358,9 @@ class CachedExperts(nn.Module):
         self.base, self.spec, self.numa = base, base.spec, base.numa
         ids = sorted(int(i) for i in ids)
         self.ids = ids
-        st = lambda ws: torch.stack([ws[i] for i in ids]).to(device, torch.bfloat16).contiguous()
+        self.q4 = getattr(base, "q4", False)          # v1.2: twin-q4 row records stay uint8
+        dt = torch.uint8 if self.q4 else torch.bfloat16
+        st = lambda ws: torch.stack([ws[i] for i in ids]).to(device, dt).contiguous()
         self.G, self.U, self.D = st(base.g), st(base.u), st(base.d)
         lut = torch.full((self.spec.E,), -1, dtype=torch.int64)
         for c, e in enumerate(ids):
@@ -216,9 +372,14 @@ class CachedExperts(nn.Module):
     @staticmethod
     def supported(base) -> bool:
         s = base.spec
-        if getattr(base, "q4", False):                   # v1.2: no GPU cache for twin-q4 experts yet
+        if getattr(base, "q4", False) and (s.H % 32 or s.I % 32):
             return False
         return s.act == "silu_glu" and not s.bias and base.shared is None and s.H % 16 == 0 and s.I % 16 == 0
+
+    def _slots(self, x, ti):
+        if self.q4:
+            return gpu_slots_q4(x, ti, self.lut, self.G, self.U, self.D, self.spec.H, self.spec.I)
+        return gpu_slots(x, ti, self.lut, self.G, self.U, self.D)
 
     def forward(self, hidden_states, top_k_index, top_k_weights):
         from . import runtime
@@ -228,11 +389,11 @@ class CachedExperts(nn.Module):
             # v1.1: post the CPU slots first, run the cached slots on the GPU while the CPU works, then combine on the
             # GPU with the CPU kernel's combine operations (cache.combine). Same bits as the sequential path below.
             hs = runtime.cpu_slots_post(self.spec.slot, x, ti, self.numa)
-            y_gpu = gpu_slots(x, ti, self.lut, self.G, self.U, self.D)
+            y_gpu = self._slots(x, ti)
             y_cpu = runtime.cpu_slots_wait(hs, x.device)
             y = torch.where((self.lut[ti] >= 0).unsqueeze(-1), y_gpu, y_cpu)
             return combine(y, ti, runtime.weights_arg(top_k_weights)).to(hidden_states.dtype)
-        y_gpu = gpu_slots(x, ti, self.lut, self.G, self.U, self.D)       # cached slots (zeros elsewhere)
+        y_gpu = self._slots(x, ti)       # cached slots (zeros elsewhere)
         # The CPU job runs the other slots and combines all K (nothing but one copy follows the CUDA-graph host node:
         # kernels queued behind a host node are expensive)
         out = runtime.moe_cached(self.spec.slot, x, ti, top_k_weights, y_gpu, self.numa)
@@ -274,7 +435,8 @@ def install(model, budget_bytes: float, counts: dict | None = None, frac: float 
             order = sorted(range(m.spec.E), key=lambda e: (-int(c[e]), e))
             pick[L] = order[:max(1, round(frac * m.spec.E))]
     else:
-        per = {L: 3 * m.spec.I * m.spec.H * 2 for L, (_, m) in layers.items()}     # bytes per expert (g, u, d)
+        nb = lambda t: t.numel() * t.element_size()
+        per = {L: nb(m.g[0]) + nb(m.u[0]) + nb(m.d[0]) for L, (_, m) in layers.items()}  # bytes per expert (g, u, d)
         cand = sorted(((-int(counts[L][e]) if counts else 0, L, e) for L, (_, m) in layers.items()
                        for e in range(m.spec.E)))
         used = 0
@@ -291,7 +453,7 @@ def install(model, budget_bytes: float, counts: dict | None = None, frac: float 
         ce = CachedExperts(m, pick[L], dev)
         setattr(parent, leaf, ce)
         n += len(pick[L])
-        gb += (ce.G.numel() + ce.U.numel() + ce.D.numel()) * 2 / 2**30
+        gb += (ce.G.numel() + ce.U.numel() + ce.D.numel()) * ce.G.element_size() / 2**30
     hit = None
     if counts:
         tot = sum(int(c.sum()) for c in counts.values())
