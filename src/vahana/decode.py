@@ -98,9 +98,11 @@ def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None
         t = time.perf_counter()
         if not graph:
             step()
-        elif i == 0:
-            # first step: the graph-mode path run directly on the stream (host jobs execute in stream order). It
-            # compiles every kernel and allocates every pinned buffer, which is not allowed during capture.
+        elif i == 0 and B not in getattr(model, "_vahana_graph_warm", ()):
+            # first step of the first call for this model and batch size: the graph-mode path run directly on the
+            # stream (host jobs execute in stream order). It compiles every kernel and allocates every pinned buffer,
+            # which is not allowed during capture. v1.4: later calls capture at their first step (an eager step costs
+            # ~0.45 s on Windows: thousands of small launches and a host sync per CPU job).
             _rt.GRAPH["on"] = True
             try:
                 step()
@@ -145,6 +147,10 @@ def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None
                     torch.cuda.current_stream().wait_stream(s)
                     _sync(dev)
                     t = time.perf_counter()
+                    try:
+                        model._vahana_graph_warm = set(getattr(model, "_vahana_graph_warm", ())) | {B}
+                    except Exception:  # noqa: BLE001
+                        pass
             if g is not None:
                 g.replay()
             else:

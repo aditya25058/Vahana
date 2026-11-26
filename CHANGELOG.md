@@ -9,7 +9,9 @@ Each version's evidence is in `experiments/` (pre-registered bars, run logs, raw
     - the embedding table moves to CPU RAM;
     - the expert-cache reserve is capped at 25% of the GPU.
   - The 4-bit CPU kernel decodes nibbles more cheaply and uses 64-row tasks.
-  - Laptop RTX 3050 Ti, Qwen3-30B 4-bit: typical decode step 76.6 → 63.1 ms. Against llama.cpp in the same session: 9.5 vs 4.8 tok/s (2.0×) under memory pressure; within 10–20% of it on a fresh machine.
+  - Laptop RTX 3050 Ti, Qwen3-30B 4-bit: typical decode step 76.6 → 58–63 ms (14.8–16.5 tok/s on a quiet machine).
+  - Against llama.cpp on the same laptop: about level at their best (llama.cpp 12.4–15.9 tok/s), and about 2× faster under memory pressure.
+- **The first decode step of a call no longer runs eagerly** once the model is warm: it captures the CUDA graph straight away (430–840 → 56–92 ms on Windows). Same bits.
   - H100: unchanged.
   - Details: [experiments/v15_decode](https://github.com/vahana-ai/Vahana/blob/main/experiments/v15_decode/README.md).
 

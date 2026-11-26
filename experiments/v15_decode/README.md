@@ -75,12 +75,43 @@ Earlier, in a fresher state (not interleaved), llama.cpp measured 13.2–15.5 to
 
 **So:** Vahana now beats llama.cpp decisively when RAM is under pressure, and is within about 10–20% of it on a fresh machine. On a fresh machine Vahana's typical step is already at llama.cpp's speed (63 ms p50 is 15.9 tok/s); slow steps from expert page-ins pull its average down.
 
+### 5. The tail (quiet laptop, nothing else running)
+- **The slow steps were not disk reads.**
+  - With the machine quiet, every decode step but one ran at about 60 ms ([tail.py](tail.py)).
+  - The exception was the **first decode step of every `generate` call: 430–840 ms**, whatever the prompt length or prefill path. It ran eagerly, outside the CUDA graph: thousands of small launches plus a host sync per CPU job, all slow under Windows WDDM.
+  - **Fix:** once a model and batch size have been warmed, later calls capture the graph at their first step. That step drops to 56–92 ms. A 6-token decode, including the capture, takes 0.48–0.56 s instead of about 0.9 s or more.
+  - **Bits:** a new test checks that a second call's logits equal the first's (tests/test_prefill.py). The 1.2 receipt replays bit for bit, and the GPU selftest is 18/18.
+- **A hard minimum working set** (`SetProcessWorkingSetSizeEx`) made no difference, so RAM residency was not the problem on a quiet machine.
+
+### 6. Against llama.cpp, quiet machine
+The page cache decides these numbers: neither model fits in 15 GB of RAM, so whichever engine ran last owns the cache.
+
+**Alternating** (llama.cpp `-r 2`, then Vahana, three rounds):
+
+| Round | llama.cpp | Vahana v1.4 |
+|---|---|---|
+| 1 | 8.19 ± 3.65 tok/s | 16.53 tok/s |
+| 2 | 8.34 ± 3.40 | 14.80 |
+| 3 | 8.44 ± 3.24 | 16.40 |
+
+llama.cpp's large spread is its first repetition reading its model back from disk.
+
+**Each engine warm, at its best:**
+- **llama.cpp,** three runs of `-r 4` back to back: the repetitions warm up 5.8 → 10.5 → 12.3–15.9 tok/s. Its best repetitions were **13.5, 12.4 and 15.9**.
+- **Vahana** reached **14.8–16.5** in the quiet rounds above (p50 58–60 ms per step).
+- Run straight after llama.cpp, Vahana measured 5.2, 12.3 and 8.2 tok/s: the cold cache again.
+
+**Verdict:**
+- **At their best, warm and quiet:** Vahana 14.8–16.5 tok/s against llama.cpp's 12.4–15.9. About level, with Vahana slightly ahead, but within this laptop's noise.
+- **When they compete for RAM, or under memory pressure:** Vahana is about 2× faster.
+- This is with Vahana's answers bit-identical on every machine, which llama.cpp's are not (experiments/v14_llamacpp).
+
 ### Tried and dropped
 - **Windows thread pinning**, one thread per physical core first: 98–167 ms per step against 63 ms unpinned. Removed.
 - **Expert prefetch** (`VAHANA_PREFETCH=1/2`): 130–150 ms per step against 84 ms off. It stays off.
 - **The w64devkit (mingw g++) build** gives the same kernel-boundary speed as CI's clang/MSVC build, but about 30 ms slower decode steps. Measure only with CI-built wheels.
 
 ### Next
-- **The page-in tail:** decide which experts stay resident in RAM by popularity rather than by OS LRU, or lock the hottest experts.
+- **Reuse the captured graph across calls** (keep the static cache and its buffers), so even the capture is paid once per process.
 - **Fidelity:** 1.3's bf16 expansion of 4-bit attention rounds q·s (up to 12 bits) to 8 bits of mantissa. An exact-q4 attention mode would follow the checkpoint more closely. It changes the bits, so it would be opt-in with its own references.
 - **An exact integer mode** (int8 activations × int4 weights, integer accumulation, exact in any order) like llama.cpp's arithmetic. It is a different numeric model, so it is a research item.

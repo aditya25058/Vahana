@@ -51,3 +51,15 @@ def test_tiled_linear_matches():
     x = torch.randn(300, 512, generator=g).to("cuda", torch.bfloat16)
     W = (torch.randn(384, 512, generator=g) * 0.05).to("cuda", torch.bfloat16)
     assert torch.equal(twinlin.gpu_linear(x, W), twinlin.gpu_linear(x, W, MT=1))
+
+
+def test_second_generate_call_same_bits():
+    """v1.4: a warmed model captures its CUDA graph at the first decode step; the outputs equal the first call's."""
+    from vahana import decode, loader, selftest
+    cfg, m = selftest.build("qwen3_moe")
+    model, _ = loader.prepare(m.to("cuda"))
+    ids = torch.randint(1, cfg.vocab_size, (1, 20), generator=torch.Generator().manual_seed(3)).cuda()
+    a = decode.generate(model, ids, max_new_tokens=8, return_logits=True)
+    b = decode.generate(model, ids, max_new_tokens=8, return_logits=True)
+    assert a["graph_used"] and b["graph_used"]
+    assert torch.equal(a["logits"], b["logits"]) and torch.equal(a["ids"], b["ids"])
