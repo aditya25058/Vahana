@@ -2,6 +2,17 @@
 
 Each version's evidence is in `experiments/` (pre-registered bars, run logs, raw results). Missed bars are recorded there too.
 
+## Unreleased
+- **Faster decode on small GPUs, same bits.**
+  - On GPUs under 12 GB:
+    - 4-bit attention weights stay 4-bit on the GPU (a kernel rebuilds 1.3's exact bf16 weight);
+    - the embedding table moves to CPU RAM;
+    - the expert-cache reserve is capped at 25% of the GPU.
+  - The 4-bit CPU kernel decodes nibbles more cheaply and uses 64-row tasks.
+  - Laptop RTX 3050 Ti, Qwen3-30B 4-bit: typical decode step 76.6 → 63.1 ms. Against llama.cpp in the same session: 9.5 vs 4.8 tok/s (2.0×) under memory pressure; within 10–20% of it on a fresh machine.
+  - H100: unchanged.
+  - Details: [experiments/v15_decode](https://github.com/vahana-ai/Vahana/blob/main/experiments/v15_decode/README.md).
+
 ## 1.3.2 (2026-11-27)
 - The PyPI page's links work. The README, which is also the PyPI description, used relative links, and those break on PyPI; they are now absolute GitHub URLs. A test keeps them that way.
 
