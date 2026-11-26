@@ -7,6 +7,7 @@ kernels on the same inputs, so their outputs are bit-identical.
 """
 from __future__ import annotations
 
+import os
 import time
 
 import torch
@@ -35,20 +36,51 @@ def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None
     graph = graph and dev.type == "cuda"          # CPU-only machines decode eagerly
     B, T = input_ids.shape
     L = T + max_new_tokens
-    am = torch.zeros(B, L, dtype=torch.long, device=dev)
-    am[:, :T] = 1 if attention_mask is None else attention_mask
-    pos0 = (am[:, :T].cumsum(-1) - 1).clamp(min=0)
     from transformers.cache_utils import StaticLayer, StaticSlidingWindowLayer
     kinds = set(getattr(model.config.get_text_config(), "layer_types", None) or [])
     other = kinds - {"full_attention", "sliding_attention", "attention"}
     if other:                                     # recurrent / linear-attention layers: their own cache, eager only
         return _generate_dynamic(model, input_ids, attention_mask, max_new_tokens, return_logits, sampler, on_token,
                                  eos_token_id=eos_token_id, reason=f"non-attention layers {sorted(other)}")
-    cache = StaticCache(config=model.config, max_cache_len=L)
-    # Sliding-window static layers keep their fill position in a Python int, which a captured graph would freeze;
-    # a full-length static layer is position-indexed, and the window is still enforced by the attention mask.
-    cache.layers = [StaticLayer(max_cache_len=L) if isinstance(x, StaticSlidingWindowLayer) else x
-                    for x in cache.layers]
+    # v1.4: graph reuse. The static cache, the decode buffers and the captured CUDA graph are kept on the model for
+    # (batch size, cache length rounded up to a power of two >= 256) and reused by the next call: only the prefill runs
+    # again, and the decode graph is replayed without a new capture. Reuse never changes a bit: every decode query's
+    # keys are bounded by its own last position (attention._bounds), so cache columns past it, stale or zero, are
+    # never read, and the cache length itself enters no arithmetic.
+    reuse = graph and os.environ.get("VAHANA_GRAPH_REUSE", "1") != "0"
+    Lc = max(256, 1 << (L - 1).bit_length()) if reuse else L
+    key = (B, Lc, str(dev))
+    ctx = getattr(model, "_vahana_ctx", None) if reuse else None
+    if ctx is None or ctx["key"] != key:
+        if reuse and ctx is not None:
+            model._vahana_ctx = None                  # one context at a time: free the old cache and graph first
+            del ctx
+            torch.cuda.empty_cache()
+        cache = StaticCache(config=model.config, max_cache_len=Lc)
+        # Sliding-window static layers keep their fill position in a Python int, which a captured graph would freeze;
+        # a full-length static layer is position-indexed, and the window is still enforced by the attention mask.
+        cache.layers = [StaticLayer(max_cache_len=Lc) if isinstance(x, StaticSlidingWindowLayer) else x
+                        for x in cache.layers]
+        ctx = {"key": key, "cache": cache, "g": None, "pool": None,
+               "am": torch.zeros(B, Lc, dtype=torch.long, device=dev),
+               "tok": torch.zeros(B, 1, dtype=torch.long, device=dev),
+               "pos": torch.zeros(B, 1, dtype=torch.long, device=dev),
+               "cpos": torch.zeros(1, dtype=torch.long, device=dev),
+               "ones": torch.ones(B, 1, dtype=torch.long, device=dev),
+               "lbuf": torch.empty(B, model.config.get_text_config().vocab_size, dtype=torch.float32, device=dev)}
+        if reuse:
+            model._vahana_ctx = ctx
+    else:
+        for x in ctx["cache"].layers:                 # a fresh fill position; old keys stay but are never read
+            cl = getattr(x, "cumulative_length", None)
+            if torch.is_tensor(cl):
+                cl.zero_()
+            elif isinstance(cl, int):
+                x.cumulative_length = 0
+    cache, am = ctx["cache"], ctx["am"]
+    am.zero_()
+    am[:, :T] = 1 if attention_mask is None else attention_mask
+    pos0 = (am[:, :T].cumsum(-1) - 1).clamp(min=0)
     t0 = time.perf_counter()
     k0 = 0
     pc = prefix_cache if (prefix_cache is not None and B == 1 and (attention_mask is None or bool(attention_mask.all()))
@@ -71,11 +103,10 @@ def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None
     if pc is not None:
         pc.store(input_ids[0], cache.layers)
     logit = out.logits[:, -1].float()
-    tok = logit.argmax(-1, keepdim=True) if sampler is None else sampler(logit).to(dev).view(B, 1)
-    pos = pos0[:, -1:] + 1
-    cpos = torch.full((1,), T, dtype=torch.long, device=dev)
-    ones = torch.ones(B, 1, dtype=torch.long, device=dev)
-    lbuf = torch.empty(B, model.config.get_text_config().vocab_size, dtype=torch.float32, device=dev)
+    tok, pos, cpos, ones, lbuf = ctx["tok"], ctx["pos"], ctx["cpos"], ctx["ones"], ctx["lbuf"]
+    tok.copy_(logit.argmax(-1, keepdim=True) if sampler is None else sampler(logit).to(dev).view(B, 1))
+    pos.copy_(pos0[:, -1:] + 1)
+    cpos.fill_(T)
 
     def step():
         am.scatter_(1, cpos.view(1, 1).expand(B, 1), ones)
@@ -87,7 +118,7 @@ def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None
         cpos.add_(1)
 
     ids, logits, lat = [tok.clone()], [logit] if return_logits else [], []
-    g = None
+    g = ctx["g"]                                      # v1.4: a graph captured by an earlier call on these buffers
     fallback = None
     stop = on_token is not None and bool(on_token(tok))
     for i in range(max_new_tokens - 1):
@@ -98,7 +129,7 @@ def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None
         t = time.perf_counter()
         if not graph:
             step()
-        elif i == 0 and B not in getattr(model, "_vahana_graph_warm", ()):
+        elif i == 0 and g is None and B not in getattr(model, "_vahana_graph_warm", ()):
             # first step of the first call for this model and batch size: the graph-mode path run directly on the
             # stream (host jobs execute in stream order). It compiles every kernel and allocates every pinned buffer,
             # which is not allowed during capture. v1.4: later calls capture at their first step (an eager step costs
@@ -151,6 +182,8 @@ def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None
                         model._vahana_graph_warm = set(getattr(model, "_vahana_graph_warm", ())) | {B}
                     except Exception:  # noqa: BLE001
                         pass
+                    if reuse:
+                        ctx["g"], ctx["pool"] = g, pool
             if g is not None:
                 g.replay()
             else:

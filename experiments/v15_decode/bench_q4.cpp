@@ -105,16 +105,18 @@ static void v2(const uint8_t* const* R, const float* X, int K, int G, float* out
   for (int i = 0; i < 4; i++) out[i] = tree16(a[i]);
 }
 
-// V3: V2 with 8 rows per call (more independent fma chains, x loads shared by 8 rows)
+// V3: V2 + software prefetch g_pf bytes ahead in each row (one prefetch per 64-byte line)
+static int g_pf = 512;
 static void v3(const uint8_t* const* R, const float* X, int K, int G, float* out) {
-  V16 a[8];
-  for (int i = 0; i < 8; i++) a[i] = v_zero();
+  V16 a[4] = {v_zero(), v_zero(), v_zero(), v_zero()};
   for (int g0 = 0, gi = 0; g0 < K; g0 += G, gi++) {
-    __m256 s[8];
-    for (int i = 0; i < 8; i++) s[i] = _mm256_set1_ps(bf2f(((const uint16_t*)(R[i] + K / 2))[gi]));
+    __m256 s[4];
+    for (int i = 0; i < 4; i++) s[i] = _mm256_set1_ps(bf2f(((const uint16_t*)(R[i] + K / 2))[gi]));
     for (int k0 = g0; k0 < g0 + G; k0 += 32) {
+      if ((k0 & 127) == 0)
+        for (int i = 0; i < 4; i++) _mm_prefetch((const char*)(R[i] + k0 / 2 + g_pf), _MM_HINT_T0);
       const V16 x0 = v_loadf(X + k0), x1 = v_loadf(X + k0 + 16);
-      for (int i = 0; i < 8; i++) {
+      for (int i = 0; i < 4; i++) {
         V16 wl, wh;
         q4_magic(R[i] + k0 / 2, s[i], wl, wh);
         a[i] = v_fma(wl, x0, a[i]);
@@ -122,20 +124,20 @@ static void v3(const uint8_t* const* R, const float* X, int K, int G, float* out
       }
     }
   }
-  for (int i = 0; i < 8; i++) out[i] = tree16(a[i]);
+  for (int i = 0; i < 4; i++) out[i] = tree16(a[i]);
 }
 
 typedef void (*Fn)(const uint8_t* const*, const float*, int, int, float*);
 
-static int mt_main(int nthr, int f) {
-  const int K = 2048, G = 128, RB = K / 2 + 2 * (K / G);
-  const size_t rows = 24 * 768 * 8;          // ~ 8 experts x 3 matrices of a Qwen3-30B layer, x24 layers (~0.4 GB)
+static int mt_main(int nthr, int f, int K) {
+  const int G = 128, RB = K / 2 + 2 * (K / G);
+  const size_t rows = (size_t)24 * 768 * 8 * 2048 / K;          // ~ 8 experts x 3 matrices of a Qwen3-30B layer, x24 layers (~0.4 GB)
   std::vector<uint8_t> W(rows * RB);
   for (size_t i = 0; i < W.size(); i += 64) W[i] = (uint8_t)i;
   for (size_t r = 0; r < rows; r++) { uint16_t* sc = (uint16_t*)(W.data() + r * RB + K / 2); for (int g = 0; g < K / G; g++) sc[g] = 0x3c00; }
   static float X[2048]; for (int k = 0; k < K; k++) X[k] = 0.001f * (k % 7);
   std::vector<float> out(rows);
-  Fn fns[] = {v0, v1, v2, v3}; const int nr[] = {4, 4, 4, 8};
+  Fn fns[] = {v0, v1, v2, v3}; const int nr[] = {4, 4, 4, 4};
   double best = 1e9;
   for (int rep = 0; rep < 5; rep++) {
     std::atomic<size_t> next{0};
@@ -153,12 +155,13 @@ static int mt_main(int nthr, int f) {
     double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     if (dt < best) best = dt;
   }
-  printf("threads %2d variant V%d: %.1f GB/s of q4 records (%.1f ms for %.0f MB)\n", nthr, f, W.size() / best / 1e9, best * 1e3, W.size() / 1e6);
+  printf("K %4d threads %2d variant V%d: %.1f GB/s of q4 records (%.1f ms for %.0f MB)\n", K, nthr, f, W.size() / best / 1e9, best * 1e3, W.size() / 1e6);
   return 0;
 }
 
 int main(int argc, char** argv) {
-  if (argc > 2) return mt_main(atoi(argv[1]), atoi(argv[2]));
+  if (argc > 4) g_pf = atoi(argv[4]);
+  if (argc > 2) return mt_main(atoi(argv[1]), atoi(argv[2]), argc > 3 ? atoi(argv[3]) : 2048);
   const int K = 2048, G = 128, RB = K / 2 + 2 * (K / G);
   float X[K];
   for (int k = 0; k < K; k++) X[k] = bf2f((uint16_t)(0x3c00 + (rand() & 0x3ff)) ^ ((rand() & 1) << 15));
@@ -170,9 +173,9 @@ int main(int argc, char** argv) {
       uint16_t* sc = (uint16_t*)(W.data() + r * RB + K / 2);
       for (int g = 0; g < K / G; g++) sc[g] = (uint16_t)(0x3a00 + (rand() & 0x1ff));
     }
-    const char* names[] = {"V0 1.3", "V1 hoist", "V2 magic", "V3 magic x8"};
+    const char* names[] = {"V0 1.3", "V1 hoist", "V2 magic", "V3 magic+pf"};
     Fn fns[] = {v0, v1, v2, v3};
-    const int nr[] = {4, 4, 4, 8};
+    const int nr[] = {4, 4, 4, 4};
     std::vector<float> ref(rows);
     for (int f = 0; f < 4; f++) {
       std::vector<float> out(rows);

@@ -63,3 +63,22 @@ def test_second_generate_call_same_bits():
     b = decode.generate(model, ids, max_new_tokens=8, return_logits=True)
     assert a["graph_used"] and b["graph_used"]
     assert torch.equal(a["logits"], b["logits"]) and torch.equal(a["ids"], b["ids"])
+
+
+@pytest.mark.parametrize("fam", ["qwen3_moe", "olmoe", "deepseek_v3", "gpt_oss"])
+def test_graph_reuse_same_bits(fam, monkeypatch):
+    """v1.4: decode buffers, static cache and CUDA graph reused across calls give each call's fresh bits."""
+    from vahana import decode, loader, selftest
+    cfg, m = selftest.build(fam)
+    model, _ = loader.prepare(m.to("cuda"))
+    g = torch.Generator().manual_seed(7)
+    p1 = torch.randint(1, cfg.vocab_size, (1, 20), generator=g).cuda()
+    p2 = torch.randint(1, cfg.vocab_size, (1, 33), generator=g).cuda()
+    calls = [(p1, 8), (p2, 6), (p1, 8), (p2, 30)]
+    monkeypatch.setenv("VAHANA_GRAPH_REUSE", "0")
+    ref = [decode.generate(model, p, max_new_tokens=n, return_logits=True) for p, n in calls]
+    monkeypatch.setenv("VAHANA_GRAPH_REUSE", "1")
+    got = [decode.generate(model, p, max_new_tokens=n, return_logits=True) for p, n in calls]
+    assert getattr(model, "_vahana_ctx", None) is not None and model._vahana_ctx["g"] is not None
+    for r, x in zip(ref, got):
+        assert x["graph_used"] and torch.equal(r["logits"], x["logits"]) and torch.equal(r["ids"], x["ids"])

@@ -229,6 +229,7 @@ static inline void row_dots_q4(const uint8_t* rec, const float* X, int n, int K,
   }
   for (int t = 0; t < n; t++) out[t] = tree16(acc[t]);
 }
+static const int Q4_PF = [] { const char* v = std::getenv("VAHANA_Q4_PF"); return v ? std::atoi(v) : 1024; }();
 static inline void row_dots4_n1_q4(const uint8_t* r0, const uint8_t* r1, const uint8_t* r2, const uint8_t* r3,
                                    const float* X, int K, int G, float* out) {
   const uint8_t* R[4] = {r0, r1, r2, r3};
@@ -238,6 +239,16 @@ static inline void row_dots4_n1_q4(const uint8_t* r0, const uint8_t* r1, const u
   for (int g0 = 0, gi = 0; g0 < K; g0 += G, gi++) {
     const float s0 = bf2f(S[0][gi]), s1 = bf2f(S[1][gi]), s2 = bf2f(S[2][gi]), s3 = bf2f(S[3][gi]);
     for (int k0 = g0; k0 < g0 + G; k0 += 32) {
+#if defined(__x86_64__) || defined(_M_X64)
+      // v1.4: software prefetch ~1 KB ahead in each row (it runs into the next rows of the task, which the hardware
+      // prefetcher reaches late on short rows: standalone 768-wide rows 22.9 -> 26.4 GB/s). A hint only: no bits change.
+      if ((k0 & 127) == 0) {
+        _mm_prefetch((const char*)(r0 + k0 / 2 + Q4_PF), _MM_HINT_T0);
+        _mm_prefetch((const char*)(r1 + k0 / 2 + Q4_PF), _MM_HINT_T0);
+        _mm_prefetch((const char*)(r2 + k0 / 2 + Q4_PF), _MM_HINT_T0);
+        _mm_prefetch((const char*)(r3 + k0 / 2 + Q4_PF), _MM_HINT_T0);
+      }
+#endif
       const V16 x0 = v_loadf(X + k0), x1 = v_loadf(X + k0 + 16);
       V16 wl, wh;
       v_q4_pair(r0 + k0 / 2, s0, wl, wh); a[0] = v_fma(wl, x0, a[0]); a[0] = v_fma(wh, x1, a[0]);

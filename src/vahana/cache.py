@@ -12,6 +12,8 @@ Supported: SiLU-GLU experts without biases and without a folded shared expert; o
 """
 from __future__ import annotations
 
+import os
+
 import torch
 import torch.nn as nn
 
@@ -36,7 +38,8 @@ def _cgate_up(x, ti, lut, g, u, h, H, I, K, BR: tl.constexpr, LOG2E: tl.constexp
     xb = x + t * H
     gb_ = g + cs * I * H
     ub_ = u + cs * I * H
-    for k0 in range(0, H, 16):
+    kend = tl.where(c >= 0, H, 0)  # v1.4: an uncached slot runs no loop (was: a full expert with expert 0's weights, discarded)
+    for k0 in range(0, kend, 16):
         xv = tl.load(xb + k0 + ln).to(tl.float32)
         wg = tl.load(gb_ + rows[:, None] * H + k0 + ln[None, :]).to(tl.float32)
         wu = tl.load(ub_ + rows[:, None] * H + k0 + ln[None, :]).to(tl.float32)
@@ -60,7 +63,8 @@ def _cdown(hh, ti, lut, d, y, H, I, BR: tl.constexpr):
     acc = tl.zeros((BR, 16), dtype=tl.float32)
     hb = hh + sl * I
     db = d + cs * H * I
-    for k0 in range(0, I, 16):
+    kend = tl.where(c >= 0, I, 0)  # v1.4: an uncached slot runs no loop (was: a full expert with expert 0's weights, discarded)
+    for k0 in range(0, kend, 16):
         hv = tl.load(hb + k0 + ln).to(tl.float32)
         w = tl.load(db + rows[:, None] * I + k0 + ln[None, :]).to(tl.float32)
         acc = tl.fma(w, hv[None, :], acc)
@@ -188,7 +192,8 @@ def _cgate_up_q4(x, ti, lut, g, u, h, H, I, K, RBH, BR: tl.constexpr, GS: tl.con
     xb = x + t * H
     gb_ = g + cs * I * RBH
     ub_ = u + cs * I * RBH
-    for k0 in range(0, H, 32):
+    kend = tl.where(c >= 0, H, 0)  # v1.4: an uncached slot runs no loop (was: a full expert with expert 0's weights, discarded)
+    for k0 in range(0, kend, 32):
         xlo = tl.load(xb + k0 + ln).to(tl.float32)
         xhi = tl.load(xb + k0 + 16 + ln).to(tl.float32)
         glo, ghi = _q4w(gb_, rows, RBH, k0, H, GS)
@@ -215,7 +220,8 @@ def _cdown_q4(hh, ti, lut, d, y, H, I, RBI, BR: tl.constexpr, GS: tl.constexpr):
     acc = tl.zeros((BR, 16), dtype=tl.float32)
     hb = hh + sl * I
     db = d + cs * H * RBI
-    for k0 in range(0, I, 32):
+    kend = tl.where(c >= 0, I, 0)  # v1.4: an uncached slot runs no loop (was: a full expert with expert 0's weights, discarded)
+    for k0 in range(0, kend, 32):
         hlo = tl.load(hb + k0 + ln).to(tl.float32)
         hhi = tl.load(hb + k0 + 16 + ln).to(tl.float32)
         wlo, whi = _q4w(db, rows, RBI, k0, I, GS)
@@ -350,6 +356,61 @@ def combine(y: torch.Tensor, ti: torch.Tensor, tw: torch.Tensor) -> torch.Tensor
     return acc.to(torch.bfloat16)
 
 
+@triton.jit
+def _combine_k(yg, yc, ti, lut, tw, out, H, K: tl.constexpr, KP: tl.constexpr, BH: tl.constexpr,
+               HAS_C: tl.constexpr, W_BF16: tl.constexpr):
+    """v1.4: combine() in one kernel per (token, H block). Slot j uses yg (GPU-cached slot) where lut[ti] >= 0, else
+    yc (the CPU's output); slots are taken in ascending expert id (stable), acc = y0 * w0, then acc = acc + yj * wj,
+    every product and sum rounded on its own in fp32 (launched with fp fusion off), bf16 at the end: the operations
+    of combine() below, so the same bits."""
+    t = tl.program_id(0).to(tl.int64)
+    hb = tl.program_id(1).to(tl.int64) * BH + tl.arange(0, BH).to(tl.int64)
+    hm = hb < H
+    kk = tl.arange(0, KP)
+    km = kk < K
+    ids = tl.load(ti + t * K + kk, mask=km, other=2**62)
+    # rank of slot k among the K slots: ids ascending, ties by slot index (a stable sort)
+    a = ids[:, None]
+    b = ids[None, :]
+    before = (b < a) | ((b == a) & (kk[None, :] < kk[:, None]))
+    rank = tl.sum(tl.where(before & km[None, :], 1, 0), axis=1)
+    acc = tl.zeros((BH,), dtype=tl.float32)
+    for q in tl.static_range(K):
+        j = tl.sum(tl.where((rank == q) & km, kk, 0), axis=0).to(tl.int64)
+        e = tl.load(ti + t * K + j)
+        if W_BF16:
+            w = tl.load(tw + t * K + j).to(tl.float32)
+        else:
+            w = tl.load(tw + t * K + j)
+        if HAS_C:
+            cached = tl.load(lut + e) >= 0
+            vg = tl.load(yg + (t * K + j) * H + hb, mask=hm & cached, other=0.0)
+            vc = tl.load(yc + (t * K + j) * H + hb, mask=hm & (~cached), other=0.0)
+            v = tl.where(cached, vg, vc).to(tl.float32)
+        else:
+            v = tl.load(yg + (t * K + j) * H + hb, mask=hm, other=0.0).to(tl.float32)
+        p = v * w
+        if q == 0:
+            acc = p
+        else:
+            acc = acc + p
+    tl.store(out + t * H + hb, acc.to(tl.bfloat16), mask=hm)
+
+
+def combine_fused(yg: torch.Tensor, ti: torch.Tensor, tw: torch.Tensor, yc: torch.Tensor | None = None,
+                  lut: torch.Tensor | None = None) -> torch.Tensor:
+    """combine(where(lut[ti] >= 0, yg, yc), ti, tw) (or combine(yg, ti, tw) when yc is None) in one kernel."""
+    N, K, H = yg.shape
+    out = torch.empty((N, H), dtype=torch.bfloat16, device=yg.device)
+    tw = tw.contiguous()
+    BH = 256
+    _combine_k[(N, triton.cdiv(H, BH))](yg.contiguous(), (yc if yc is not None else yg).contiguous(),
+                                        ti.contiguous(), lut if lut is not None else ti, tw, out, H, K=K,
+                                        KP=triton.next_power_of_2(K), BH=BH, HAS_C=yc is not None,
+                                        W_BF16=tw.dtype == torch.bfloat16, num_warps=4, enable_fp_fusion=False)
+    return out
+
+
 class CachedExperts(nn.Module):
     """A VahanaExperts layer with `ids` of its experts also resident on the GPU."""
 
@@ -397,8 +458,11 @@ class CachedExperts(nn.Module):
             hs = runtime.cpu_slots_post(self.spec.slot, x, ti, self.numa)
             y_gpu = self._slots(x, ti)
             y_cpu = runtime.cpu_slots_wait(hs, x.device)
+            tw = runtime.weights_arg(top_k_weights)
+            if os.environ.get("VAHANA_FUSED_COMBINE", "1") != "0" and tw.dtype in (torch.float32, torch.bfloat16):
+                return combine_fused(y_gpu, ti, tw, y_cpu, self.lut).to(hidden_states.dtype)   # v1.4: one kernel
             y = torch.where((self.lut[ti] >= 0).unsqueeze(-1), y_gpu, y_cpu)
-            return combine(y, ti, runtime.weights_arg(top_k_weights)).to(hidden_states.dtype)
+            return combine(y, ti, tw).to(hidden_states.dtype)
         y_gpu = self._slots(x, ti)       # cached slots (zeros elsewhere)
         # The CPU job runs the other slots and combines all K (nothing but one copy follows the CUDA-graph host node:
         # kernels queued behind a host node are expensive)

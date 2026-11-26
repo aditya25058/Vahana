@@ -416,7 +416,8 @@ def _gpu_cache(model, model_dir, gpu_cache_gb, reserve_gb, log):
     from . import cache as _cache
     from .experts import VahanaExperts
     free, total = (v / 2**30 for v in torch.cuda.mem_get_info())
-    reserve_gb = min(reserve_gb, 0.25 * total)        # v1.4: a 4 GB card keeps 1 GB, not 1.5, for KV cache / workspace
+    # v1.4: a 4 GB card keeps 1 GB, not 1.5, for KV cache / workspace (VAHANA_CACHE_RESERVE_FRAC of the GPU)
+    reserve_gb = min(reserve_gb, float(os.environ.get("VAHANA_CACHE_RESERVE_FRAC", "0.25")) * total)
     gb = free - reserve_gb if gpu_cache_gb == "auto" else float(gpu_cache_gb)
     gb = min(gb, free - 0.5)
     if gb <= 0:
