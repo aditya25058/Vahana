@@ -29,6 +29,15 @@
 #include <sched.h>
 #include <pthread.h>
 #endif
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 #if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
 #define VH_RELAX() _mm_pause()
@@ -183,6 +192,15 @@ class Pool {
     if (bind_ && !places_.empty()) { for (int c : places_[tid % places_.size()]) CPU_SET(c, &s); }
     else { for (int c : allowed_) CPU_SET(c, &s); }
     pthread_setaffinity_np(pthread_self(), sizeof(s), &s);
+#elif defined(_WIN32)
+    // v1.4 (VAHANA_WIN_BIND=1, experimental): one thread per physical core first, then their SMT siblings. Windows
+    // numbers a core's two hardware threads 2c and 2c + 1; unpinned, two team threads can share one core.
+    static const bool on = [] { const char* v = std::getenv("VAHANA_WIN_BIND"); return v && v[0] == '1'; }();
+    if (!on) { (void)tid; return; }
+    SYSTEM_INFO si; GetSystemInfo(&si);
+    const int nl = (int)si.dwNumberOfProcessors, cores = std::max(1, nl / 2);
+    const int t = tid % nl, logical = 2 * (t % cores) + (t / cores) % 2;
+    if (logical < 64) SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR)1 << logical);
 #else
     (void)tid;
 #endif

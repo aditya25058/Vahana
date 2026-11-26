@@ -14,6 +14,7 @@ verified RMSNorms, the `vahana` attention function.
 from __future__ import annotations
 
 import inspect as _insp
+import os
 import re
 import time
 
@@ -127,13 +128,25 @@ def _plan(model, specs, budget_bytes, force_cpu: str | None):
 
 
 def _assemble(model, specs, get_param, get_experts, dev, cpu, folded, numa, nx, place, log, experts="cpu",
-              twin=True):
+              twin=True, get_q4=None):
     pref = tuple(s.path + "." for s in specs)
     on_cpu = lambda mod_name: any(mod_name == c or mod_name.startswith(c + ".") for c in cpu)
+    n_q4 = 0
     for n, p in list(model.named_parameters()):
         if n.startswith(pref):
             continue
         mod_name, pname = n.rsplit(".", 1)
+        if get_q4 is not None and pname == "weight" and dev.type == "cuda" and not on_cpu(mod_name):
+            mod = model.get_submodule(mod_name)
+            rec = get_q4(n) if isinstance(mod, nn.Linear) and mod.bias is None else None
+            from . import q4lin
+            if rec is not None and q4lin.supported(mod.in_features, mod.out_features):
+                # v1.4: keep a 4-bit linear 4-bit on the GPU (same bits as the bf16 expansion; see q4lin)
+                parent, leaf = mod_name.rsplit(".", 1)
+                setattr(model.get_submodule(parent), leaf,
+                        q4lin.Q4Linear(rec.to(dev), mod.in_features, mod.out_features))
+                n_q4 += 1
+                continue
         t = get_param(n)
         t = t.to(torch.bfloat16).to("cpu").clone().contiguous() if on_cpu(mod_name) \
             else t.to(dev, torch.bfloat16).contiguous()
@@ -184,7 +197,8 @@ def _assemble(model, specs, get_param, get_experts, dev, cpu, folded, numa, nx, 
         if nre is not None and not hasattr(block, "num_experts"):
             block.num_experts = nre
     info = {"invariant": "twin" if twin else _inv.install(model), "experts_s": time.time() - t1,
-            "nx_layers": sum(1 for m in model.modules() if isinstance(m, VahanaExperts) and m.nx)}
+            "nx_layers": sum(1 for m in model.modules() if isinstance(m, VahanaExperts) and m.nx),
+            "q4_linears": n_q4}
     _rt.TWIN["on"] = twin
     model._vahana_device = dev            # where inputs go (server / cli)
     _rt.install_linear()
@@ -309,11 +323,25 @@ def load(model_dir: str, gpu_budget_gb: float | None = None, device: str = "cuda
         return got["gate_up_proj"][0], got["gate_up_proj"][1], got["down_proj"][0], None, None, None
 
     budget = (gpu_budget_gb - reserve_gb) * 2**30 if gpu_budget_gb else float("inf")
+    emb_cpu = os.environ.get("VAHANA_EMBED_CPU", "auto")
+    if force_cpu is None and dev.type == "cuda" and not getattr(cfg, "tie_word_embeddings", False) and (
+            emb_cpu == "1" or emb_cpu == "auto" and torch.cuda.get_device_properties(dev).total_memory < 12 * 2**30):
+        # v1.4: on a small GPU the input embedding table (one row read per token, an exact lookup) lives in CPU RAM,
+        # so its GPU memory goes to the expert cache instead. Same bits.
+        force_cpu = r"embed_tokens$"
     cpu, folded, total = _plan(model, specs, budget, force_cpu)
     if log:
         log(f"vahana: {cfg.model_type}, {len(specs)} MoE layers, non-expert {total / 2**30:.1f} GB, "
             f"{len(cpu)} modules in CPU RAM ({len(folded)} shared experts folded)")
-    info = _assemble(model, specs, get_param, get_experts, dev, cpu, folded, numa, nx, place, log, experts, twin)
+    def get_q4(n):
+        """v1.4: twin-q4 records of a pack-quantized non-expert weight (None for any other weight)."""
+        if os.environ.get("VAHANA_Q4_LINEARS", "1") == "0" or n in ck or n + "_packed" not in ck:
+            return None
+        sc = h.get_tensor(ck[n + "_scale"])
+        return _q4.from_compressed(h.get_tensor(ck[n + "_packed"]), sc) if sc.dtype == torch.bfloat16 else None
+
+    info = _assemble(model, specs, get_param, get_experts, dev, cpu, folded, numa, nx, place, log, experts, twin,
+                     get_q4=get_q4)
     if getattr(cfg, "tie_word_embeddings", False):
         model.tie_weights()
     info.update(model_type=cfg.model_type, moe_layers=len(specs), nonexpert_gb=total / 2**30,
@@ -384,7 +412,8 @@ def _gpu_cache(model, model_dir, gpu_cache_gb, reserve_gb, log):
     import os
     from . import cache as _cache
     from .experts import VahanaExperts
-    free = torch.cuda.mem_get_info()[0] / 2**30
+    free, total = (v / 2**30 for v in torch.cuda.mem_get_info())
+    reserve_gb = min(reserve_gb, 0.25 * total)        # v1.4: a 4 GB card keeps 1 GB, not 1.5, for KV cache / workspace
     gb = free - reserve_gb if gpu_cache_gb == "auto" else float(gpu_cache_gb)
     gb = min(gb, free - 0.5)
     if gb <= 0:

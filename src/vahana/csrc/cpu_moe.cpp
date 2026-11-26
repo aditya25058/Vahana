@@ -187,30 +187,44 @@ static inline void v_q4_pair(const uint8_t* b, float s, V16& lo, V16& hi) {
   lo = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_sub_epi32(_mm512_and_si512(v, m4), e8)), sv);
   hi = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_sub_epi32(_mm512_srli_epi32(v, 4), e8)), sv);
 #elif defined(VH_ISA_AVX2)
-  const __m128i v = _mm_loadu_si128((const __m128i*)b), m4 = _mm_set1_epi8(0x0F);
-  const __m128i bl = _mm_and_si128(v, m4), bh = _mm_and_si128(_mm_srli_epi16(v, 4), m4);
-  const __m256i e8 = _mm256_set1_epi32(8);
-  const __m256 sv = _mm256_set1_ps(s);
-  lo.lo = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(_mm256_cvtepu8_epi32(bl), e8)), sv);
-  lo.hi = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(_mm256_cvtepu8_epi32(_mm_srli_si128(bl, 8)), e8)), sv);
-  hi.lo = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(_mm256_cvtepu8_epi32(bh), e8)), sv);
-  hi.hi = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(_mm256_cvtepu8_epi32(_mm_srli_si128(bh, 8)), e8)), sv);
+  // v1.4: nibble -> float without an int conversion: the float with bits 0x4B000000 | n is exactly 2^23 + n, and
+  // subtracting 2^23 + 8 gives q = n - 8 exactly; then q * s (exact). The same weight values as before, so the same
+  // fma inputs and bits. Bytes reach the dword lanes with one vpshufb per 8 values from a broadcast load.
+  const __m256i v = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i*)b));
+  const __m256i m4 = _mm256_set1_epi8(0x0F);
+  const __m256i bl = _mm256_and_si256(v, m4), bh = _mm256_and_si256(_mm256_srli_epi16(v, 4), m4);
+  const __m256i s0 = _mm256_setr_epi8(0, -1, -1, -1, 1, -1, -1, -1, 2, -1, -1, -1, 3, -1, -1, -1,
+                                      4, -1, -1, -1, 5, -1, -1, -1, 6, -1, -1, -1, 7, -1, -1, -1);
+  const __m256i s1 = _mm256_setr_epi8(8, -1, -1, -1, 9, -1, -1, -1, 10, -1, -1, -1, 11, -1, -1, -1,
+                                      12, -1, -1, -1, 13, -1, -1, -1, 14, -1, -1, -1, 15, -1, -1, -1);
+  const __m256i mg = _mm256_set1_epi32(0x4B000000);
+  const __m256 off = _mm256_set1_ps(8388616.0f), sv = _mm256_set1_ps(s);
+  lo.lo = _mm256_mul_ps(_mm256_sub_ps(_mm256_castsi256_ps(_mm256_or_si256(_mm256_shuffle_epi8(bl, s0), mg)), off), sv);
+  lo.hi = _mm256_mul_ps(_mm256_sub_ps(_mm256_castsi256_ps(_mm256_or_si256(_mm256_shuffle_epi8(bl, s1), mg)), off), sv);
+  hi.lo = _mm256_mul_ps(_mm256_sub_ps(_mm256_castsi256_ps(_mm256_or_si256(_mm256_shuffle_epi8(bh, s0), mg)), off), sv);
+  hi.hi = _mm256_mul_ps(_mm256_sub_ps(_mm256_castsi256_ps(_mm256_or_si256(_mm256_shuffle_epi8(bh, s1), mg)), off), sv);
 #else
   float a[16], c[16];
   for (int i = 0; i < 16; i++) { a[i] = (float)((int)(b[i] & 15) - 8) * s; c[i] = (float)((int)(b[i] >> 4) - 8) * s; }
   lo = v_loadf(a); hi = v_loadf(c);
 #endif
 }
+// v1.4: the scale is loaded once per group (the loops run group by group) instead of `k0 / G` per block: a runtime
+// integer division in the innermost loop cost tens of cycles per 32 weights on Zen 2. The fma sequence per lane, and so
+// every bit, is unchanged.
 static inline void row_dots_q4(const uint8_t* rec, const float* X, int n, int K, int G, float* out) {
   const uint16_t* sc = (const uint16_t*)(rec + K / 2);
   V16 acc[16];
   for (int t = 0; t < n; t++) acc[t] = v_zero();
-  for (int k0 = 0; k0 < K; k0 += 32) {
-    V16 wl, wh;
-    v_q4_pair(rec + k0 / 2, bf2f(sc[k0 / G]), wl, wh);
-    for (int t = 0; t < n; t++) {
-      acc[t] = v_fma(wl, v_loadf(X + (size_t)t * K + k0), acc[t]);
-      acc[t] = v_fma(wh, v_loadf(X + (size_t)t * K + k0 + 16), acc[t]);
+  for (int g0 = 0, gi = 0; g0 < K; g0 += G, gi++) {
+    const float s = bf2f(sc[gi]);
+    for (int k0 = g0; k0 < g0 + G; k0 += 32) {
+      V16 wl, wh;
+      v_q4_pair(rec + k0 / 2, s, wl, wh);
+      for (int t = 0; t < n; t++) {
+        acc[t] = v_fma(wl, v_loadf(X + (size_t)t * K + k0), acc[t]);
+        acc[t] = v_fma(wh, v_loadf(X + (size_t)t * K + k0 + 16), acc[t]);
+      }
     }
   }
   for (int t = 0; t < n; t++) out[t] = tree16(acc[t]);
@@ -218,16 +232,21 @@ static inline void row_dots_q4(const uint8_t* rec, const float* X, int n, int K,
 static inline void row_dots4_n1_q4(const uint8_t* r0, const uint8_t* r1, const uint8_t* r2, const uint8_t* r3,
                                    const float* X, int K, int G, float* out) {
   const uint8_t* R[4] = {r0, r1, r2, r3};
+  const uint16_t* S[4] = {(const uint16_t*)(r0 + K / 2), (const uint16_t*)(r1 + K / 2),
+                          (const uint16_t*)(r2 + K / 2), (const uint16_t*)(r3 + K / 2)};
   V16 a[4] = {v_zero(), v_zero(), v_zero(), v_zero()};
-  for (int k0 = 0; k0 < K; k0 += 32) {
-    const V16 x0 = v_loadf(X + k0), x1 = v_loadf(X + k0 + 16);
-    for (int i = 0; i < 4; i++) {
+  for (int g0 = 0, gi = 0; g0 < K; g0 += G, gi++) {
+    const float s0 = bf2f(S[0][gi]), s1 = bf2f(S[1][gi]), s2 = bf2f(S[2][gi]), s3 = bf2f(S[3][gi]);
+    for (int k0 = g0; k0 < g0 + G; k0 += 32) {
+      const V16 x0 = v_loadf(X + k0), x1 = v_loadf(X + k0 + 16);
       V16 wl, wh;
-      v_q4_pair(R[i] + k0 / 2, bf2f(((const uint16_t*)(R[i] + K / 2))[k0 / G]), wl, wh);
-      a[i] = v_fma(wl, x0, a[i]);
-      a[i] = v_fma(wh, x1, a[i]);
+      v_q4_pair(r0 + k0 / 2, s0, wl, wh); a[0] = v_fma(wl, x0, a[0]); a[0] = v_fma(wh, x1, a[0]);
+      v_q4_pair(r1 + k0 / 2, s1, wl, wh); a[1] = v_fma(wl, x0, a[1]); a[1] = v_fma(wh, x1, a[1]);
+      v_q4_pair(r2 + k0 / 2, s2, wl, wh); a[2] = v_fma(wl, x0, a[2]); a[2] = v_fma(wh, x1, a[2]);
+      v_q4_pair(r3 + k0 / 2, s3, wl, wh); a[3] = v_fma(wl, x0, a[3]); a[3] = v_fma(wh, x1, a[3]);
     }
   }
+  (void)R;
   for (int i = 0; i < 4; i++) out[i] = tree16(a[i]);
 }
 static int node_of(const void* p) {
@@ -1368,10 +1387,19 @@ static void experts_q4_fused(const std::vector<const torch::Tensor*>& Gt, const 
   const size_t rbH = (size_t)Gt[0]->size(1), rbI = (size_t)Dt[0]->size(1);
   const int GH = (int)(2 * (size_t)H / (rbH - H / 2)), GI = (int)(2 * (size_t)I / (rbI - I / 2));
   std::vector<float> hf((size_t)E * I);
+  // v1.4: task size in rows (VAHANA_Q4_TASK_ROWS, default 16; a multiple of 4 dividing I and H). Which thread computes
+  // a row never changes the row's arithmetic, so this is speed only.
+  // Default 64 rows (measured on a Ryzen 4800H: 16 -> 64 rows, 51.0 -> 47.3 ms per Qwen3-30B token; 128 rows starves
+  // 16 threads), else the largest of 32 / 16 that divides both I and H.
+  static const int TR = [] { const char* v = std::getenv("VAHANA_Q4_TASK_ROWS"); int t = v ? std::atoi(v) : 64;
+                             return (t >= 4 && t % 4 == 0) ? t : 64; }();
+  int tr = 16;
+  for (int c : {TR, 32, 16})
+    if (I % c == 0 && H % c == 0) { tr = c; break; }
   std::vector<int> ta[2], tb[2];
   for (int j = 0; j < E; j++) {
-    for (int b = 0; b < I / 16; b++) ta[numa == 2 ? (b >= I / 32) : 0].push_back(j << 16 | b);
-    for (int b = 0; b < H / 16; b++) tb[numa == 2 ? (b >= H / 32) : 0].push_back(j << 16 | b);
+    for (int b = 0; b < I / tr; b++) ta[numa == 2 ? (b >= I / tr / 2) : 0].push_back(j << 16 | b);
+    for (int b = 0; b < H / tr; b++) tb[numa == 2 ? (b >= H / tr / 2) : 0].push_back(j << 16 | b);
   }
   std::vector<PadAt> done(E);
   for (int j = 0; j < E; j++) done[j].v = 0;
@@ -1389,7 +1417,7 @@ static void experts_q4_fused(const std::vector<const torch::Tensor*>& Gt, const 
         const uint8_t* G = (const uint8_t*)Gt[j]->data_ptr();
         const uint8_t* U = (const uint8_t*)Ut[j]->data_ptr();
         float* hj = &hf[(size_t)j * I];
-        for (int r = b * 16; r < b * 16 + 16; r += 2) {
+        for (int r = b * tr; r < b * tr + tr; r += 2) {
           row_dots4_n1_q4(G + r * rbH, G + (r + 1) * rbH, U + r * rbH, U + (r + 1) * rbH, xf, H, GH, o);
           for (int q = 0; q < 2; q++) hj[r + q] = act_h(ctx, j, r + q, o[q], o[2 + q]);
         }
@@ -1401,10 +1429,10 @@ static void experts_q4_fused(const std::vector<const torch::Tensor*>& Gt, const 
       const std::vector<int>& T = tb[Ls];
       for (int i = cb[Ls].v.fetch_add(1); i < (int)T.size(); i = cb[Ls].v.fetch_add(1)) {
         const int j = T[i] >> 16, b = T[i] & 0xFFFF;
-        while (done[j].v.load(std::memory_order_acquire) < I / 16) VH_PAUSE();
+        while (done[j].v.load(std::memory_order_acquire) < I / tr) VH_PAUSE();
         const uint8_t* D = (const uint8_t*)Dt[j]->data_ptr();
         const float* hj = &hf[(size_t)j * I];
-        for (int r = b * 16; r < b * 16 + 16; r += 4) {
+        for (int r = b * tr; r < b * tr + tr; r += 4) {
           row_dots4_n1_q4(D + r * rbI, D + (r + 1) * rbI, D + (r + 2) * rbI, D + (r + 3) * rbI, hj, I, GI, o);
           for (int q = 0; q < 4; q++) y[j][r + q] = down_o(ctx, j, r + q, o[q]);
         }
