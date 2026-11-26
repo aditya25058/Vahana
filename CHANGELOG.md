@@ -3,6 +3,11 @@
 Each version's evidence is in `experiments/` (pre-registered bars, run logs, raw results). Missed bars are recorded there too.
 
 ## Unreleased
+- **Persistent prefix cache** (`vahana run --prefix-cache [DIR]`, `generate(prefix_cache=...)`).
+  - A prompt that starts like an earlier one (a document, a system prompt) reuses that prefix's attention state from disk and prefills only the rest.
+  - The logits are bit-identical to a full prefill.
+  - Laptop, Qwen3-30B 4-bit, 2,048-token document with a new question: 12.2 → 1.5 s to first token.
+  - Batch 1, attention models.
 - **Long prompts are much faster on small GPUs, with the same bits.**
   - From 32 tokens, a prefill streams each layer's CPU-resident experts to the GPU and runs them with new tiled kernels.
   - The kernels keep the CPU kernel's exact arithmetic. Only the tiling changes, so the logits are bit-identical (also across machines).

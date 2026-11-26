@@ -27,6 +27,7 @@ vahana doctor /models/Qwen3-30B-A3B    # what this machine runs, where the weigh
 vahana run   /models/Qwen3-30B-A3B --prompt "Explain mixture-of-experts in one paragraph." --chat
 vahana serve /models/Qwen3-30B-A3B --slots 32 --port 8000      # OpenAI-compatible, continuous batching
 vahana run   /models/OLMoE-1B-7B-0924 --device cpu --prompt "Hello"   # no GPU: the same tokens, slower
+vahana run   /models/Qwen3-30B-A3B --prompt "$(cat doc.txt) Q: ..." --prefix-cache   # later questions on doc.txt skip its prefill
 ```
 From source: `pip install -e .` then `python src/vahana/csrc/build.py` (needs a C++20 compiler; no torch headers).
 

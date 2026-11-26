@@ -64,3 +64,25 @@ Profiles (`VAHANA_PREFILL_PROFILE=1`, [kernel_profile.py](kernel_profile.py), [p
 - **Attention** (`attention._attn`, one program per query) is now the largest GPU kernel in a 2,048-token prefill: about 3.2 s of 12.5 s of CUDA time on the laptop. A tiled exact attention is the next step.
 - **The 512-token laptop prefill** is bound by reading the experts: about 14 GB per prefill on a 15 GB-RAM machine.
 - **The bench prompt** is one paragraph repeated, which routes to fewer distinct experts than varied text would.
+
+## Persistent prefix cache (part 2 of 1.3)
+`vahana run --prefix-cache` and `vahana.generate(..., prefix_cache=prefix.PrefixCache(dir, model_key))`.
+- A prompt that starts like an earlier one reuses the keys and values of that shared prefix from disk, at a 256-token block boundary. Only the rest is prefilled.
+- It is exact because every token's row is computed the same way however the prompt is split.
+
+Checks:
+- Tests on five families compare cold, cached and reloaded-from-disk runs. All give the full prefill's logits and tokens, bit for bit, on transformers 5.12 and 5.20 ([tests/test_prefix.py](../../tests/test_prefix.py)).
+- Transformers 5.20's static cache layers track their fill position in `cumulative_length`. Loading must set it, or the suffix overwrites the prefix.
+
+Laptop, Qwen3-30B w4a16: a 2,048-token document followed by three different questions ([bench_prefix.py](bench_prefix.py)).
+
+| | Prefill (time to first token) | Logits vs no cache |
+|---|---|---|
+| Question 1 (cold: stores 2,048 tokens, about 200 MB) | 12.5 s | identical |
+| Question 2 (reuses 2,048 of 2,055) | **1.70 s** (10.3 s without the cache) | identical |
+| Question 3 (reuses 2,048 of 2,055) | **1.49 s** (12.2 s without) | identical |
+
+Limits:
+- Batch 1 only.
+- Attention-only models. Recurrent / linear-attention hybrids such as Qwen3.5 are skipped.
+- Not yet in `vahana serve`.

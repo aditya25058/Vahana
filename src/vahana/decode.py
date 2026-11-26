@@ -21,12 +21,15 @@ def _sync(dev) -> None:
 
 @torch.no_grad()
 def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None = None, max_new_tokens: int = 64,
-             graph: bool = True, eos_token_id=None, return_logits: bool = False, sampler=None, on_token=None):
+             graph: bool = True, eos_token_id=None, return_logits: bool = False, sampler=None, on_token=None,
+             prefix_cache=None):
     """input_ids [B, T] (left-padded if attention_mask is given). Returns dict with ids [B, n], step_ms, and logits
     (per step, [B, V]) when return_logits.
     sampler(logits [B, V] fp32) -> [B, 1] token ids replaces the greedy choice (it runs on the host after each step,
     so a seeded sampler is exactly reproducible). on_token(ids [B, 1]) is called for every token; returning True
-    stops generation."""
+    stops generation.
+    prefix_cache (v1.3, prefix.PrefixCache): reuse a stored prompt prefix's keys/values and prefill only the rest
+    (batch 1, attention models; the logits are bit-identical to a full prefill)."""
     from transformers import StaticCache
     dev = input_ids.device
     graph = graph and dev.type == "cuda"          # CPU-only machines decode eagerly
@@ -47,9 +50,17 @@ def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None
     cache.layers = [StaticLayer(max_cache_len=L) if isinstance(x, StaticSlidingWindowLayer) else x
                     for x in cache.layers]
     t0 = time.perf_counter()
+    k0 = 0
+    pc = prefix_cache if (prefix_cache is not None and B == 1 and (attention_mask is None or bool(attention_mask.all()))
+                          and all(hasattr(x, "lazy_initialization") for x in cache.layers)) else None
+    if pc is not None:
+        k0, kv = pc.lookup(input_ids[0])
+        if k0:
+            from . import prefix as _prefix
+            _prefix.fill(cache.layers, kv, k0, dev)
     try:
-        out = model(input_ids, attention_mask=am, position_ids=pos0, past_key_values=cache,
-                    cache_position=torch.arange(T, device=dev), use_cache=True, logits_to_keep=1)
+        out = model(input_ids[:, k0:], attention_mask=am, position_ids=pos0[:, k0:], past_key_values=cache,
+                    cache_position=torch.arange(k0, T, device=dev), use_cache=True, logits_to_keep=1)
     except ValueError as e:                       # model insists on its own cache class (hybrids): eager only
         if "cache" not in str(e).lower():
             raise
@@ -57,6 +68,8 @@ def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None
                                  eos_token_id=eos_token_id, reason=f"own cache class: {str(e)[:160]}")
     _sync(dev)
     prefill_s = time.perf_counter() - t0
+    if pc is not None:
+        pc.store(input_ids[0], cache.layers)
     logit = out.logits[:, -1].float()
     tok = logit.argmax(-1, keepdim=True) if sampler is None else sampler(logit).to(dev).view(B, 1)
     pos = pos0[:, -1:] + 1

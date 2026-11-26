@@ -165,6 +165,9 @@ def main(argv=None):
                                                            "logits digests) that anyone can check with `vahana verify`")
             s.add_argument("--temperature", type=float, default=0.0, help="0 = greedy; >0 samples with Vahana's "
                                                                           "exact sampler (same token on every machine)")
+            s.add_argument("--prefix-cache", nargs="?", const="", default=None, metavar="DIR",
+                           help="reuse the attention state of earlier prompts that start the same way (stored on disk, "
+                                "default ~/.cache/vahana/prefix): only the new part is prefilled, same bits")
             s.add_argument("--top-p", type=float, default=1.0)
             s.add_argument("--seed", type=int, default=0)
         elif name == "serve":
@@ -190,8 +193,15 @@ def main(argv=None):
         ids = tok(text, return_tensors="pt").input_ids.to(model._vahana_device)
         from . import receipt as _rc
         smp = _rc.make_sampler(args.temperature, args.top_p, args.seed)
+        pc = None
+        if args.prefix_cache is not None:
+            from . import prefix as _prefix
+            pc = _prefix.PrefixCache(args.prefix_cache or None, model_key=_rc.fingerprint(args.model)["sha256"])
         r = decode.generate(model, ids, max_new_tokens=args.max_tokens, eos_token_id=tok.eos_token_id,
-                            sampler=smp, return_logits=bool(args.receipt))
+                            sampler=smp, return_logits=bool(args.receipt), prefix_cache=pc)
+        if pc is not None:
+            print(f"[prefix cache: reused {pc.last['hit_tokens']} of {ids.shape[1]} prompt tokens, stored "
+                  f"{pc.last['stored_tokens']}]", file=sys.stderr)
         print(tok.decode(r["ids"][0], skip_special_tokens=True))
         if args.receipt:
             rec = _rc.make(model, args.model, ids, r, args.max_tokens, tok.eos_token_id, smp)
