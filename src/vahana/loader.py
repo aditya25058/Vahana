@@ -335,8 +335,11 @@ def load(model_dir: str, gpu_budget_gb: float | None = None, device: str = "cuda
             f"{len(cpu)} modules in CPU RAM ({len(folded)} shared experts folded)")
     def get_q4(n):
         """v1.4: twin-q4 records of a pack-quantized non-expert weight (None for any other weight)."""
-        if os.environ.get("VAHANA_Q4_LINEARS", "1") == "0" or n in ck or n + "_packed" not in ck:
+        mode = os.environ.get("VAHANA_Q4_LINEARS", "auto")
+        if mode == "0" or n in ck or n + "_packed" not in ck:
             return None
+        if mode == "auto" and torch.cuda.get_device_properties(dev).total_memory >= 12 * 2**30:
+            return None     # a large GPU reads bf16 faster than it decodes 4-bit (H100: 55.9 vs 34.0 tok/s)
         sc = h.get_tensor(ck[n + "_scale"])
         return _q4.from_compressed(h.get_tensor(ck[n + "_packed"]), sc) if sc.dtype == torch.bfloat16 else None
 

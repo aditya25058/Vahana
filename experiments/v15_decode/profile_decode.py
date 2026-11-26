@@ -52,7 +52,9 @@ if os.environ.get("PROFILE_SKIP_DECODE") != "1":
     r = decode.generate(model, ids, max_new_tokens=64)
     f1 = faults()
     st = r["step_ms"]
+    q = sorted(st)
     print(f"decode: {len(st) / (sum(st) / 1e3):.2f} tok/s, p50 {statistics.median(st):.1f} ms/step, "
+          f"p90 {q[int(0.9 * (len(q) - 1))]:.1f}, mean {sum(st) / len(st):.1f}, "
           f"page faults/token {(f1 - f0) / 64:.0f} (incl. prefill)", flush=True)
 
 if os.environ.get("PROFILE_DECODE_ONLY") == "1":
