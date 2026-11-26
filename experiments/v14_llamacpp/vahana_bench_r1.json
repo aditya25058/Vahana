@@ -1,0 +1,35 @@
+{
+ "vahana": "1.0.1",
+ "model": "Qwen3-30B-A3B-w4a16",
+ "model_type": "qwen3_moe",
+ "device": "cuda",
+ "load_s": 27.9,
+ "prompt_tokens": 512,
+ "ttft_s": 6.502,
+ "prefill_tok_s": 78.7,
+ "decode_tokens": 64,
+ "decode_tok_s": 9.37,
+ "step_ms_p50": 94.8,
+ "step_ms_p95": 141.1,
+ "cuda_graph": true,
+ "gpu_peak_gb": 3.07,
+ "ram_peak_gb": 9.44,
+ "machine": {
+  "os": "Windows 11 (build 26200)",
+  "arch": "AMD64",
+  "python": "3.10.10",
+  "cpu_threads": 16,
+  "cpu": "AMD Ryzen 7 4800H with Radeon Graphics",
+  "ram_available_gb": 0.229888916015625,
+  "ram_total_gb": 15.421005249023438,
+  "torch": "2.11.0+cu128",
+  "isa": "avx2",
+  "kernel": "avx2 (avx2 build), 14 threads",
+  "gpu": {
+   "name": "NVIDIA GeForce RTX 3050 Ti Laptop GPU",
+   "total_gb": 3.99951171875,
+   "free_gb": 0.15205078199505806,
+   "triton": true
+  }
+ }
+}

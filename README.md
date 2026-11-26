@@ -79,6 +79,7 @@ Full tables, the machines used, and the misses are in **[docs/benchmarks.md](doc
 | Qwen3.5-35B-A3B (Gated DeltaNet hybrid), batched | 4.35× one at a time, bit-identical |
 | Qwen3-30B (57 GB) on the 15 GB laptop, streamed from NVMe | about 1 tok/s, the H100's logits bit for bit |
 | Qwen3-30B 4-bit on the 4 GB laptop, 2,048-token prompt | 9.6 s to first token (was 82 s), same logits as the H100 |
+| vs llama.cpp on the same laptop ([details](experiments/v14_llamacpp/README.md)) | llama.cpp decodes 1.2–1.6x faster; Vahana prefills 2,048 tokens 1.2–1.7x faster; only Vahana gives the same answer on CPU and GPU |
 | Cost of exactness | +1.8% per GPU decode step |
 
 ## Supported models

@@ -1,0 +1,13 @@
+{
+ "device": "cpu",
+ "alone_1": {
+  "ids": "68a97b6adff11a1e",
+  "logits": "801887bc371867d0",
+  "text": " the reasons for the split, the consequences, and the legacy.\n\nThe Roman Empire "
+ },
+ "alone_2": {
+  "ids": "68a97b6adff11a1e",
+  "logits": "801887bc371867d0",
+  "text": " the reasons for the split, the consequences, and the legacy.\n\nThe Roman Empire "
+ }
+}
