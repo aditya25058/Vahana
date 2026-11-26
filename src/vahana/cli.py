@@ -137,7 +137,8 @@ def main(argv=None):
     p = argparse.ArgumentParser(
         "vahana", description="Exact inference for MoE models too big for your GPU",
         epilog="also: `vahana selftest` (does this machine give the reference bits?), `vahana doctor [MODEL] "
-               "[--measure]` (what this machine runs, where the weights go, how fast), `vahana --version`")
+               "[--measure]` (what this machine runs, where the weights go, how fast), `vahana verify RECEIPT --model "
+               "MODEL` (check an answer bit for bit), `vahana bench MODEL` (speed, memory, exactness), `vahana --version`")
     sub = p.add_subparsers(dest="cmd", required=True)
     for name in ("run", "serve", "verify"):
         s = sub.add_parser(name)

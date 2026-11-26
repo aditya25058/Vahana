@@ -17,6 +17,19 @@ Other engines change a request's output when the batch around it changes. In Vah
 > Every claim here comes from a pre-registered experiment in [`experiments/`](experiments), including the bars it missed.
 > See the [changelog](CHANGELOG.md).
 
+## First five minutes
+Install Vahana, check this machine, run a small MoE model, and verify an answer:
+```bash
+pip install torch "vahana[gpu]"            # omit [gpu] on machines without an NVIDIA GPU
+vahana selftest                            # 18 tiny models: does this machine give the reference bits?
+hf download allenai/OLMoE-1B-7B-0924 --local-dir models/OLMoE-1B-7B-0924     # 14 GB (pip install huggingface_hub)
+vahana run models/OLMoE-1B-7B-0924 --prompt "The capital of France is" --max-tokens 16 --receipt answer.json
+vahana verify answer.json --model models/OLMoE-1B-7B-0924 --device cpu       # PASS: the same bits on the CPU
+vahana bench  models/OLMoE-1B-7B-0924      # speed and memory on this machine, with an exactness check
+```
+For a 30B model on a small GPU, use the exact 4-bit checkpoint (16 GB of experts, runs with a 4 GB GPU and 16 GB of RAM):
+`hf download RedHatAI/Qwen3-30B-A3B-quantized.w4a16 --local-dir models/Qwen3-30B-A3B-w4a16`.
+
 ## Quick start
 ```bash
 pip install torch                      # the build for your machine (CUDA or CPU), from pytorch.org
@@ -115,17 +128,24 @@ Vahana finds the experts by structure (transformers' `experts(hidden, indices, w
   - **Less RAM still works, exactly:** experts stream from disk at disk speed. A saturated NVMe caps decode; for example Qwen3-30B on a 15 GB laptop runs at about 1 tok/s.
 - **One NVIDIA GPU, or none.** Multi-GPU is not supported.
 - **CPU:** x86-64 (AVX-512 fastest, AVX2, or plain) and ARM64 (NEON). Wheels: Linux x86-64 / arm64, Windows x86-64, macOS arm64. CI runs the selftest on each, under every instruction set.
-- **Checkpoints:** BF16. FP8 and MXFP4 checkpoints are not yet supported.
+- **Checkpoints:**
+  - BF16;
+  - 4-bit GPTQ in compressed-tensors pack-quantized format (for example RedHatAI's `w4a16` models), run exactly.
+  - FP8 and MXFP4 checkpoints are not yet supported.
 - **Hybrid linear-attention models** decode eagerly (no CUDA graph).
 - **Speculative decoding is exact but rarely faster for batch-1 MoE:** each drafted token routes to new experts ([why](docs/benchmarks.md#what-did-not-work)).
-- **Prefill on very large models is slow** when many linears sit in CPU RAM: 38 s for a 236B prompt.
+- **Prefill:**
+  - Since 1.3, long prompts run their CPU-resident experts on the GPU (same bits).
+  - Prefill is still slow on very large models whose dense linears sit in CPU RAM: 38 s for a 236B prompt.
+- **Prefix cache:** batch 1, attention models, and not yet in `vahana serve`.
 
 ## Layout
 - **Engine:** `src/vahana/`:
   - `loader`, `modelspec`, `experts`, `runtime` (GPU↔CPU mailbox), `cache` (GPU expert cache);
   - `attention`, `twinlin`, `fused`, `tmath` (twin arithmetic);
   - `decode`, `batch`, `speculative`, `engine` (continuous batching);
-  - `server`, `cli`, `doctor`, `selftest`.
+  - `prefill`, `prefill_kernels` (GPU-streamed exact prefill), `prefix` (prefix cache), `q4` (exact 4-bit);
+  - `receipt` (receipts, exact sampler), `bench`, `server`, `cli`, `doctor`, `selftest`.
 - **CPU kernel:** `src/vahana/csrc/`: `cpu_moe.cpp`, `vt.h`, `pool.h`, `build.py`. A plain shared library with a C ABI, loaded through `_kernel.py`. `osl.py` holds the OS-specific calls.
 - **Earlier research modules** (column tiers, ANS plane, tiered serving) are kept for reference and are not on the default path.
 - **Design:** `docs/design/`. **Evidence:** `experiments/` (M0–M5, P1–P4, v0.3-a … v0.5).
