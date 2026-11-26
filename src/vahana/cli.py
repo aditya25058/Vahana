@@ -4,6 +4,9 @@
   vahana serve MODEL_DIR [--gpu-budget GB] [--port 8000] [--host 127.0.0.1]
   vahana selftest [--device cpu|cuda]        tiny models of 18 families: same bits as the reference H100?
   vahana doctor [MODEL_DIR ...]              this machine, and how each model would run here (and how fast)
+  vahana run MODEL_DIR --prompt "..." --receipt r.json     also write a receipt (verifiable inference, v1.2)
+  vahana verify r.json --model MODEL_DIR     re-run a receipt here: same logits and tokens, bit for bit?
+  vahana bench MODEL_DIR [--json out.json]   time to first token, decode speed, memory, and exactness checks
 
 Process setup happens here, before torch is imported, because it must apply to every thread:
   - automatic NUMA balancing is turned off for the process (MPOL_BIND over all nodes; it stalls the CPU expert
@@ -92,6 +95,30 @@ def _load(args, setup):
     return model, tok, torch
 
 
+def _verify(args) -> int:
+    import json
+    import time
+    from . import receipt as _rc
+    rec = _rc.load(args.receipt)
+    args.model_dir = args.model
+    setup = _setup(args)
+    model, _, _ = _load(args, setup)
+    t = time.time()
+    v = _rc.verify(model, rec, args.model, args.mode)
+    v["seconds"] = round(time.time() - t, 2)
+    prod = rec.get("produced_on", {})
+    print(f"vahana verify: {'PASS' if v['ok'] else 'FAIL'}  ({v['steps']} tokens, {v['mode']}, {v['seconds']}s)")
+    print(f"  produced on {prod.get('device')} {prod.get('isa', '')} {prod.get('platform')}; checked on "
+          f"{v['checked_on'].get('device')} {v['checked_on'].get('isa', '')} {v['checked_on'].get('platform')}")
+    for k, ok in v["checks"].items():
+        print(f"  {k:11s} {'ok' if ok else 'MISMATCH'}")
+    if v["first_bad_step"] is not None:
+        print(f"  first differing step: {v['first_bad_step']}")
+    if os.environ.get("VAHANA_VERIFY_JSON"):
+        print(json.dumps(v))
+    return 0 if v["ok"] else 1
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] in (["--version"], ["-V"]):
@@ -101,6 +128,9 @@ def main(argv=None):
     if argv[:1] == ["selftest"]:                      # same bits as the reference machine? (tiny models, no download)
         from .selftest import main as selftest
         return selftest(argv[1:])
+    if argv[:1] == ["bench"]:                         # speed, memory and exactness on this machine
+        from .bench import main as bench
+        return bench(argv[1:])
     if argv[:1] == ["doctor"]:                        # this machine, and which models it runs (and how fast)
         from .doctor import main as doctor
         return doctor(argv[1:])
@@ -109,9 +139,15 @@ def main(argv=None):
         epilog="also: `vahana selftest` (does this machine give the reference bits?), `vahana doctor [MODEL] "
                "[--measure]` (what this machine runs, where the weights go, how fast), `vahana --version`")
     sub = p.add_subparsers(dest="cmd", required=True)
-    for name in ("run", "serve"):
+    for name in ("run", "serve", "verify"):
         s = sub.add_parser(name)
-        s.add_argument("model", help="local model directory (safetensors + config)")
+        if name == "verify":
+            s.add_argument("receipt", help="receipt JSON written by `vahana run --receipt`")
+            s.add_argument("--model", required=True, help="local model directory (the same weights)")
+            s.add_argument("--mode", default="auto", choices=["auto", "prefill", "replay"],
+                           help="prefill: one teacher-forced pass (attention models); replay: decode again")
+        else:
+            s.add_argument("model", help="local model directory (safetensors + config)")
         s.add_argument("--gpu-budget", type=float, default=None, help="GPU memory budget in GB (default: no limit)")
         s.add_argument("--reserve", type=float, default=1.5, help="GB of the budget kept for KV cache / workspace")
         s.add_argument("--threads", type=int, default=None, help="CPU threads for the expert kernel")
@@ -125,7 +161,13 @@ def main(argv=None):
             s.add_argument("--prompt", required=True)
             s.add_argument("--max-tokens", type=int, default=128)
             s.add_argument("--chat", action="store_true", help="apply the tokenizer's chat template")
-        else:
+            s.add_argument("--receipt", default=None, help="write a receipt (prompt, settings, output, per-step "
+                                                           "logits digests) that anyone can check with `vahana verify`")
+            s.add_argument("--temperature", type=float, default=0.0, help="0 = greedy; >0 samples with Vahana's "
+                                                                          "exact sampler (same token on every machine)")
+            s.add_argument("--top-p", type=float, default=1.0)
+            s.add_argument("--seed", type=int, default=0)
+        elif name == "serve":
             s.add_argument("--host", default="127.0.0.1")
             s.add_argument("--port", type=int, default=8000)
             s.add_argument("--name", default=None, help="model name reported by the API")
@@ -135,6 +177,8 @@ def main(argv=None):
             s.add_argument("--max-len", type=int, default=4096, help="KV columns shared by the slots (prompt + "
                                                                      "max_tokens must fit)")
     args = p.parse_args(argv)
+    if args.cmd == "verify":
+        return _verify(args)
     setup = _setup(args)
     model, tok, torch = _load(args, setup)
     if args.cmd == "run":
@@ -144,8 +188,15 @@ def main(argv=None):
             text = tok.apply_chat_template([{"role": "user", "content": text}], tokenize=False,
                                            add_generation_prompt=True)
         ids = tok(text, return_tensors="pt").input_ids.to(model._vahana_device)
-        r = decode.generate(model, ids, max_new_tokens=args.max_tokens, eos_token_id=tok.eos_token_id)
+        from . import receipt as _rc
+        smp = _rc.make_sampler(args.temperature, args.top_p, args.seed)
+        r = decode.generate(model, ids, max_new_tokens=args.max_tokens, eos_token_id=tok.eos_token_id,
+                            sampler=smp, return_logits=bool(args.receipt))
         print(tok.decode(r["ids"][0], skip_special_tokens=True))
+        if args.receipt:
+            rec = _rc.make(model, args.model, ids, r, args.max_tokens, tok.eos_token_id, smp)
+            _rc.save(rec, args.receipt)
+            print(f"[receipt {rec['receipt_id'][:16]} written to {args.receipt}]", file=sys.stderr)
         st = r["step_ms"]
         if st:
             print(f"\n[{len(st) + 1} tokens, {len(st) / (sum(st) / 1e3):.2f} tok/s decode, prefill "

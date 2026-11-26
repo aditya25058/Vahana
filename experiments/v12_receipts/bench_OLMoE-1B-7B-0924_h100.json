@@ -1,0 +1,40 @@
+{
+ "vahana": "1.0.1",
+ "model": "OLMoE-1B-7B-0924",
+ "model_type": "olmoe",
+ "device": "cuda",
+ "load_s": 18.2,
+ "prompt_tokens": 512,
+ "ttft_s": 0.217,
+ "prefill_tok_s": 2358.8,
+ "decode_tokens": 64,
+ "decode_tok_s": 147.72,
+ "step_ms_p50": 6.3,
+ "step_ms_p95": 6.3,
+ "cuda_graph": true,
+ "gpu_peak_gb": 12.99,
+ "ram_peak_gb": 23.25,
+ "receipt_verify": "PASS",
+ "receipt_verify_s": 0.24,
+ "receipt_id": "6decc5003b091b0cec5cdabbd9eea240dd91bfe2dfdba4d2ee8305fab7353927",
+ "logits_chain": "e2055502733f69814bdde0a4d59f32d6db9b6c2409524229c8ab51ccc6bbe71c",
+ "selftest": "PASS",
+ "machine": {
+  "os": "Linux 6.8.0-142-generic",
+  "arch": "x86_64",
+  "python": "3.10.2",
+  "cpu_threads": 64,
+  "cpu": "AMD EPYC 9354 32-Core Processor",
+  "ram_available_gb": 466.8926200866699,
+  "ram_total_gb": 503.59302520751953,
+  "torch": "2.4.0+cu121",
+  "isa": "avx512",
+  "kernel": "avx512 (avx512 build), 62 threads",
+  "gpu": {
+   "name": "NVIDIA H100 NVL",
+   "total_gb": 93.085693359375,
+   "free_gb": 79.3582763671875,
+   "triton": true
+  }
+ }
+}

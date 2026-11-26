@@ -24,19 +24,9 @@ from . import decode
 
 
 def make_sampler(temperature: float, top_p: float, seed: int):
-    if not temperature or temperature <= 0:
-        return None
-    g = torch.Generator().manual_seed(int(seed))
-
-    def sample(logits: torch.Tensor) -> torch.Tensor:
-        p = torch.softmax(logits.detach().to("cpu", torch.float64) / float(temperature), -1)
-        if top_p < 1.0:
-            sp, si = torch.sort(p, -1, descending=True)
-            keep = sp.cumsum(-1) - sp < top_p
-            sp = torch.where(keep, sp, torch.zeros_like(sp))
-            p = torch.zeros_like(p).scatter_(-1, si, sp)
-        return torch.multinomial(p / p.sum(-1, keepdim=True), 1, generator=g)
-    return sample
+    """v1.2: Vahana's exact sampler (receipt.ExactSampler): a seeded sample is the same token on every machine."""
+    from .receipt import make_sampler as _m
+    return _m(temperature, top_p, seed)
 
 
 class _State:

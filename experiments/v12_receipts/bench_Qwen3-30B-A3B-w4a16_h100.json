@@ -1,0 +1,40 @@
+{
+ "vahana": "1.0.1",
+ "model": "Qwen3-30B-A3B-w4a16",
+ "model_type": "qwen3_moe",
+ "device": "cuda",
+ "load_s": 13.9,
+ "prompt_tokens": 512,
+ "ttft_s": 0.819,
+ "prefill_tok_s": 625.5,
+ "decode_tokens": 64,
+ "decode_tok_s": 55.94,
+ "step_ms_p50": 16.5,
+ "step_ms_p95": 16.5,
+ "cuda_graph": true,
+ "gpu_peak_gb": 17.06,
+ "ram_peak_gb": 17.01,
+ "receipt_verify": "PASS",
+ "receipt_verify_s": 0.96,
+ "receipt_id": "aaf84ac8352a30206e3519ce225ce4a645007b98089a743957f7f8a8abc73103",
+ "logits_chain": "2ebe3a1e3f174ffce017f8154387d90464e6b6fd7b10118c500e53d4d6725bc9",
+ "selftest": "PASS",
+ "machine": {
+  "os": "Linux 6.8.0-142-generic",
+  "arch": "x86_64",
+  "python": "3.10.2",
+  "cpu_threads": 64,
+  "cpu": "AMD EPYC 9354 32-Core Processor",
+  "ram_available_gb": 476.7598190307617,
+  "ram_total_gb": 503.59302520751953,
+  "torch": "2.4.0+cu121",
+  "isa": "avx512",
+  "kernel": "avx512 (avx512 build), 62 threads",
+  "gpu": {
+   "name": "NVIDIA H100 NVL",
+   "total_gb": 93.085693359375,
+   "free_gb": 75.3875732421875,
+   "triton": true
+  }
+ }
+}

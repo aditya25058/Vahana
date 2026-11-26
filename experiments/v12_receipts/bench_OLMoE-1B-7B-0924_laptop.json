@@ -1,0 +1,40 @@
+{
+ "vahana": "1.0.1",
+ "model": "OLMoE-1B-7B-0924",
+ "model_type": "olmoe",
+ "device": "cuda",
+ "load_s": 14.5,
+ "prompt_tokens": 512,
+ "ttft_s": 15.41,
+ "prefill_tok_s": 33.2,
+ "decode_tokens": 64,
+ "decode_tok_s": 6.75,
+ "step_ms_p50": 91.3,
+ "step_ms_p95": 124.7,
+ "cuda_graph": true,
+ "gpu_peak_gb": 1.67,
+ "ram_peak_gb": null,
+ "receipt_verify": "PASS",
+ "receipt_verify_s": 11.69,
+ "receipt_id": "747107c7916b8c8c6095b598e3a9e9193b01a2339b5eecfb95a00122b3270c91",
+ "logits_chain": "e2055502733f69814bdde0a4d59f32d6db9b6c2409524229c8ab51ccc6bbe71c",
+ "selftest": "PASS",
+ "machine": {
+  "os": "Windows 11 (build 26200)",
+  "arch": "AMD64",
+  "python": "3.10.10",
+  "cpu_threads": 16,
+  "cpu": "AMD Ryzen 7 4800H with Radeon Graphics",
+  "ram_available_gb": 0.3319740295410156,
+  "ram_total_gb": 15.421005249023438,
+  "torch": "2.11.0+cu128",
+  "isa": "avx2",
+  "kernel": "avx2 (avx2 build), 14 threads",
+  "gpu": {
+   "name": "NVIDIA GeForce RTX 3050 Ti Laptop GPU",
+   "total_gb": 3.99951171875,
+   "free_gb": 1.495800781995058,
+   "triton": true
+  }
+ }
+}

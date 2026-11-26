@@ -41,7 +41,30 @@ The server speaks the OpenAI API:
 - `GET /health`, `GET /v1/models`;
 - `POST /v1/completions` and `POST /v1/chat/completions`, with `stream`, `max_tokens`, `temperature`, `top_p`, `seed` and `stop`.
 
-Concurrent requests share decode steps (continuous batching), and every response equals the same request run alone. Greedy decoding is bit-exact. Sampling is reproducible: tokens are drawn on the host from fp32 logits with a generator seeded by `seed`.
+Concurrent requests share decode steps (continuous batching), and every response equals the same request run alone. Greedy decoding is bit-exact. Sampling is exact too: Vahana's sampler draws from the fp32 logits using only IEEE basic operations and a SHA-256 counter stream, so a given `seed` gives the same tokens on every machine.
+
+## Receipts: verifiable inference
+Because the bits do not depend on the machine, an answer can be checked by anyone who has the same weights.
+```bash
+vahana run    /models/Qwen3-30B-A3B --prompt "..." --receipt answer.json      # also --temperature/--top-p/--seed
+vahana verify answer.json --model /models/Qwen3-30B-A3B                      # on any machine: PASS or FAIL
+vahana bench  /models/Qwen3-30B-A3B --json bench.json                         # speed, memory, and a receipt check
+```
+A receipt records:
+- the prompt's token ids and the decoding settings;
+- a fingerprint of the weights;
+- the output token ids;
+- a SHA-256 digest of every step's logits.
+
+`vahana verify` recomputes all of it and passes only if every step's logits and every token match bit for bit. There is no tolerance and no spot-checking.
+- **Attention models:** the check is one teacher-forced pass over prompt + answer, so it is much faster than generating. 64 tokens of Qwen3-30B 4-bit take 0.96 s to check on an H100.
+- **Hybrid models (Qwen3.5):** the decode is replayed.
+
+Tested so far:
+- Receipts made on a Windows laptop's RTX 3050 Ti (OLMoE, and Qwen3-30B 4-bit with sampling) verify on an H100 server, both on its GPU and on its AVX-512 CPU.
+- A changed token fails at the step where it was changed, and an edited receipt fails its integrity check ([experiments/v12_receipts](experiments/v12_receipts/README.md)).
+
+A receipt shows that these weights compute this output for this prompt and these settings. It is not signed, so it does not show who ran it.
 
 ## Results
 Full tables, the machines used, and the misses are in **[docs/benchmarks.md](docs/benchmarks.md)**. Highlights (H100 NVL server, and a laptop with an RTX 3050 Ti 4 GB and 15 GB of RAM):

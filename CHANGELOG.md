@@ -3,6 +3,19 @@
 Each version's evidence is in `experiments/` (pre-registered bars, run logs, raw results). Missed bars are recorded there too.
 
 ## Unreleased
+- **Receipts: verifiable inference** (`vahana run --receipt`, `vahana verify`).
+  - A receipt records the prompt, settings, weight fingerprint, output and a digest of every step's logits. Anyone with the same weights can check it bit for bit on their own hardware.
+  - Attention models are checked with one teacher-forced pass: prefill logits equal decode logits bit for bit in every tested family.
+  - Hybrid models (Qwen3.5) are replayed.
+  - Laptop RTX 3050 Ti (Windows) receipts verify on an H100 GPU and on an AVX-512 CPU (Linux): OLMoE greedy and sampled, Qwen3-30B 4-bit sampled. Qwen3.5-35B hybrid receipts made on the H100 GPU also verify on its CPU (replay).
+  - Details: [experiments/v12_receipts](experiments/v12_receipts/README.md).
+- **Exact sampling.** `temperature`/`top_p`/`seed` now use Vahana's exact sampler: IEEE basic operations only, and a SHA-256 counter stream instead of torch's generator. The same seed gives the same tokens on every machine and every numpy/torch version. This applies in the server and in `vahana run`; seeded outputs differ from 1.0's.
+- **`vahana bench MODEL`**: one command reports:
+  - load time, time to first token and prefill tok/s;
+  - decode tok/s with p50/p95 per-token latency;
+  - peak GPU memory and RAM;
+  - a receipt verified on the spot, and two selftest families;
+  - `--json` for publishing.
 - **transformers 5.12–5.24 supported** (was 5.12–5.13).
   - Some releases change a model family's code (Qwen3.5-MoE at 5.14 and 5.17, gpt-oss at 5.19), which changes that family's outputs on every machine alike.
   - The selftest now keeps a reference per transformers version and only warns outside the validated range.
