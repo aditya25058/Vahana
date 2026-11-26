@@ -366,6 +366,9 @@ class CachedExperts(nn.Module):
         for c, e in enumerate(ids):
             lut[e] = c
         self.lut = lut.to(device)
+        self.lut_cpu = lut
+        from . import prefill
+        prefill.register(base, cached=self)
         from . import hybrid as _hy
         _hy.ext().register_resident(self.spec.slot, (lut >= 0).to(torch.uint8))      # the CPU job derives its mask
 
@@ -382,7 +385,10 @@ class CachedExperts(nn.Module):
         return gpu_slots(x, ti, self.lut, self.G, self.U, self.D)
 
     def forward(self, hidden_states, top_k_index, top_k_weights):
-        from . import runtime
+        from . import prefill, runtime
+        if prefill.wanted(hidden_states, self.base):     # v1.3: long prompts run the uncached experts on the GPU too
+            return prefill.run(self.base, hidden_states, top_k_index, top_k_weights, cached=self).to(
+                hidden_states.dtype)
         x = hidden_states.to(torch.bfloat16).contiguous()
         ti = top_k_index.to(torch.int64).contiguous()
         if runtime.overlap_on():

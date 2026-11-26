@@ -113,6 +113,30 @@ def _linm(x, w, y, n, K, R, BR: tl.constexpr, MT: tl.constexpr, U: tl.constexpr)
         _st_t(y, t0 + 7, n, R, rows, a7, BR)
 
 
+# v1.3: prefill tiling. A program computes BM tokens x BN rows, each output with _lin's arithmetic (16 fma lanes, k
+# ascending, tree16, bf16 RNE): activations and weights are reused across the tile, the bits are unchanged.
+@triton.jit
+def _lint(x, w, y, n, K, R, BM: tl.constexpr, BN: tl.constexpr):
+    rows = tl.program_id(0).to(tl.int64) * BN + tl.arange(0, BN).to(tl.int64)
+    tok = tl.program_id(1).to(tl.int64) * BM + tl.arange(0, BM).to(tl.int64)
+    ok = tok < n
+    ln = tl.arange(0, 16)
+    acc = tl.zeros((BM, BN, 16), dtype=tl.float32)
+    for k0 in range(0, K, 16):
+        xv = tl.load(x + tok[:, None] * K + k0 + ln[None, :], mask=ok[:, None], other=0.0).to(tl.float32)
+        wv = tl.load(w + rows[:, None] * K + k0 + ln[None, :]).to(tl.float32)
+        acc = tl.fma(wv[None, :, :], xv[:, None, :], acc)
+    a = tl.sum(tl.reshape(acc, (BM * BN, 2, 8)), axis=1)
+    a = tl.sum(tl.reshape(a, (BM * BN, 2, 4)), axis=1)
+    a = tl.sum(tl.reshape(a, (BM * BN, 2, 2)), axis=1)
+    a = tl.sum(tl.reshape(a, (BM * BN, 2, 1)), axis=1)
+    out = tl.reshape(a, (BM, BN)).to(tl.bfloat16)
+    tl.store(y + tok[:, None] * R + rows[None, :], out, mask=ok[:, None])
+
+
+TILE_MIN = int(os.environ.get("VAHANA_TILE_MIN", "64"))      # tokens from which linears use _lint (speed only)
+
+
 def _cfg_m(n: int, R: int, K: int, MT: int | None = None):
     """Multi-token launch shape (v03d_multilin bench); every choice gives the same bits."""
     br, U, _ = _cfg(R, K)
@@ -146,6 +170,8 @@ def gpu_linear(x2: torch.Tensor, W: torch.Tensor, MT: int | None = None) -> torc
     if n == 1 and MT is None or MT == 1:
         BR, U, nw = _cfg(R, K)
         _lin[(R // BR, n)](x2, W, y, K, R, BR=BR, U=U, num_warps=nw)
+    elif MT is None and n >= TILE_MIN and R % 16 == 0 and K % 16 == 0:
+        _lint[(R // 16, triton.cdiv(n, 32))](x2, W, y, n, K, R, BM=32, BN=16, num_warps=2)   # laptop sweep
     elif n:
         MT, BR, U, nw = _cfg_m(n, R, K, MT)
         _linm[(R // BR, triton.cdiv(n, MT))](x2, W, y, n, K, R, BR=BR, MT=MT, U=U, num_warps=nw)

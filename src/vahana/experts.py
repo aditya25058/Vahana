@@ -88,9 +88,13 @@ class VahanaExperts(nn.Module):
             if self.shared is not None:
                 self._spacks = [t for W in self.shared for t in pk(W)]
                 k.register_shared_nx(spec.slot, self._spacks)
+        from . import prefill
+        prefill.register(self)                           # v1.3: the read-ahead plans layers in slot order
 
     def forward(self, hidden_states, top_k_index, top_k_weights):
-        from . import runtime
+        from . import prefill, runtime
+        if prefill.wanted(hidden_states, self):          # v1.3: long prompts run these experts on the GPU
+            return prefill.run(self, hidden_states, top_k_index, top_k_weights).to(hidden_states.dtype)
         out = runtime.moe(self.spec.slot, hidden_states, top_k_index, top_k_weights, self.numa)
         return out.to(hidden_states.dtype)
 

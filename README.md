@@ -77,6 +77,7 @@ Full tables, the machines used, and the misses are in **[docs/benchmarks.md](doc
 | Continuous batching (128 requests, 32 slots) | the throughput of a static batch, 7.4× one at a time |
 | Qwen3.5-35B-A3B (Gated DeltaNet hybrid), batched | 4.35× one at a time, bit-identical |
 | Qwen3-30B (57 GB) on the 15 GB laptop, streamed from NVMe | about 1 tok/s, the H100's logits bit for bit |
+| Qwen3-30B 4-bit on the 4 GB laptop, 2,048-token prompt | 9.6 s to first token (was 82 s), same logits as the H100 |
 | Cost of exactness | +1.8% per GPU decode step |
 
 ## Supported models

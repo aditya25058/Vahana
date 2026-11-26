@@ -3,6 +3,14 @@
 Each version's evidence is in `experiments/` (pre-registered bars, run logs, raw results). Missed bars are recorded there too.
 
 ## Unreleased
+- **Long prompts are much faster on small GPUs, with the same bits.**
+  - From 32 tokens, a prefill streams each layer's CPU-resident experts to the GPU and runs them with new tiled kernels.
+  - The kernels keep the CPU kernel's exact arithmetic. Only the tiling changes, so the logits are bit-identical (also across machines).
+  - Qwen3-30B 4-bit on the 4 GB laptop: 512-token prompt 24.8 → 5.7 s, 2,048-token prompt 82 → 9.6 s.
+  - H100 with a 4 GB expert cache: 2,048 tokens 16.0 → 3.8 s.
+  - Twin linears also have a tiled prefill kernel (1.4–2× on projections).
+  - `VAHANA_PREFILL_GPU=0` turns the path off.
+  - Details: [experiments/v13_prefill](experiments/v13_prefill/README.md).
 - **Receipts: verifiable inference** (`vahana run --receipt`, `vahana verify`).
   - A receipt records the prompt, settings, weight fingerprint, output and a digest of every step's logits. Anyone with the same weights can check it bit for bit on their own hardware.
   - Attention models are checked with one teacher-forced pass: prefill logits equal decode logits bit for bit in every tested family.
