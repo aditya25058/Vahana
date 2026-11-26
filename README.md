@@ -11,11 +11,11 @@ Its answers are **bit-identical** wherever and however the work runs. The same t
 - **where the weights live:** GPU, GPU expert cache, RAM, or disk;
 - **what else is running:** batching, continuous batching in the server, padding, speculative decoding, or prefill vs decode.
 
-Other engines change a request's output when the batch around it changes. In Vahana, a request served alongside 63 others gives exactly the bits it gives alone, and that is measured, not assumed ([benchmarks](docs/benchmarks.md)).
+Other engines change a request's output when the batch around it changes. In Vahana, a request served alongside 63 others gives exactly the bits it gives alone, and that is measured, not assumed ([benchmarks](https://github.com/vahana-ai/Vahana/blob/main/docs/benchmarks.md)).
 
 > **Status: 1.3 (beta).** The exactness guarantee is stable and validated on real checkpoints up to DeepSeek-V2 236B, with 18 model families in the selftest. New in 1.3: receipts (verifiable inference), exact 4-bit models, fast exact long-prompt prefill and a prefix cache. Expect rough edges outside the tested setups below; please open an issue.
-> Every claim here comes from a pre-registered experiment in [`experiments/`](experiments), including the bars it missed.
-> See the [changelog](CHANGELOG.md).
+> Every claim here comes from a pre-registered experiment in [`experiments/`](https://github.com/vahana-ai/Vahana/tree/main/experiments), including the bars it missed.
+> See the [changelog](https://github.com/vahana-ai/Vahana/blob/main/CHANGELOG.md).
 
 ## First five minutes
 Install Vahana, check this machine, run a small MoE model, and verify an answer:
@@ -76,12 +76,12 @@ A receipt records:
 
 Tested so far:
 - Receipts made on a Windows laptop's RTX 3050 Ti (OLMoE, and Qwen3-30B 4-bit with sampling) verify on an H100 server, both on its GPU and on its AVX-512 CPU.
-- A changed token fails at the step where it was changed, and an edited receipt fails its integrity check ([experiments/v12_receipts](experiments/v12_receipts/README.md)).
+- A changed token fails at the step where it was changed, and an edited receipt fails its integrity check ([experiments/v12_receipts](https://github.com/vahana-ai/Vahana/blob/main/experiments/v12_receipts/README.md)).
 
 A receipt shows that these weights compute this output for this prompt and these settings. It is not signed, so it does not show who ran it.
 
 ## Results
-Full tables, the machines used, and the misses are in **[docs/benchmarks.md](docs/benchmarks.md)**. Highlights (H100 NVL server, and a laptop with an RTX 3050 Ti 4 GB and 15 GB of RAM):
+Full tables, the machines used, and the misses are in **[docs/benchmarks.md](https://github.com/vahana-ai/Vahana/blob/main/docs/benchmarks.md)**. Highlights (H100 NVL server, and a laptop with an RTX 3050 Ti 4 GB and 15 GB of RAM):
 
 | | Result |
 |---|---|
@@ -92,7 +92,7 @@ Full tables, the machines used, and the misses are in **[docs/benchmarks.md](doc
 | Qwen3.5-35B-A3B (Gated DeltaNet hybrid), batched | 4.35× one at a time, bit-identical |
 | Qwen3-30B (57 GB) on the 15 GB laptop, streamed from NVMe | about 1 tok/s, the H100's logits bit for bit |
 | Qwen3-30B 4-bit on the 4 GB laptop, 2,048-token prompt | 9.6 s to first token (was 82 s), same logits as the H100 |
-| vs llama.cpp on the same laptop ([details](experiments/v14_llamacpp/README.md)) | llama.cpp decodes 1.2–1.6x faster; Vahana prefills 2,048 tokens 1.2–1.7x faster; only Vahana gives the same answer on CPU and GPU |
+| vs llama.cpp on the same laptop ([details](https://github.com/vahana-ai/Vahana/blob/main/experiments/v14_llamacpp/README.md)) | llama.cpp decodes 1.2–1.6x faster; Vahana prefills 2,048 tokens 1.2–1.7x faster; only Vahana gives the same answer on CPU and GPU |
 | Cost of exactness | +1.8% per GPU decode step |
 
 ## Supported models
@@ -133,7 +133,7 @@ Vahana finds the experts by structure (transformers' `experts(hidden, indices, w
   - 4-bit GPTQ in compressed-tensors pack-quantized format (for example RedHatAI's `w4a16` models), run exactly.
   - FP8 and MXFP4 checkpoints are not yet supported.
 - **Hybrid linear-attention models** decode eagerly (no CUDA graph).
-- **Speculative decoding is exact but rarely faster for batch-1 MoE:** each drafted token routes to new experts ([why](docs/benchmarks.md#what-did-not-work)).
+- **Speculative decoding is exact but rarely faster for batch-1 MoE:** each drafted token routes to new experts ([why](https://github.com/vahana-ai/Vahana/blob/main/docs/benchmarks.md#what-did-not-work)).
 - **Prefill:**
   - Since 1.3, long prompts run their CPU-resident experts on the GPU (same bits).
   - Prefill is still slow on very large models whose dense linears sit in CPU RAM: 38 s for a 236B prompt.
@@ -151,4 +151,4 @@ Vahana finds the experts by structure (transformers' `experts(hidden, indices, w
 - **Design:** `docs/design/`. **Evidence:** `experiments/` (M0–M5, P1–P4, v0.3-a … v0.5).
 
 ## License
-Apache License 2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE). Copyright 2026 Aditya Sai Teja B.
+Apache License 2.0; see [LICENSE](https://github.com/vahana-ai/Vahana/blob/main/LICENSE) and [NOTICE](https://github.com/vahana-ai/Vahana/blob/main/NOTICE). Copyright 2026 Aditya Sai Teja B.

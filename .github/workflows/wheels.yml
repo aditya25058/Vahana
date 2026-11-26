@@ -103,7 +103,7 @@ jobs:
           OMP_NUM_THREADS: "1"
         run: |
           cd "$RUNNER_TEMP"
-          "$PY" -m pytest -q -p no:cacheprovider "$GITHUB_WORKSPACE/tests/test_twin.py" "$GITHUB_WORKSPACE/tests/test_modelspec.py" "$GITHUB_WORKSPACE/tests/test_doctor.py" "$GITHUB_WORKSPACE/tests/test_selftest_versions.py" "$GITHUB_WORKSPACE/tests/test_tsolve.py" "$GITHUB_WORKSPACE/tests/test_receipt.py" "$GITHUB_WORKSPACE/tests/test_prefill.py" "$GITHUB_WORKSPACE/tests/test_prefix.py" "$GITHUB_WORKSPACE/tests/test_triton_missing.py"
+          "$PY" -m pytest -q -p no:cacheprovider "$GITHUB_WORKSPACE/tests/test_twin.py" "$GITHUB_WORKSPACE/tests/test_modelspec.py" "$GITHUB_WORKSPACE/tests/test_doctor.py" "$GITHUB_WORKSPACE/tests/test_selftest_versions.py" "$GITHUB_WORKSPACE/tests/test_tsolve.py" "$GITHUB_WORKSPACE/tests/test_receipt.py" "$GITHUB_WORKSPACE/tests/test_prefill.py" "$GITHUB_WORKSPACE/tests/test_prefix.py" "$GITHUB_WORKSPACE/tests/test_triton_missing.py" "$GITHUB_WORKSPACE/tests/test_readme_links.py"
 
   # v1.1: every supported transformers release must give its reference bits. Vahana runs transformers' own model code,
   # and a release can change a family's model code (5.14: qwen3_5_moe_text, 5.19: gpt_oss), which changes that family's
