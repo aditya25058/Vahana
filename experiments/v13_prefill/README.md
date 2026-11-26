@@ -86,3 +86,13 @@ Limits:
 - Batch 1 only.
 - Attention-only models. Recurrent / linear-attention hybrids such as Qwen3.5 are skipped.
 - Not yet in `vahana serve`.
+
+## Third GPU: NVIDIA A100 80GB (Param Rudra), 1.3.0 installed from PyPI
+- Install: the published 1.3.0 wheel, installed with `uv pip install --target` into an empty folder. Environment: Python 3.11, torch 2.6.0+cu124, transformers 5.19.0.dev0, Triton 3.2.
+- GPU selftest: **18/18 families give the reference bits.**
+- Tests: `tests/test_prefill.py`, `test_prefix.py` and `test_receipt.py` all pass (19 tests). This covers the prefill path on and off, with and without a GPU expert cache, and the tiled kernels against the decode kernels.
+- Two environment problems came up first. Both hit every Triton program on that cluster, not only Vahana:
+  1. Triton 3.2 imports `setuptools`, which the venv lacked.
+     - Vahana's import shim hid the failure, so every GPU path then crashed with a cryptic `TypeError`.
+     - Fixed for 1.3.1: a CUDA run now fails at once with the reason, and `vahana[gpu]` installs setuptools on Linux.
+  2. The GPU nodes have no Linux kernel headers (`linux/errno.h`), which Triton's startup helper compiles against. The job pointed `CPATH` at copies of the login node's headers.

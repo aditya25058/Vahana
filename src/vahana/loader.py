@@ -212,6 +212,9 @@ def load(model_dir: str, gpu_budget_gb: float | None = None, device: str = "cuda
     from .loading import ShardHandles
     t0 = time.time()
     dev = torch.device(device)
+    if dev.type == "cuda":
+        from ._triton import require_gpu
+        require_gpu()
     cfg = AutoConfig.from_pretrained(model_dir)
     qcfg = getattr(cfg, "quantization_config", None)
     if qcfg is not None:                       # v1.2: Vahana reads quantized tensors itself (twin-q4 experts)
@@ -417,6 +420,9 @@ def prepare(model: nn.Module, gpu_budget_gb: float | None = None, force_cpu: str
     specs = inspect(model)
     devs = [p.device for p in model.parameters()]
     dev = next((d for d in devs if d.type == "cuda"), devs[0])
+    if dev.type == "cuda":
+        from ._triton import require_gpu
+        require_gpu()
     src = {n: p.detach() for n, p in model.named_parameters()}
     exp = {s.path: expert_weights(s, model.get_submodule(s.path)) for s in specs}
     budget = gpu_budget_gb * 2**30 if gpu_budget_gb else float("inf")

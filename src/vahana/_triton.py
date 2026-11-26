@@ -5,12 +5,14 @@ first) and `tl.<anything>` is a placeholder. HAVE_TRITON says which one this is.
 """
 from __future__ import annotations
 
+IMPORT_ERROR = None
 try:
     import triton
     import triton.language as tl
     HAVE_TRITON = True
-except ImportError:            # CPU-only install (no GPU, or torch without Triton)
+except ImportError as _e:      # CPU-only install (no GPU, or torch without Triton)
     HAVE_TRITON = False
+    IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
 
     class _Any:
         def __getattr__(self, name):
@@ -55,4 +57,14 @@ def sqrt_rn(a):
     return tl.inline_asm_elementwise("sqrt.rn.f32 $0, $1;", "=f,f", [a], dtype=tl.float32, is_pure=True, pack=1)
 
 
-__all__ = ["triton", "tl", "HAVE_TRITON", "div_rn", "sqrt_rn"]
+def require_gpu() -> None:
+    """v1.3.1: running on a CUDA device needs Triton. Fail here, with the reason, rather than later with a cryptic
+    error from a stand-in kernel (Triton 3.2 imports setuptools, which a fresh Python 3.12 venv lacks)."""
+    if not HAVE_TRITON:
+        raise RuntimeError(
+            f"Vahana's GPU kernels need Triton, which failed to import ({IMPORT_ERROR}). Install it with "
+            f"`pip install \"vahana[gpu]\"` (it includes setuptools, which Triton 3.2+ imports), or run on the CPU "
+            f"with device='cpu' / --device cpu (the same bits, slower).")
+
+
+__all__ = ["triton", "tl", "HAVE_TRITON", "IMPORT_ERROR", "require_gpu", "div_rn", "sqrt_rn"]

@@ -62,9 +62,9 @@ def machine(probe: bool = True) -> dict:
     m["gpu"] = None
     if torch.cuda.is_available():
         free, total = torch.cuda.mem_get_info()
-        from ._triton import HAVE_TRITON
+        from ._triton import HAVE_TRITON, IMPORT_ERROR
         m["gpu"] = {"name": torch.cuda.get_device_name(0), "total_gb": total / 2**30, "free_gb": free / 2**30,
-                    "triton": HAVE_TRITON}
+                    "triton": HAVE_TRITON if HAVE_TRITON else f"NOT AVAILABLE: {IMPORT_ERROR}"}
     if probe:
         m["mem_bw_gbs"] = _mem_bw()
     return m

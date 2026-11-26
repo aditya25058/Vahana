@@ -43,6 +43,7 @@ vahana = "vahana.cli:main"
 [project.optional-dependencies]
 gpu = [                        # NVIDIA GPUs: Triton on Linux, triton-windows on Windows
   "triton>=3.0; platform_system == 'Linux'",
+  "setuptools; platform_system == 'Linux'",   # v1.3.1: Triton 3.2+ imports it at startup; fresh 3.12 venvs lack it
   "triton-windows>=3.2; platform_system == 'Windows'",
 ]
 test = ["pytest>=8"]

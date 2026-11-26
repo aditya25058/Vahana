@@ -173,6 +173,13 @@ def main(argv=None):
     info = {"device": str(dev), "isa": hybrid.ext().isa(), "torch": torch.__version__,
             "transformers": transformers.__version__, "platform": sys.platform}
     print("vahana selftest:", info, flush=True)
+    if dev.type == "cuda":
+        from ._triton import require_gpu
+        try:
+            require_gpu()
+        except RuntimeError as e:
+            print("vahana selftest:", e, flush=True)
+            return 1
     gold = {}
     if not a.write:
         gold, note = expected_hashes(json.load(open(a.golden)), transformers.__version__)

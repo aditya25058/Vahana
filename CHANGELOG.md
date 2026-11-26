@@ -2,6 +2,12 @@
 
 Each version's evidence is in `experiments/` (pre-registered bars, run logs, raw results). Missed bars are recorded there too.
 
+## Unreleased
+- A GPU run without a working Triton now fails at once, with the import error and the fix. Before, every GPU path crashed with a cryptic `TypeError` from a stand-in kernel. `vahana selftest` and `vahana doctor` show the reason too.
+- `vahana[gpu]` installs `setuptools` on Linux. Triton 3.2+ imports it at startup, and a fresh Python 3.12 venv lacks it.
+- `vahana --help` lists `verify` and `bench`. The README has a first-five-minutes guide.
+- Validated on a third GPU: NVIDIA A100 80GB. The GPU selftest is 18/18, and the prefill, prefix-cache and receipt tests pass, with 1.3.0 installed from PyPI.
+
 ## 1.3.0 (2026-11-26)
 This release brings together the 1.1–1.3 work:
 - transformers 5.12–5.24;
