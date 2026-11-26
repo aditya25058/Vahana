@@ -13,7 +13,7 @@ Its answers are **bit-identical** wherever and however the work runs. The same t
 
 Other engines change a request's output when the batch around it changes. In Vahana, a request served alongside 63 others gives exactly the bits it gives alone, and that is measured, not assumed ([benchmarks](docs/benchmarks.md)).
 
-> **Status: 1.0 (beta).** The exactness guarantee is stable and validated on real checkpoints up to DeepSeek-V2 236B, with 18 model families in the selftest. Expect rough edges outside the tested setups below; please open an issue.
+> **Status: 1.3 (beta).** The exactness guarantee is stable and validated on real checkpoints up to DeepSeek-V2 236B, with 18 model families in the selftest. New in 1.3: receipts (verifiable inference), exact 4-bit models, fast exact long-prompt prefill and a prefix cache. Expect rough edges outside the tested setups below; please open an issue.
 > Every claim here comes from a pre-registered experiment in [`experiments/`](experiments), including the bars it missed.
 > See the [changelog](CHANGELOG.md).
 

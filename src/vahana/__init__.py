@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import importlib
 
-__version__ = "1.0.1"
+__version__ = "1.3.0"
 
 _LAZY = {
     'generate_spec': ('speculative', 'generate_spec'),

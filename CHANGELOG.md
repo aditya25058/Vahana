@@ -2,7 +2,19 @@
 
 Each version's evidence is in `experiments/` (pre-registered bars, run logs, raw results). Missed bars are recorded there too.
 
-## Unreleased
+## 1.3.0 (2026-11-26)
+This release brings together the 1.1–1.3 work:
+- transformers 5.12–5.24;
+- exact 4-bit;
+- receipts and bench;
+- fast exact prefill and the prefix cache.
+
+It also adds a same-laptop comparison with llama.cpp ([experiments/v14_llamacpp](experiments/v14_llamacpp/README.md)).
+
+Behavior changes:
+- **Seeded sampling.** Seeded outputs differ from 1.0, because sampling now uses the exact sampler. The same seed now gives the same tokens on every machine.
+- **Long prompts on a GPU** take the new prefill path. It gives the same bits; `VAHANA_PREFILL_GPU=0` turns it off.
+
 - **Persistent prefix cache** (`vahana run --prefix-cache [DIR]`, `generate(prefix_cache=...)`).
   - A prompt that starts like an earlier one (a document, a system prompt) reuses that prefix's attention state from disk and prefills only the rest.
   - The logits are bit-identical to a full prefill.
