@@ -13,7 +13,7 @@ Its answers are **bit-identical** wherever and however the work runs. The same t
 
 Other engines change a request's output when the batch around it changes. In Vahana, a request served alongside 63 others gives exactly the bits it gives alone, and that is measured, not assumed ([benchmarks](https://github.com/vahana-ai/Vahana/blob/main/docs/benchmarks.md)).
 
-> **Status: 1.3 (beta).** The exactness guarantee is stable and validated on real checkpoints up to DeepSeek-V2 236B, with 18 model families in the selftest. New in 1.3: receipts (verifiable inference), exact 4-bit models, fast exact long-prompt prefill and a prefix cache. Expect rough edges outside the tested setups below; please open an issue.
+> **Status: 1.4 (beta).** The exactness guarantee is stable and validated on real checkpoints up to DeepSeek-V2 236B, with 18 model families in the selftest. New in 1.4: decode on a 4 GB laptop at about llama.cpp's speed (Qwen3-30B 4-bit, 14.8–16.5 tok/s), with the same bits as everywhere else. Since 1.3: receipts (verifiable inference), exact 4-bit models, fast exact long-prompt prefill and a prefix cache. Expect rough edges outside the tested setups below; please open an issue.
 > Every claim here comes from a pre-registered experiment in [`experiments/`](https://github.com/vahana-ai/Vahana/tree/main/experiments), including the bars it missed.
 > See the [changelog](https://github.com/vahana-ai/Vahana/blob/main/CHANGELOG.md).
 
@@ -92,7 +92,7 @@ Full tables, the machines used, and the misses are in **[docs/benchmarks.md](htt
 | Qwen3.5-35B-A3B (Gated DeltaNet hybrid), batched | 4.35× one at a time, bit-identical |
 | Qwen3-30B (57 GB) on the 15 GB laptop, streamed from NVMe | about 1 tok/s, the H100's logits bit for bit |
 | Qwen3-30B 4-bit on the 4 GB laptop, 2,048-token prompt | 9.6 s to first token (was 82 s), same logits as the H100 |
-| vs llama.cpp on the same laptop ([details](https://github.com/vahana-ai/Vahana/blob/main/experiments/v14_llamacpp/README.md)) | llama.cpp decodes 1.2–1.6x faster; Vahana prefills 2,048 tokens 1.2–1.7x faster; only Vahana gives the same answer on CPU and GPU |
+| vs llama.cpp on the same laptop (1.4; [decode](https://github.com/vahana-ai/Vahana/blob/main/experiments/v15_decode/README.md), [1.3 comparison](https://github.com/vahana-ai/Vahana/blob/main/experiments/v14_llamacpp/README.md)) | decode about level at best (14.8–16.5 vs 12.4–15.9 tok/s), about 2x faster under memory pressure; prefill of 2,048 tokens 1.2–1.7x faster; only Vahana gives the same answer on CPU and GPU |
 | Cost of exactness | +1.8% per GPU decode step |
 
 ## Supported models

@@ -2,7 +2,7 @@
 
 Each version's evidence is in `experiments/` (pre-registered bars, run logs, raw results). Missed bars are recorded there too.
 
-## Unreleased
+## 1.4.0 (2026-11-27)
 - **Faster decode on small GPUs, same bits.**
   - On GPUs under 12 GB:
     - 4-bit attention weights stay 4-bit on the GPU (a kernel rebuilds 1.3's exact bf16 weight);
