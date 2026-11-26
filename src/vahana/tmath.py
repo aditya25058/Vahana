@@ -500,6 +500,44 @@ def _h_argsort(args, kw):
                       stable=True)[1]
 
 
+def tsolve_triangular(A: torch.Tensor, B: torch.Tensor, upper: bool, unitriangular: bool = False) -> torch.Tensor:
+    """X with A @ X = B (left side), A [..., n, n] triangular, B [..., n, k]: substitution one row at a time in a
+    fixed order. Row i: s = tmatmul(row's off-diagonal entries, already-solved rows) (twin sum), X_i = B_i - s, then
+    X_i / A_ii (IEEE division) unless unitriangular. float32 (float64 stays). The same bits on every device; the
+    LAPACK/BLAS triangular solve (MKL, OpenBLAS, cuBLAS) blocks its sums by CPU model and library (v1.1: transformers
+    5.17+ uses it in Qwen3.5's gated delta rule)."""
+    dt = torch.promote_types(A.dtype, B.dtype)
+    acc = torch.float64 if dt == torch.float64 else torch.float32
+    lead = torch.broadcast_shapes(A.shape[:-2], B.shape[:-2])
+    n = A.shape[-1]
+    A = A.to(acc).expand(*lead, n, n)
+    B = B.to(acc).expand(*lead, n, B.shape[-1])
+    rows = [None] * n
+    order = range(n - 1, -1, -1) if upper else range(n)
+    done = []                                                    # indices solved so far, in solve order
+    for i in order:
+        x = B[..., i:i + 1, :]
+        if done:
+            idx = sorted(done)                                   # ascending k: the same order for upper and lower
+            Ai = A[..., i:i + 1, idx[0]:idx[-1] + 1]
+            Xs = torch.cat([rows[j] for j in idx], -2)
+            x = x - tmatmul(Ai, Xs)
+        if not unitriangular:
+            x = x / A[..., i:i + 1, i:i + 1]
+        rows[i] = x
+        done.append(i)
+    return torch.cat(rows, -2).to(dt)
+
+
+def _h_solve_triangular(args, kw):
+    A, B = args[0], args[1]
+    if not (A.is_floating_point() and B.is_floating_point()) or not kw.get("left", True) or "out" in kw:
+        return None                                              # unhandled form: audited, falls back to torch
+    if "upper" not in kw:
+        return None
+    return tsolve_triangular(A, B, bool(kw["upper"]), bool(kw.get("unitriangular", False)))
+
+
 def _h_matmul(args, kw):
     a, b = args[0], args[1]
     if not (a.is_floating_point() or b.is_floating_point()):
@@ -711,6 +749,7 @@ HANDLERS = {
     "erf": _h_ew(lambda x: _cast(_erf64(_f64(x)), _out_dt(x))),
     "gelu": _h_gelu, "softplus": _h_softplus, "logsigmoid": _h_ew(lambda x: (-log64(1.0 + exp64(-_f64(x)))).to(
         _out_dt(x))),
+    "linalg_solve_triangular": _h_solve_triangular, "solve_triangular": _h_solve_triangular,
     "matmul": _h_matmul, "__matmul__": _h_matmul, "__rmatmul__": _h_rmatmul, "mm": _h_matmul, "bmm": _h_matmul,
     "linear": _h_linear, "addmm": _h_addmm, "baddbmm": _h_addmm,
     "topk": _h_topk, "sort": _h_sort, "argsort": _h_argsort, "cumsum": _h_cumsum,

@@ -7,6 +7,8 @@ Each version's evidence is in `experiments/` (pre-registered bars, run logs, raw
   - Some releases change a model family's code (Qwen3.5-MoE at 5.14 and 5.17, gpt-oss at 5.19), which changes that family's outputs on every machine alike.
   - The selftest now keeps a reference per transformers version and only warns outside the validated range.
   - CI checks all 13 supported releases, plus a canary on the newest one.
+  - Fix: transformers 5.17+ runs Qwen3.5 through a LAPACK triangular solve whose rounding varied by CPU (x86 vs ARM runners gave different bits). Vahana now computes it exactly (`tmath.tsolve_triangular`).
+  - `vahana selftest` now audits every family and fails any that uses a float op outside Vahana's exact math, even when the local hash matches.
   - Details: [experiments/v11_transformers](experiments/v11_transformers/README.md).
 - **Exact 4-bit experts (twin-q4).** Vahana runs 4-bit MoE checkpoints (compressed-tensors pack-quantized int4, e.g. GPTQ w4a16) with identical bits on every CPU instruction set and machine.
   - Qwen3-30B-A3B w4a16 on a 4 GB laptop GPU with 15 GB RAM: 0.96 → 4.66 tok/s, disk traffic per token 1.8 → 0.09 GB.

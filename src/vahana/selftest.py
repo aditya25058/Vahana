@@ -91,13 +91,29 @@ def run(fam, device, cache_frac=None):
     cfg, m = build(fam)
     m = m.to(device)
     model, _ = loader.prepare(m, gpu_cache_frac=cache_frac)
+    audit = _audit(model)
     ids, am = prompts(cfg.vocab_size)
     r = decode.generate(model, ids.to(device), am.to(device), max_new_tokens=STEPS, graph=device.type == "cuda",
                         return_logits=True)
     h = hashlib.sha256()
     h.update(r["logits"].float().cpu().contiguous().numpy().tobytes())
     h.update(r["ids"].cpu().to(torch.int64).contiguous().numpy().tobytes())
-    return h.hexdigest()[:24]
+    return h.hexdigest()[:24], audit
+
+
+def _audit(model) -> dict:
+    """v1.1: run the model's twin forward with TwinMode's audit on. Any float op that is neither handled by Vahana's
+    exact math nor known to be exact is recorded: such an op may round differently on another CPU or GPU even when
+    this machine's hash matches (transformers 5.17 added a LAPACK triangular solve to Qwen3.5 that did exactly that)."""
+    from . import tmath
+    audit: dict = {}
+    orig = getattr(model, "_vahana_twin_forward", None)
+    if orig is not None:
+        def fwd(*a, **k):
+            with tmath.TwinMode(audit):
+                return orig(*a, **k)
+        model.forward = fwd
+    return audit
 
 
 def _ver(v: str) -> tuple:
@@ -162,17 +178,25 @@ def main(argv=None):
         gold, note = expected_hashes(json.load(open(a.golden)), transformers.__version__)
         if note:
             print("  note:", note, flush=True)
-    res, ok = {}, 0
+    res, ok, inexact = {}, 0, {}
     for f in fams:
         t = time.time()
         try:
-            res[f] = run(f, dev, a.gpu_cache)
+            res[f], aud = run(f, dev, a.gpu_cache)
+            if aud:
+                inexact[f] = aud
         except Exception as e:  # noqa: BLE001
             res[f] = f"error: {type(e).__name__}: {str(e)[:200]}"
-        same = gold.get(f) == res[f]
+        same = gold.get(f) == res[f] and f not in inexact
         ok += same
-        mark = "" if a.write else ("  same bits" if same else f"  DIFFERENT (golden {gold.get(f)})")
+        mark = "" if a.write else ("  same bits" if same else f"  DIFFERENT (golden {gold.get(f)})"
+                                   if f not in inexact or gold.get(f) != res[f] else "  matches here, but")
+        if f in inexact:
+            mark += f"  NOT EXACT: uses ops outside Vahana's exact math {sorted(inexact[f])}"
         print(f"  {f:18s} {res[f]}{mark}  {time.time() - t:.1f}s", flush=True)
+    if inexact and a.write:
+        print("refusing to record references: some families use ops outside Vahana's exact math", inexact)
+        return 1
     if a.write:
         out = {"_transformers": transformers.__version__, "_recorded_on": info, **res}
         json.dump(out, open(a.write, "w"), indent=1)
