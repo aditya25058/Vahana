@@ -26,7 +26,7 @@ classifiers = [
 
 dependencies = [
   "torch>=2.4",
-  "transformers>=5.12,<5.14",     # the versions every real checkpoint and the selftest reference were validated on (see CI `compat`)
+  "transformers>=5.12,<5.25",     # v1.1: every release here has per-version selftest references, checked by CI `compat`
   "accelerate>=1.0",
   "safetensors>=0.4",
   "numpy>=1.24",

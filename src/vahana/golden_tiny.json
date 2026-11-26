@@ -1,28 +1,233 @@
 {
- "_transformers": "5.12.1",
+ "_format": "per-version (v1.1)",
+ "_validated": [
+  "5.12.1",
+  "5.13.1",
+  "5.14.1",
+  "5.15.1",
+  "5.16.1",
+  "5.17.0",
+  "5.18.0",
+  "5.19.0",
+  "5.20.2",
+  "5.21.1",
+  "5.22.2",
+  "5.23.0",
+  "5.24.1"
+ ],
  "_recorded_on": {
-  "device": "cuda",
-  "isa": "avx512",
-  "torch": "2.4.0+cu121",
-  "transformers": "5.12.1",
-  "platform": "linux"
+  "5.12.1": {
+   "device": "cpu",
+   "isa": "avx512",
+   "torch": "2.15.0+cpu",
+   "transformers": "5.12.1",
+   "platform": "linux"
+  },
+  "5.13.1": {
+   "device": "cpu",
+   "isa": "avx512",
+   "torch": "2.15.0+cpu",
+   "transformers": "5.13.1",
+   "platform": "linux"
+  },
+  "5.14.1": {
+   "device": "cpu",
+   "isa": "avx512",
+   "torch": "2.15.0+cpu",
+   "transformers": "5.14.1",
+   "platform": "linux"
+  },
+  "5.15.1": {
+   "device": "cpu",
+   "isa": "avx512",
+   "torch": "2.15.0+cpu",
+   "transformers": "5.15.1",
+   "platform": "linux"
+  },
+  "5.16.1": {
+   "device": "cpu",
+   "isa": "avx512",
+   "torch": "2.15.0+cpu",
+   "transformers": "5.16.1",
+   "platform": "linux"
+  },
+  "5.17.0": {
+   "device": "cpu",
+   "isa": "avx512",
+   "torch": "2.15.0+cpu",
+   "transformers": "5.17.0",
+   "platform": "linux"
+  },
+  "5.18.0": {
+   "device": "cpu",
+   "isa": "avx512",
+   "torch": "2.15.0+cpu",
+   "transformers": "5.18.0",
+   "platform": "linux"
+  },
+  "5.19.0": {
+   "device": "cpu",
+   "isa": "avx512",
+   "torch": "2.15.0+cpu",
+   "transformers": "5.19.0",
+   "platform": "linux"
+  },
+  "5.20.2": {
+   "device": "cpu",
+   "isa": "avx512",
+   "torch": "2.15.0+cpu",
+   "transformers": "5.20.2",
+   "platform": "linux"
+  },
+  "5.21.1": {
+   "device": "cpu",
+   "isa": "avx512",
+   "torch": "2.15.0+cpu",
+   "transformers": "5.21.1",
+   "platform": "linux"
+  },
+  "5.22.2": {
+   "device": "cpu",
+   "isa": "avx512",
+   "torch": "2.15.0+cpu",
+   "transformers": "5.22.2",
+   "platform": "linux"
+  },
+  "5.23.0": {
+   "device": "cpu",
+   "isa": "avx512",
+   "torch": "2.15.0+cpu",
+   "transformers": "5.23.0",
+   "platform": "linux"
+  },
+  "5.24.1": {
+   "device": "cpu",
+   "isa": "avx512",
+   "torch": "2.15.0+cpu",
+   "transformers": "5.24.1",
+   "platform": "linux"
+  }
  },
- "mixtral": "ce34fc14fa082f131ee2dd69",
- "qwen2_moe": "3939272bd83b1b003f61fec9",
- "qwen3_moe": "09be7f5e561a4f88611e801b",
- "olmoe": "782a7ec8150c68e9a6c2b529",
- "deepseek_v2": "34247d4ba5c9ebe27266917a",
- "deepseek_v3": "a9891d8bb9e8da81495a9bd8",
- "glm4_moe": "125d50eb37a437f432a8f8ba",
- "glm4_moe_lite": "a6f60d8252b3b983a6748f03",
- "minimax": "5df89cc29832418907377398",
- "minimax_m2": "e260ff4d158fb5c140b260d2",
- "hunyuan_v1_moe": "062bbc553ecd8dfe74056821",
- "ernie4_5_moe": "c22f889765732a53c2bf17ca",
- "cohere2_moe": "8a9031bc8fa75432593eb004",
- "exaone_moe": "84179a4bfe29b3a7aba07417",
- "afmoe": "4ea6231fd93ce865ca5ef5a4",
- "phimoe": "386cf5a7fab5d32d6dae0c60",
- "qwen3_5_moe_text": "049869a788fdf6baacd7339d",
- "gpt_oss": "4385e7be5567ae5316aa5bfc"
+ "families": {
+  "mixtral": [
+   {
+    "since": "5.12",
+    "hash": "ce34fc14fa082f131ee2dd69"
+   }
+  ],
+  "qwen2_moe": [
+   {
+    "since": "5.12",
+    "hash": "3939272bd83b1b003f61fec9"
+   }
+  ],
+  "qwen3_moe": [
+   {
+    "since": "5.12",
+    "hash": "09be7f5e561a4f88611e801b"
+   }
+  ],
+  "olmoe": [
+   {
+    "since": "5.12",
+    "hash": "782a7ec8150c68e9a6c2b529"
+   }
+  ],
+  "deepseek_v2": [
+   {
+    "since": "5.12",
+    "hash": "34247d4ba5c9ebe27266917a"
+   }
+  ],
+  "deepseek_v3": [
+   {
+    "since": "5.12",
+    "hash": "a9891d8bb9e8da81495a9bd8"
+   }
+  ],
+  "glm4_moe": [
+   {
+    "since": "5.12",
+    "hash": "125d50eb37a437f432a8f8ba"
+   }
+  ],
+  "glm4_moe_lite": [
+   {
+    "since": "5.12",
+    "hash": "a6f60d8252b3b983a6748f03"
+   }
+  ],
+  "minimax": [
+   {
+    "since": "5.12",
+    "hash": "5df89cc29832418907377398"
+   }
+  ],
+  "minimax_m2": [
+   {
+    "since": "5.12",
+    "hash": "e260ff4d158fb5c140b260d2"
+   }
+  ],
+  "hunyuan_v1_moe": [
+   {
+    "since": "5.12",
+    "hash": "062bbc553ecd8dfe74056821"
+   }
+  ],
+  "ernie4_5_moe": [
+   {
+    "since": "5.12",
+    "hash": "c22f889765732a53c2bf17ca"
+   }
+  ],
+  "cohere2_moe": [
+   {
+    "since": "5.12",
+    "hash": "8a9031bc8fa75432593eb004"
+   }
+  ],
+  "exaone_moe": [
+   {
+    "since": "5.12",
+    "hash": "84179a4bfe29b3a7aba07417"
+   }
+  ],
+  "afmoe": [
+   {
+    "since": "5.12",
+    "hash": "4ea6231fd93ce865ca5ef5a4"
+   }
+  ],
+  "phimoe": [
+   {
+    "since": "5.12",
+    "hash": "386cf5a7fab5d32d6dae0c60"
+   }
+  ],
+  "qwen3_5_moe_text": [
+   {
+    "since": "5.12",
+    "hash": "049869a788fdf6baacd7339d"
+   },
+   {
+    "since": "5.14",
+    "hash": "bc9f04c79ef92a99f7af3027"
+   },
+   {
+    "since": "5.17",
+    "hash": "784e009672aedc311de8bf68"
+   }
+  ],
+  "gpt_oss": [
+   {
+    "since": "5.12",
+    "hash": "4385e7be5567ae5316aa5bfc"
+   },
+   {
+    "since": "5.19",
+    "hash": "f3548c33680e62308ae5085a"
+   }
+  ]
+ }
 }

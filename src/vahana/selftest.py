@@ -2,9 +2,10 @@
 
 For each MoE family, a tiny model is built from the family's own transformers config with weights drawn from numpy's
 RandomState (identical on every OS, CPU and numpy version), a batch of 2 left-padded prompts is decoded greedily
-for 6 steps through Vahana, and the logits and ids are hashed. The hashes must equal golden_tiny.json, which was
-recorded on an H100 (GPU and CPU-only agreeing). Equal hashes mean this machine produces the same tokens and the
-same logits, bit for bit, as that H100.
+for 6 steps through Vahana, and the logits and ids are hashed. The hashes must equal the references in
+golden_tiny.json for the installed transformers version (v1.1: transformers sometimes changes a family's model code,
+which changes that family's outputs on every machine alike, so references are kept per version). Equal hashes mean
+this machine produces the same tokens and the same logits, bit for bit, as the reference machines.
 
   python -m vahana.selftest [--device cpu|cuda] [--families a,b] [--write golden.json]
 """
@@ -99,6 +100,46 @@ def run(fam, device, cache_frac=None):
     return h.hexdigest()[:24]
 
 
+def _ver(v: str) -> tuple:
+    """'5.14.1' / '5.14.0.dev0' -> (5, 14, 1); missing parts are 0."""
+    import re
+    out = []
+    for p in v.split(".")[:3]:
+        m = re.match(r"\d+", p)                          # leading digits only: "0rc1" -> 0, "0dev" -> 0
+        out.append(int(m.group()) if m else 0)
+    return tuple(out + [0] * (3 - len(out)))
+
+
+def expected_hashes(golden: dict, version: str) -> tuple[dict, str | None]:
+    """Reference hash per family for this transformers version (v1.1: per-version references).
+
+    golden_tiny.json holds, per family, a list of {"since": version, "hash": ...}: transformers sometimes changes a
+    family's model code, which legitimately changes its outputs (on every machine alike: CPU and GPU still agree).
+    The entry with the newest "since" not after the installed version applies. "_validated" lists the transformers
+    releases checked in CI; outside that range a mismatch may be a new model-code change rather than a fault.
+    The flat 1.0 format ({family: hash}) is still read."""
+    fams = golden.get("families")
+    if fams is None:                                    # 1.0 format
+        note = None
+        if golden.get("_transformers") and golden["_transformers"] != version:
+            note = (f"golden hashes were recorded with transformers {golden['_transformers']}; model code from "
+                    f"another version may legitimately differ")
+        return {k: v for k, v in golden.items() if not k.startswith("_")}, note
+    v = _ver(version)
+    exp = {}
+    for fam, entries in fams.items():
+        ok = [e for e in entries if _ver(e["since"]) <= v]
+        if ok:
+            exp[fam] = max(ok, key=lambda e: _ver(e["since"]))["hash"]
+    val = sorted((_ver(x) for x in golden.get("_validated", [])))
+    note = None
+    if val and (v[:2] > val[-1][:2] or v[:2] < val[0][:2]):
+        lo, hi = golden["_validated"][0], golden["_validated"][-1]
+        note = (f"transformers {version} is outside the validated range ({lo} to {hi}); a family that differs may "
+                f"have new model code in this release rather than a fault in Vahana")
+    return exp, note
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser("vahana selftest")
     ap.add_argument("--device", default=None)
@@ -113,13 +154,14 @@ def main(argv=None):
     from . import hybrid
     dev = torch.device(a.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     fams = a.families.split(",") if a.families else FAMILIES
-    gold = {} if a.write else json.load(open(a.golden))
     info = {"device": str(dev), "isa": hybrid.ext().isa(), "torch": torch.__version__,
             "transformers": transformers.__version__, "platform": sys.platform}
     print("vahana selftest:", info, flush=True)
-    if not a.write and gold.get("_transformers") and gold["_transformers"] != transformers.__version__:
-        print(f"  note: golden hashes were recorded with transformers {gold['_transformers']}; model code from "
-              f"another version may legitimately differ", flush=True)
+    gold = {}
+    if not a.write:
+        gold, note = expected_hashes(json.load(open(a.golden)), transformers.__version__)
+        if note:
+            print("  note:", note, flush=True)
     res, ok = {}, 0
     for f in fams:
         t = time.time()

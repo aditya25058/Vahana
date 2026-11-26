@@ -83,7 +83,7 @@ Vahana finds the experts by structure (transformers' `experts(hidden, indices, w
   - **Cost:** +1.8% per GPU decode step.
 
 ## Requirements and limits
-- **Python 3.10+, PyTorch 2.4+, transformers 5.12–5.13.** Vahana runs transformers' own model code, and later releases changed some models' definitions (Qwen3.5-MoE from 5.14, gpt-oss from 5.19), which moves their outputs off the selftest reference. CI's `compat` job tracks every release; the range widens as versions are validated. NVIDIA GPUs need Triton (`vahana[gpu]`). CPU-only works everywhere.
+- **Python 3.10+, PyTorch 2.4+, transformers 5.12–5.24.** Vahana runs transformers' own model code, and some releases change a model's definition (Qwen3.5-MoE from 5.14, gpt-oss from 5.19), which changes its outputs on every machine alike. The selftest therefore keeps a reference per transformers version, and CI's `compat` job checks every supported release (plus a canary on the newest one); the range widens as new releases are validated. NVIDIA GPUs need Triton (`vahana[gpu]`). CPU-only works everywhere.
 - **RAM:**
   - **Fast:** room for the experts, plus page cache.
   - **Less RAM still works, exactly:** experts stream from disk at disk speed. A saturated NVMe caps decode; for example Qwen3-30B on a 15 GB laptop runs at about 1 tok/s.
