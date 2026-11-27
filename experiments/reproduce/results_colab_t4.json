@@ -1,0 +1,168 @@
+{
+ "machine": {
+  "os": "Linux 6.6.159+",
+  "cpu": "x86_64",
+  "logical_cpus": 2,
+  "python": "3.13.16",
+  "ram_gb": 12.7,
+  "physical_cores": 1,
+  "gpu": "Tesla T4",
+  "gpu_gb": 14.6,
+  "torch": "2.14.1+cu130",
+  "vahana": "1.4.0",
+  "where": "Google Colab, free T4 runtime, 2026-11-27"
+ },
+ "llama.cpp": {
+  "tag": "b12494",
+  "n_cpu_moe": "12",
+  "threads": "1",
+  "ngl": "99",
+  "tuning_tok_s": {
+   "48": 0.98,
+   "44": 1.13,
+   "40": 1.45,
+   "36": 1.64,
+   "32": 2.14,
+   "28": 2.77,
+   "24": 3.08,
+   "20": 3.32,
+   "16": 4.08,
+   "12": 5.15,
+   "8": "out of GPU memory",
+   "12 with -t 2": 4.45
+  }
+ },
+ "benchmark_text": {
+  "llama.cpp": {
+   "runs": [
+    9.37,
+    9.22,
+    9.35,
+    8.09,
+    8.17,
+    8.17
+   ],
+   "median": 8.695,
+   "min": 8.09,
+   "max": 9.37
+  },
+  "vahana": {
+   "runs": [
+    17.03,
+    16.82,
+    17.07,
+    17.23,
+    16.91,
+    17.14
+   ],
+   "median": 17.05,
+   "min": 16.82,
+   "max": 17.23
+  },
+  "ratio_of_medians": 1.961
+ },
+ "real_prompts": {
+  "llama.cpp": {
+   "runs": [
+    {
+     "code": {
+      "decode": 4.79,
+      "ttft": 75.31
+     },
+     "chat": {
+      "decode": 5.41,
+      "ttft": 14.6
+     },
+     "math": {
+      "decode": 4.83,
+      "ttft": 13.62
+     },
+     "story": {
+      "decode": 5.32,
+      "ttft": 11.13
+     },
+     "hindi": {
+      "decode": 6.01,
+      "ttft": 12.67
+     }
+    },
+    {
+     "code": {
+      "decode": 5.13,
+      "ttft": 12.7
+     },
+     "chat": {
+      "decode": 5.48,
+      "ttft": 12.55
+     },
+     "math": {
+      "decode": 4.71,
+      "ttft": 13.61
+     },
+     "story": {
+      "decode": 5.49,
+      "ttft": 11.5
+     },
+     "hindi": {
+      "decode": 5.73,
+      "ttft": 12.81
+     }
+    }
+   ],
+   "decode_median": 5.365,
+   "ttft_median": 12.76
+  },
+  "vahana": {
+   "runs": [
+    {
+     "code": {
+      "decode": 4.72,
+      "ttft": 9.41
+     },
+     "chat": {
+      "decode": 8.12,
+      "ttft": 3.77
+     },
+     "math": {
+      "decode": 6.71,
+      "ttft": 7.19
+     },
+     "story": {
+      "decode": 10.37,
+      "ttft": 2.85
+     },
+     "hindi": {
+      "decode": 11.37,
+      "ttft": 3.47
+     }
+    },
+    {
+     "code": {
+      "decode": 5.99,
+      "ttft": 4.95
+     },
+     "chat": {
+      "decode": 9.58,
+      "ttft": 3.65
+     },
+     "math": {
+      "decode": 7.69,
+      "ttft": 5.74
+     },
+     "story": {
+      "decode": 11.67,
+      "ttft": 1.67
+     },
+     "hindi": {
+      "decode": 12.74,
+      "ttft": 2.95
+     }
+    }
+   ],
+   "decode_median": 8.85,
+   "ttft_median": 3.71
+  },
+  "decode_ratio_of_medians": 1.65,
+  "ttft_ratio_of_medians": 3.439
+ }
+}

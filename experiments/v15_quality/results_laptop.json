@@ -1,0 +1,30 @@
+{
+ "model": "Qwen3-30B-A3B",
+ "text": "WikiText-2 test, 32 chunks x 512 tokens, 8160 scored tokens",
+ "reference": "bf16 original via Vahana (transformers bits)",
+ "llama.cpp": "b12494",
+ "reference_ppl": 7.378344,
+ "rows": {
+  "llama.cpp bf16 GGUF (implementation floor)": {
+   "ppl": 7.418218,
+   "mean_kld": 0.003307,
+   "kld_99pct": 0.039149,
+   "same_top_pct": 97.451,
+   "rms_dp_pct": 1.983
+  },
+  "llama.cpp Q4_K_M": {
+   "ppl": 7.829352,
+   "mean_kld": 0.093005,
+   "kld_99pct": 1.181637,
+   "same_top_pct": 88.909,
+   "rms_dp_pct": 10.347
+  },
+  "Vahana w4a16 (RedHatAI/Qwen3-30B-A3B-quantized.w4a16)": {
+   "ppl": 7.7507,
+   "mean_kld": 0.06505,
+   "kld_99pct": 0.843761,
+   "same_top_pct": 90.637,
+   "rms_dp_pct": 8.807
+  }
+ }
+}

@@ -20,6 +20,9 @@ Each version's evidence is in `experiments/` (pre-registered bars, run logs, raw
   - **Cold-expert prefetch** is on by default when the CPU experts exceed 80% of RAM. An expert that a layer has not used lately has probably been paged out, so it is requested from the OS in one large read instead of thousands of small page faults. Real-prompt decode 14.0 → 15.3 tok/s, and a faster first token.
   - **Pages Vahana no longer reads are released first:** the checkpoint's non-expert tensors after a GPU load, and the RAM copies of GPU-cached experts.
   - Both are hints to the OS, so the bits are the same.
+- **On a second machine, a free Google Colab T4** (15 GB GPU, 12.7 GB RAM, 1 CPU core), against llama.cpp at its own best setting: decode **1.96×** on the benchmark text (17.05 vs 8.70 tok/s), **1.65×** on real prompts (8.85 vs 5.37), first token **3.4× sooner** (3.7 vs 12.8 s). The selftest gives the reference bits on the T4.
+- **Quality against the bf16 original** (WikiText-2, 8,160 tokens, llama.cpp's statistics): mean KL divergence **0.065**, against **0.093** for llama.cpp's Q4_K_M. The top token matches the original's 90.6% of the time, against 88.9%. llama.cpp's own implementation accounts for only 0.003 of its divergence. See `experiments/v15_quality`.
+- **One-command reproduction:** `experiments/reproduce/vs_llamacpp.py` downloads everything after asking and tunes llama.cpp. It runs both engines and, with `--quality`, the quality comparison, then prints the table.
 - **The first decode step of a call no longer runs eagerly** once the model is warm: it captures the CUDA graph straight away (430–840 → 56–92 ms on Windows). Same bits.
   - H100: unchanged.
   - Details: [experiments/v15_decode](https://github.com/vahana-ai/Vahana/blob/main/experiments/v15_decode/README.md).
