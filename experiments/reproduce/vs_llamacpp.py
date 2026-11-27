@@ -217,6 +217,22 @@ if ngl != "0" and SYSTEM != "Darwin":
         except (IndexError, ValueError, KeyError):
             pass
     print(f"  llama.cpp's best: --n-cpu-moe {best[0]} -t {threads}", flush=True)
+if ngl == "0":                                          # CPU only: llama.cpp's faster thread count
+    print("\ntuning llama.cpp: threads (CPU only)", flush=True)
+    tbest = None
+    for t in sorted({threads, str(os.cpu_count() or threads)}, key=int):
+        r = run([os.path.join(lbin, "llama-bench"), "-m", gguf, "-ngl", "0", "-t", t, "-p", "0", "-n", "32", "-r", "3",
+                 "-o", "jsonl"], timeout=3600)
+        try:
+            ts = statistics.median(json.loads(r.stdout.strip().splitlines()[0])["samples_ts"][1:])
+        except (IndexError, ValueError, KeyError):
+            continue
+        print(f"    -t {t}: {ts:.2f} tok/s", flush=True)
+        if tbest is None or ts > tbest[1]:
+            tbest = (t, ts)
+    if tbest:
+        threads = tbest[0]
+    print(f"  llama.cpp's best: -t {threads}", flush=True)
 llama_args = ["--llama-dir", lbin, "--ncmoe", best[0], "--threads", threads, "--ngl", ngl]
 
 # ---------------------------------------------------------------- 3. head-to-heads
