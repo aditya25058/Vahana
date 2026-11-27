@@ -869,16 +869,18 @@ def twin_rope(model) -> int:
 
 
 def fast_norms(model) -> dict:
-    """GPU only: RMSNorm modules whose own forward, run under TwinMode, equals the one-kernel twin RMSNorm bit for bit
-    (checked per class on random input) use that kernel. Everything else keeps the TwinMode path."""
+    """RMSNorm modules whose own forward, run under TwinMode, equals the one-kernel twin RMSNorm bit for bit (checked
+    per class and device on random input) use that kernel: the Triton kernel on the GPU, and (v1.4) the C++ kernel on
+    the CPU. Everything else keeps the TwinMode path."""
     import types
     from .twinlin import twin_rmsnorm
     verdict, n, kept = {}, 0, set()
     for m in model.modules():
         w = getattr(m, "weight", None)
-        if not hasattr(m, "variance_epsilon") or not isinstance(w, torch.Tensor) or w.dim() != 1 or not w.is_cuda:
+        if not hasattr(m, "variance_epsilon") or not isinstance(w, torch.Tensor) or w.dim() != 1 \
+                or w.device.type not in ("cuda", "cpu") or w.dtype != torch.bfloat16:
             continue
-        cls = type(m)
+        cls = (type(m), w.device.type)
         if cls not in verdict:
             ok = False
             try:
@@ -896,5 +898,5 @@ def fast_norms(model) -> dict:
             m.forward = types.MethodType(lambda self, x: twin_rmsnorm(x, self.weight, self.variance_epsilon), m)
             n += 1
         else:
-            kept.add(cls.__name__)
+            kept.add(cls[0].__name__)
     return {"fast": n, "twinmode": sorted(kept)}

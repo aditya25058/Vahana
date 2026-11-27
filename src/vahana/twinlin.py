@@ -323,6 +323,10 @@ def twin_rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Ten
     x2 = x.reshape(-1, shape[-1]).contiguous()
     y = torch.empty_like(x2)
     N = x2.shape[1]
+    if x2.device.type == "cpu":                              # v1.4: the same arithmetic in C++ (cpu_moe.cpp)
+        if x2.shape[0]:
+            _hy.ext().rmsnorm_twin(x2, weight.contiguous(), y, eps)
+        return y.view(shape)
     if x2.shape[0]:
         _trms[(x2.shape[0],)](x2, weight, y, N, x2.stride(0), y.stride(0), eps,
                               BLOCK=triton.next_power_of_2(N), num_warps=8, enable_fp_fusion=False)

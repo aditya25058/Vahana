@@ -1,4 +1,4 @@
-"""v1.4: 4-bit non-expert linears stay 4-bit on the GPU, with the bits of 1.3.
+"""v1.4: 4-bit non-expert linears stay 4-bit on the GPU (and, CPU-only, on the CPU), with the bits of 1.3.
 
 Up to 1.3, a pack-quantized attention projection (q/k/v/o of a w4a16 checkpoint) was expanded at load time to bf16:
 W = bf16(q * s), and run by the twin linear (16 fp32 fma lanes, k ascending, tree16, bf16). Q4Linear keeps the
@@ -78,7 +78,11 @@ class Q4Linear(nn.Module):
         shp = x.shape
         x2 = x.reshape(-1, shp[-1]).to(torch.bfloat16).contiguous()
         n, K, R = x2.shape[0], self.in_features, self.out_features
-        if n >= twinlin.TILE_MIN or R % 8:
+        if self.rec.device.type == "cpu":
+            # v1.4: the CPU kernel rebuilds the same bf16(q * s) weight before the same twin fma sequence
+            from .runtime import cpu_linear
+            y = cpu_linear(self.rec, x2) if n else torch.empty((0, R), dtype=torch.bfloat16)
+        elif n >= twinlin.TILE_MIN or R % 8:
             y = twinlin.gpu_linear(x2, _bf16_weight(self.rec, K))
         else:
             y = torch.empty((n, R), dtype=torch.bfloat16, device=x2.device)
@@ -91,5 +95,5 @@ class Q4Linear(nn.Module):
         return f"in_features={self.in_features}, out_features={self.out_features}, twin-q4 G={self.G}"
 
 
-def supported(K: int, R: int) -> bool:
-    return K % 32 == 0 and R % 2 == 0
+def supported(K: int, R: int, device: str = "cuda") -> bool:
+    return K % 32 == 0 and R % (4 if device == "cpu" else 2) == 0      # the CPU kernel takes rows in fours

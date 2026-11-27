@@ -21,6 +21,9 @@ Each version's evidence is in `experiments/` (pre-registered bars, run logs, raw
   - **Pages Vahana no longer reads are released first:** the checkpoint's non-expert tensors after a GPU load, and the RAM copies of GPU-cached experts.
   - Both are hints to the OS, so the bits are the same.
 - **On a second machine, a free Google Colab T4** (15 GB GPU, 12.7 GB RAM, 1 CPU core), against llama.cpp at its own best setting: decode **1.96×** on the benchmark text (17.05 vs 8.70 tok/s), **1.65×** on real prompts (8.85 vs 5.37), first token **3.4× sooner** (3.7 vs 12.8 s). The selftest gives the reference bits on the T4.
+- **Faster CPU-only decode, same bits.** Laptop with its GPU hidden, 4 threads, Qwen3-30B 4-bit: 2.05 → 2.94 tok/s (1.43×, alternating A/B).
+  - 4-bit attention linears stay 4-bit on the CPU too: the kernel rebuilds 1.3's weight bf16(q·s) before the same fma sequence (1.24× alone; a quarter of the bytes).
+  - RMSNorm runs as one C++ call with the TwinMode arithmetic step for step, used only where checked bit-equal per norm class (+13%).
 - **With no GPU, llama.cpp is faster.** On a 2-core Kaggle CPU, both engines tuned: decode 1.35 vs 6.35 tok/s on the benchmark text and 1.34 vs 5.43 on real prompts, first token 13.9 vs 11.6 s. The CPU selftest still gives the reference bits there.
 - **Quality against the bf16 original** (WikiText-2, 8,160 tokens, llama.cpp's statistics): mean KL divergence **0.065**, against **0.093** for llama.cpp's Q4_K_M. The top token matches the original's 90.6% of the time, against 88.9%. llama.cpp's own implementation accounts for only 0.003 of its divergence. See `experiments/v15_quality`.
 - **Fix: Vahana starts in containers that forbid `set_mempolicy`** (Docker's default seccomp profile, Kaggle). Switching off NUMA balancing is a speed hint, so a refusal is now logged instead of stopping the run. It also uses the right syscall number on ARM64 Linux.

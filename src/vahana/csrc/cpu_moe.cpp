@@ -209,9 +209,37 @@ static inline void v_q4_pair(const uint8_t* b, float s, V16& lo, V16& hi) {
   lo = v_loadf(a); hi = v_loadf(c);
 #endif
 }
+// v1.4 CPU 4-bit linears: round each lane to bf16 (nearest even), as 1.3 stored a 4-bit attention weight: bf16(q * s).
+// q * s is finite, so no NaN case. Integer ops only; the same rounding as vt::Tensor::to(kBFloat16) and the GPU's.
+static inline V16 v_rbf(V16 x) {
+#if defined(VH_ISA_AVX512)
+  __m512i u = _mm512_castps_si512(x);
+  const __m512i lsb = _mm512_and_si512(_mm512_srli_epi32(u, 16), _mm512_set1_epi32(1));
+  u = _mm512_add_epi32(u, _mm512_add_epi32(_mm512_set1_epi32(0x7FFF), lsb));
+  return _mm512_castsi512_ps(_mm512_and_si512(u, _mm512_set1_epi32((int)0xFFFF0000u)));
+#elif defined(VH_ISA_AVX2)
+  auto r = [](__m256 h) {
+    __m256i u = _mm256_castps_si256(h);
+    const __m256i lsb = _mm256_and_si256(_mm256_srli_epi32(u, 16), _mm256_set1_epi32(1));
+    u = _mm256_add_epi32(u, _mm256_add_epi32(_mm256_set1_epi32(0x7FFF), lsb));
+    return _mm256_castsi256_ps(_mm256_and_si256(u, _mm256_set1_epi32((int)0xFFFF0000u)));
+  };
+  return {r(x.lo), r(x.hi)};
+#else
+  float a[16];
+  std::memcpy(a, &x, 64);
+  for (int i = 0; i < 16; i++) {
+    uint32_t u; std::memcpy(&u, &a[i], 4);
+    u = (u + 0x7FFFu + ((u >> 16) & 1u)) & 0xFFFF0000u;
+    std::memcpy(&a[i], &u, 4);
+  }
+  return v_loadf(a);
+#endif
+}
 // v1.4: the scale is loaded once per group (the loops run group by group) instead of `k0 / G` per block: a runtime
 // integer division in the innermost loop cost tens of cycles per 32 weights on Zen 2. The fma sequence per lane, and so
 // every bit, is unchanged.
+template <bool BF = false>
 static inline void row_dots_q4(const uint8_t* rec, const float* X, int n, int K, int G, float* out) {
   const uint16_t* sc = (const uint16_t*)(rec + K / 2);
   V16 acc[16];
@@ -221,6 +249,7 @@ static inline void row_dots_q4(const uint8_t* rec, const float* X, int n, int K,
     for (int k0 = g0; k0 < g0 + G; k0 += 32) {
       V16 wl, wh;
       v_q4_pair(rec + k0 / 2, s, wl, wh);
+      if (BF) { wl = v_rbf(wl); wh = v_rbf(wh); }
       for (int t = 0; t < n; t++) {
         acc[t] = v_fma(wl, v_loadf(X + (size_t)t * K + k0), acc[t]);
         acc[t] = v_fma(wh, v_loadf(X + (size_t)t * K + k0 + 16), acc[t]);
@@ -230,6 +259,7 @@ static inline void row_dots_q4(const uint8_t* rec, const float* X, int n, int K,
   for (int t = 0; t < n; t++) out[t] = tree16(acc[t]);
 }
 static const int Q4_PF = [] { const char* v = std::getenv("VAHANA_Q4_PF"); return v ? std::atoi(v) : 1024; }();
+template <bool BF = false>
 static inline void row_dots4_n1_q4(const uint8_t* r0, const uint8_t* r1, const uint8_t* r2, const uint8_t* r3,
                                    const float* X, int K, int G, float* out) {
   const uint8_t* R[4] = {r0, r1, r2, r3};
@@ -251,10 +281,10 @@ static inline void row_dots4_n1_q4(const uint8_t* r0, const uint8_t* r1, const u
 #endif
       const V16 x0 = v_loadf(X + k0), x1 = v_loadf(X + k0 + 16);
       V16 wl, wh;
-      v_q4_pair(r0 + k0 / 2, s0, wl, wh); a[0] = v_fma(wl, x0, a[0]); a[0] = v_fma(wh, x1, a[0]);
-      v_q4_pair(r1 + k0 / 2, s1, wl, wh); a[1] = v_fma(wl, x0, a[1]); a[1] = v_fma(wh, x1, a[1]);
-      v_q4_pair(r2 + k0 / 2, s2, wl, wh); a[2] = v_fma(wl, x0, a[2]); a[2] = v_fma(wh, x1, a[2]);
-      v_q4_pair(r3 + k0 / 2, s3, wl, wh); a[3] = v_fma(wl, x0, a[3]); a[3] = v_fma(wh, x1, a[3]);
+      v_q4_pair(r0 + k0 / 2, s0, wl, wh); if (BF) { wl = v_rbf(wl); wh = v_rbf(wh); } a[0] = v_fma(wl, x0, a[0]); a[0] = v_fma(wh, x1, a[0]);
+      v_q4_pair(r1 + k0 / 2, s1, wl, wh); if (BF) { wl = v_rbf(wl); wh = v_rbf(wh); } a[1] = v_fma(wl, x0, a[1]); a[1] = v_fma(wh, x1, a[1]);
+      v_q4_pair(r2 + k0 / 2, s2, wl, wh); if (BF) { wl = v_rbf(wl); wh = v_rbf(wh); } a[2] = v_fma(wl, x0, a[2]); a[2] = v_fma(wh, x1, a[2]);
+      v_q4_pair(r3 + k0 / 2, s3, wl, wh); if (BF) { wl = v_rbf(wl); wh = v_rbf(wh); } a[3] = v_fma(wl, x0, a[3]); a[3] = v_fma(wh, x1, a[3]);
     }
   }
   (void)R;
@@ -1007,12 +1037,40 @@ void register_linear_nx(torch::Tensor W, std::vector<torch::Tensor> packs) { (*L
 torch::Tensor linear_nx(const float* xf, const std::vector<torch::Tensor>& pk, int R, int K, torch::TensorOptions opt);
 torch::Tensor linear_twin(torch::Tensor x, torch::Tensor W) {
   const int n = x.size(0), K = x.size(1), R = W.size(0);
-  TORCH_CHECK(K % 16 == 0 && R % 4 == 0 && n <= 16 && W.size(1) == K);
+  const bool q4 = W.scalar_type() == torch::kUInt8;
+  TORCH_CHECK(K % 16 == 0 && R % 4 == 0 && n <= 16 && (q4 || W.size(1) == K));
   std::vector<float> xf((size_t)n * K);
   const uint16_t* xp = (const uint16_t*)x.data_ptr();
   for (size_t i = 0; i < xf.size(); i++) xf[i] = bf2f(xp[i]);
   auto y = torch::empty({n, R}, x.options());
   uint16_t* yp = (uint16_t*)y.data_ptr();
+  if (q4) {
+    // v1.4: a 4-bit non-expert linear on the CPU. Each weight is rebuilt as bf16(q * s), the value 1.3 stored after
+    // expanding the checkpoint, then the same twin fma sequence: the bits of 1.3 and of the GPU's Q4Linear.
+    const size_t rb = (size_t)W.size(1);
+    TORCH_CHECK(K % 32 == 0 && rb > (size_t)K / 2 && (2 * (size_t)K) % (rb - K / 2) == 0, "twin-q4 linear: bad records");
+    const int G = (int)(2 * (size_t)K / (rb - K / 2));
+    TORCH_CHECK(G % 32 == 0 && rb == (size_t)K / 2 + 2 * (size_t)K / G, "twin-q4 linear: bad group size");
+    const uint8_t* w8 = (const uint8_t*)W.data_ptr();
+    std::atomic<int> nx{0};
+    vh_parallel([&](int, int) {
+      for (int r = nx.fetch_add(16); r < R; r = nx.fetch_add(16)) for (int r1 = r; r1 < r + 16 && r1 < R; r1 += 4) {
+        if (n == 1) {
+          float o[4];
+          row_dots4_n1_q4<true>(w8 + (size_t)r1 * rb, w8 + (size_t)(r1 + 1) * rb, w8 + (size_t)(r1 + 2) * rb,
+                                w8 + (size_t)(r1 + 3) * rb, xf.data(), K, G, o);
+          for (int q = 0; q < 4; q++) yp[r1 + q] = f2bf(o[q]);
+        } else {
+          float d[16];
+          for (int q = 0; q < 4; q++) {
+            row_dots_q4<true>(w8 + (size_t)(r1 + q) * rb, xf.data(), n, K, G, d);
+            for (int t = 0; t < n; t++) yp[(size_t)t * R + r1 + q] = f2bf(d[t]);
+          }
+        }
+      }
+    });
+    return y;
+  }
   const uint16_t* w = (const uint16_t*)W.data_ptr();
   if (n == 1 && K % 64 == 0) {                 // Phase 40: NX12 copy registered for this weight
     auto it = LIN_NX->find(W.data_ptr());
@@ -1052,6 +1110,38 @@ torch::Tensor linear_twin(torch::Tensor x, torch::Tensor W) {
   }
   });
   return y;
+}
+
+// v1.4 CPU-only: the twin RMSNorm in one call, the arithmetic of twinlin._trms (the GPU kernel) step for step:
+// a = v * v (fp32), the halving tree over the next power of two (zero padding; slot c += slot c + h, the same adds as
+// tmath.tsum_last), var = s / N, rs = 1 / sqrt(var + eps) (IEEE division and sqrt, correctly rounded), h = bf16(v * rs),
+// y = bf16(w * h). Built with -ffp-contract=off, so no add or multiply is fused: the same bits as the TwinMode path,
+// which fast_norms checks per norm class before using this.
+void rmsnorm_twin(torch::Tensor x, torch::Tensor w, torch::Tensor y, double eps) {
+  TORCH_CHECK(x.dim() == 2 && x.is_contiguous() && y.is_contiguous() && w.is_contiguous() &&
+              x.scalar_type() == torch::kBFloat16 && w.scalar_type() == torch::kBFloat16 &&
+              y.scalar_type() == torch::kBFloat16 && w.numel() == x.size(1) && y.numel() == x.numel(), "rmsnorm_twin");
+  const int64_t M = x.size(0), N = x.size(1);
+  int64_t P = 1;
+  while (P < N) P <<= 1;
+  const float ef = (float)eps, nf = (float)N;
+  const uint16_t* xp = (const uint16_t*)x.data_ptr(); const uint16_t* wp = (const uint16_t*)w.data_ptr();
+  uint16_t* yp = (uint16_t*)y.data_ptr();
+  std::vector<float> a((size_t)P);
+  for (int64_t r = 0; r < M; r++) {
+    const uint16_t* xr = xp + r * N;
+    for (int64_t c = 0; c < N; c++) { const float v = bf2f(xr[c]); a[c] = v * v; }
+    for (int64_t c = N; c < P; c++) a[c] = 0.0f;
+    for (int64_t h = P / 2; h >= 1; h /= 2)
+      for (int64_t c = 0; c < h; c++) a[c] = a[c] + a[c + h];
+    const float var = a[0] / nf;
+    const float rs = 1.0f / std::sqrt(var + ef);
+    uint16_t* yr = yp + r * N;
+    for (int64_t c = 0; c < N; c++) {
+      const float h = bf2f(f2bf(bf2f(xr[c]) * rs));
+      yr[c] = f2bf(bf2f(wp[c]) * h);
+    }
+  }
 }
 
 // Phase 26: a persistent C++ worker so the caller never waits on the Python GIL.
@@ -1951,6 +2041,7 @@ VH_API vh_list* vh_expert_mlps_nx(const vh_t* x, const vh_t* packs, int64_t n, i
   VH_LIST(L_({expert_mlps_nx(T_(x), TV_(packs, n), I, numa)}))
 }
 VH_API vh_list* vh_linear_twin(const vh_t* x, const vh_t* W) { VH_LIST(L_({linear_twin(T_(x), T_(W))})) }
+VH_API int vh_rmsnorm_twin(const vh_t* x, const vh_t* w, const vh_t* y, double eps) { VH_INT(rmsnorm_twin(T_(x), T_(w), T_(y), eps)) }
 VH_API vh_list* vh_encode_nx(const vh_t* W) { VH_LIST(L_(encode_nx(T_(W)))) }
 VH_API int vh_register_layer(int64_t layer, const vh_t* g, const vh_t* u, const vh_t* d, int64_t n) {
   VH_INT(register_layer(layer, TV_(g, n), TV_(u, n), TV_(d, n)))

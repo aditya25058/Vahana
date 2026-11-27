@@ -70,6 +70,7 @@ class Kernel:
             "vh_expert_mlps": (ctypes.c_void_p, [_P, _P, _P, _P, _I64, _I64]),
             "vh_expert_mlps_nx": (ctypes.c_void_p, [_P, _P, _I64, _I64, _I64]),
             "vh_linear_twin": (ctypes.c_void_p, [_P, _P]), "vh_encode_nx": (ctypes.c_void_p, [_P]),
+            "vh_rmsnorm_twin": (ctypes.c_int, [_P, _P, _P, _D]),
             "vh_register_layer": (ctypes.c_int, [_I64, _P, _P, _P, _I64]),
             "vh_register_layer_act": (ctypes.c_int, [_I64, _I64, _D, _D, _P, _I64, _P, _I64, _P, _I64]),
             "vh_register_shared": (ctypes.c_int, [_I64, _P, _P, _P]),
@@ -158,6 +159,10 @@ class Kernel:
 
     def linear_twin(self, x, W):
         return self._list(self.lib.vh_linear_twin(_desc(x), _desc(W)), "linear_twin")[0]
+
+    def rmsnorm_twin(self, x, w, y, eps):
+        """v1.4: the twin RMSNorm of bf16 x [M, N] (contiguous) into y, in one call (see cpu_moe.cpp)."""
+        self._ok(self.lib.vh_rmsnorm_twin(_desc(x), _desc(w), _desc(y), float(eps)), "rmsnorm_twin")
 
     def encode_nx(self, W):
         return self._list(self.lib.vh_encode_nx(_desc(W)), "encode_nx")

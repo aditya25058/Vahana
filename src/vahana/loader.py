@@ -136,11 +136,11 @@ def _assemble(model, specs, get_param, get_experts, dev, cpu, folded, numa, nx, 
         if n.startswith(pref):
             continue
         mod_name, pname = n.rsplit(".", 1)
-        if get_q4 is not None and pname == "weight" and dev.type == "cuda" and not on_cpu(mod_name):
+        if get_q4 is not None and pname == "weight" and dev.type in ("cuda", "cpu") and not on_cpu(mod_name):
             mod = model.get_submodule(mod_name)
             rec = get_q4(n) if isinstance(mod, nn.Linear) and mod.bias is None else None
             from . import q4lin
-            if rec is not None and q4lin.supported(mod.in_features, mod.out_features):
+            if rec is not None and q4lin.supported(mod.in_features, mod.out_features, dev.type):
                 # v1.4: keep a 4-bit linear 4-bit on the GPU (same bits as the bf16 expansion; see q4lin)
                 parent, leaf = mod_name.rsplit(".", 1)
                 setattr(model.get_submodule(parent), leaf,
@@ -338,7 +338,7 @@ def load(model_dir: str, gpu_budget_gb: float | None = None, device: str = "cuda
         mode = os.environ.get("VAHANA_Q4_LINEARS", "auto")
         if mode == "0" or n in ck or n + "_packed" not in ck:
             return None
-        if mode == "auto" and torch.cuda.get_device_properties(dev).total_memory >= 12 * 2**30:
+        if mode == "auto" and dev.type == "cuda" and torch.cuda.get_device_properties(dev).total_memory >= 12 * 2**30:
             return None     # a large GPU reads bf16 faster than it decodes 4-bit (H100: 55.9 vs 34.0 tok/s)
         sc = h.get_tensor(ck[n + "_scale"])
         return _q4.from_compressed(h.get_tensor(ck[n + "_packed"]), sc) if sc.dtype == torch.bfloat16 else None
