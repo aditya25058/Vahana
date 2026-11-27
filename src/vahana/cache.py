@@ -428,6 +428,7 @@ class CachedExperts(nn.Module):
             lut[e] = c
         self.lut = lut.to(device)
         self.lut_cpu = lut
+        self._acnt = None                              # v1.4: adaptive.Adaptive's use counts for this layer (GPU)
         from . import prefill
         prefill.register(base, cached=self)
         from . import hybrid as _hy
@@ -447,6 +448,9 @@ class CachedExperts(nn.Module):
 
     def forward(self, hidden_states, top_k_index, top_k_weights):
         from . import prefill, runtime
+        if self._acnt is not None:                       # v1.4: count routed uses for the adaptive cache (speed only)
+            f = top_k_index.reshape(-1)
+            self._acnt.index_add_(0, f, torch.ones(f.shape[0], dtype=torch.float32, device=f.device))
         if prefill.wanted(hidden_states, self.base):     # v1.3: long prompts run the uncached experts on the GPU too
             return prefill.run(self.base, hidden_states, top_k_index, top_k_weights, cached=self).to(
                 hidden_states.dtype)
@@ -505,8 +509,17 @@ def install(model, budget_bytes: float, counts: dict | None = None, frac: float 
             order = sorted(range(m.spec.E), key=lambda e: (-int(c[e]), e))
             pick[L] = order[:max(1, round(frac * m.spec.E))]
     else:
+        from . import adaptive
         nb = lambda t: t.numel() * t.element_size()
         per = {L: nb(m.g[0]) + nb(m.u[0]) + nb(m.d[0]) for L, (_, m) in layers.items()}  # bytes per expert (g, u, d)
+        c = int(budget_bytes // sum(per.values()))
+        if adaptive.enabled() and c >= 1:
+            # v1.4: the adaptive cache gives every layer the same number of slots (it then re-picks their contents per
+            # prompt and step); the initial contents are each layer's most used experts.
+            for L, (_, m) in layers.items():
+                cl = counts[L] if counts else torch.zeros(m.spec.E)
+                pick[L] = sorted(range(m.spec.E), key=lambda e: (-int(cl[e]), e))[:min(c, m.spec.E - 1)]
+    if frac is None and not any(pick.values()):
         cand = sorted(((-int(counts[L][e]) if counts else 0, L, e) for L, (_, m) in layers.items()
                        for e in range(m.spec.E)))
         used = 0
@@ -529,7 +542,13 @@ def install(model, budget_bytes: float, counts: dict | None = None, frac: float 
         tot = sum(int(c.sum()) for c in counts.values())
         hit = sum(int(counts[L][pick[L]].sum()) for L in pick if pick[L]) / max(1, tot)
     info = {"cached_experts": n, "layers": sum(1 for L in pick if pick[L]), "gb": gb, "profile_hit": hit}
+    from . import adaptive
+    ces = [m for m in model.modules() if isinstance(m, CachedExperts)]
+    if adaptive.enabled() and ces and frac is None:
+        model._vahana_adaptive = adaptive.Adaptive(sorted(ces, key=lambda m: m.spec.slot), dev)
+        info["adaptive"] = True
     if log:
         log(f"vahana: GPU expert cache {n} experts in {info['layers']} layers, {gb:.1f} GB"
-            + (f", {hit:.0%} of profiled expert uses" if hit is not None else ""))
+            + (f", {hit:.0%} of profiled expert uses" if hit is not None else "")
+            + (", adaptive" if info.get("adaptive") else ""))
     return info

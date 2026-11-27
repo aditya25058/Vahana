@@ -99,6 +99,11 @@ def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None
         return _generate_dynamic(model, input_ids, attention_mask, max_new_tokens, return_logits, sampler, on_token,
                                  eos_token_id=eos_token_id, reason=f"own cache class: {str(e)[:160]}")
     _sync(dev)
+    from . import adaptive
+    ad = adaptive.of(model)
+    if ad is not None:                                # v1.4: re-pick the GPU-cached experts for this prompt
+        ad.after_prefill()
+        _sync(dev)
     prefill_s = time.perf_counter() - t0
     if pc is not None:
         pc.store(input_ids[0], cache.layers)
@@ -189,6 +194,9 @@ def generate(model, input_ids: torch.Tensor, attention_mask: torch.Tensor | None
             else:
                 step()
         _sync(dev)
+        if ad is not None:                            # v1.4: a few cache swaps between steps, counted in the step
+            ad.after_step()
+            _sync(dev)
         lat.append(time.perf_counter() - t)
         if sampler is not None:
             tok.copy_(sampler(lbuf).to(dev).view(B, 1))
