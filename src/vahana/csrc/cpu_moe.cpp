@@ -497,11 +497,13 @@ void register_resident(int64_t layer, torch::Tensor r) {
 namespace {
 std::atomic<int> g_pf_mode{0};
 std::atomic<long long> g_pf_bytes{0}, g_pf_calls{0}, g_pf_hit{0}, g_pf_n{0}, g_pf_pred_bytes{0};
-std::mutex g_pf_mu; std::condition_variable g_pf_cv;
+// Never destroyed: the detached prefetch thread waits on the cv, and glibc's pthread_cond_destroy at exit waits for
+// waiters, which hung the process at exit on Linux.
+std::mutex& g_pf_mu = *new std::mutex(); std::condition_variable& g_pf_cv = *new std::condition_variable();
 std::atomic<bool> g_pf_busy{false};
 std::deque<std::function<void()>>* g_pf_q = new std::deque<std::function<void()>>();
 std::map<int64_t, std::set<int64_t>>* g_pf_pred = new std::map<int64_t, std::set<int64_t>>();
-std::mutex g_pf_pred_mu;
+std::mutex& g_pf_pred_mu = *new std::mutex();
 bool g_pf_thread = false;
 
 void os_prefetch(const std::vector<std::pair<const void*, size_t>>& r) {
