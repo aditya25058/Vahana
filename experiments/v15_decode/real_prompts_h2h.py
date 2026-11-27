@@ -60,6 +60,8 @@ def vahana():
         m = re.match(r"(\w+)\s+decode ([\d.]+) tok/s .* ttft ([\d.]+) s", line)
         if m:
             out[m.group(1)] = {"decode": float(m.group(2)), "ttft": float(m.group(3))}
+    if not out:
+        sys.exit(f"Vahana run failed (exit {r.returncode}):\n{r.stdout[-2000:]}\n{r.stderr[-4000:]}")
     return out
 
 

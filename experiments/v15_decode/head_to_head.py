@@ -45,7 +45,9 @@ def vahana_once():
     env = dict(os.environ, PROFILE_DECODE_ONLY="1", OMP_WAIT_POLICY="PASSIVE")
     r = subprocess.run([sys.executable, os.path.join(here, "profile_decode.py"), a.vahana_model], capture_output=True,
                        text=True, timeout=1800, env=env)
-    line = next(x for x in r.stdout.splitlines() if x.startswith("decode:"))
+    line = next((x for x in r.stdout.splitlines() if x.startswith("decode:")), None)
+    if line is None:
+        sys.exit(f"Vahana run failed (exit {r.returncode}):\n{r.stdout[-2000:]}\n{r.stderr[-4000:]}")
     return float(line.split()[1])
 
 
