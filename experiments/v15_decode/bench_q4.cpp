@@ -107,6 +107,7 @@ static void v2(const uint8_t* const* R, const float* X, int K, int G, float* out
 
 // V3: V2 + software prefetch g_pf bytes ahead in each row (one prefetch per 64-byte line)
 static int g_pf = 512;
+static int g_split = getenv("SPLIT") ? atoi(getenv("SPLIT")) : 0;
 static void v3(const uint8_t* const* R, const float* X, int K, int G, float* out) {
   V16 a[4] = {v_zero(), v_zero(), v_zero(), v_zero()};
   for (int g0 = 0, gi = 0; g0 < K; g0 += G, gi++) {
@@ -127,6 +128,94 @@ static void v3(const uint8_t* const* R, const float* X, int K, int G, float* out
   for (int i = 0; i < 4; i++) out[i] = tree16(a[i]);
 }
 
+
+// V4: one fma rebuilds the weight. vpshufb puts nibble n in byte 2 of each dword; OR 0x3F800000 makes the float
+// f = 1 + n/128 exactly. With S = 128 s and C = -136 s (both exact for finite |s| < 2^100), fma(f, S, C) has the exact
+// value (128 + n) s - 136 s = (n - 8) s, which is representable, so it is returned exactly: the same weight as V0
+// (a zero weight may be +0 where V0 had -0; added to an accumulator that starts at +0, either gives the same sums).
+static inline void q4_fma(const uint8_t* b, __m256 S, __m256 C, V16& lo, V16& hi) {
+  const __m256i v = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i*)b));
+  const __m256i m4 = _mm256_set1_epi8(0x0F);
+  const __m256i bl = _mm256_and_si256(v, m4), bh = _mm256_and_si256(_mm256_srli_epi16(v, 4), m4);
+  const __m256i s0 = _mm256_setr_epi8(-1, -1, 0, -1, -1, -1, 1, -1, -1, -1, 2, -1, -1, -1, 3, -1,
+                                      -1, -1, 4, -1, -1, -1, 5, -1, -1, -1, 6, -1, -1, -1, 7, -1);
+  const __m256i s1 = _mm256_setr_epi8(-1, -1, 8, -1, -1, -1, 9, -1, -1, -1, 10, -1, -1, -1, 11, -1,
+                                      -1, -1, 12, -1, -1, -1, 13, -1, -1, -1, 14, -1, -1, -1, 15, -1);
+  const __m256i one = _mm256_set1_epi32(0x3F800000);
+  auto cv = [&](__m256i bytes, __m256i sh) {
+    return _mm256_fmadd_ps(_mm256_castsi256_ps(_mm256_or_si256(_mm256_shuffle_epi8(bytes, sh), one)), S, C);
+  };
+  lo.lo = cv(bl, s0); lo.hi = cv(bl, s1); hi.lo = cv(bh, s0); hi.hi = cv(bh, s1);
+}
+template <bool PF>
+static void v4t(const uint8_t* const* R, const float* X, int K, int G, float* out) {
+  V16 a[4] = {v_zero(), v_zero(), v_zero(), v_zero()};
+  for (int g0 = 0, gi = 0; g0 < K; g0 += G, gi++) {
+    __m256 S[4], C[4];
+    for (int i = 0; i < 4; i++) {
+      const float s = bf2f(((const uint16_t*)(R[i] + K / 2))[gi]);
+      S[i] = _mm256_set1_ps(128.0f * s); C[i] = _mm256_set1_ps(-136.0f * s);
+    }
+    for (int k0 = g0; k0 < g0 + G; k0 += 32) {
+      if (PF && (k0 & 127) == 0)
+        for (int i = 0; i < 4; i++) _mm_prefetch((const char*)(R[i] + k0 / 2 + g_pf), _MM_HINT_T0);
+      const V16 x0 = v_loadf(X + k0), x1 = v_loadf(X + k0 + 16);
+      for (int i = 0; i < 4; i++) {
+        V16 wl, wh;
+        q4_fma(R[i] + k0 / 2, S[i], C[i], wl, wh);
+        a[i] = v_fma(wl, x0, a[i]);
+        a[i] = v_fma(wh, x1, a[i]);
+      }
+    }
+  }
+  for (int i = 0; i < 4; i++) out[i] = tree16(a[i]);
+}
+static void v4(const uint8_t* const* R, const float* X, int K, int G, float* out) { v4t<false>(R, X, K, G, out); }
+static void v5(const uint8_t* const* R, const float* X, int K, int G, float* out) { v4t<true>(R, X, K, G, out); }
+
+// V6: no OR either. vpshufb puts n in byte 2 of an otherwise-zero dword: the subnormal float n * 2^-133 (exact).
+// With S = s * 2^101 and C = -8 s * 2^-32, fma(f, S, C) = (n - 8) s * 2^-32 exactly; the caller pre-scales X by 2^32
+// (exact), so each product w' x' equals w x and fma(w', x', acc) gives V0's bits. Valid when DAZ is off, the scales
+// are 0 or in [2^-90, 2^20] in magnitude, and |x| < 2^90 (checked by the caller; else V0's path).
+static inline void q4_den(const uint8_t* b, __m256 S, __m256 C, V16& lo, V16& hi) {
+  const __m256i v = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i*)b));
+  const __m256i m4 = _mm256_set1_epi8(0x0F);
+  const __m256i bl = _mm256_and_si256(v, m4), bh = _mm256_and_si256(_mm256_srli_epi16(v, 4), m4);
+  const __m256i s0 = _mm256_setr_epi8(-1, -1, 0, -1, -1, -1, 1, -1, -1, -1, 2, -1, -1, -1, 3, -1,
+                                      -1, -1, 4, -1, -1, -1, 5, -1, -1, -1, 6, -1, -1, -1, 7, -1);
+  const __m256i s1 = _mm256_setr_epi8(-1, -1, 8, -1, -1, -1, 9, -1, -1, -1, 10, -1, -1, -1, 11, -1,
+                                      -1, -1, 12, -1, -1, -1, 13, -1, -1, -1, 14, -1, -1, -1, 15, -1);
+  auto cv = [&](__m256i bytes, __m256i sh) { return _mm256_fmadd_ps(_mm256_castsi256_ps(_mm256_shuffle_epi8(bytes, sh)), S, C); };
+  lo.lo = cv(bl, s0); lo.hi = cv(bl, s1); hi.lo = cv(bh, s0); hi.hi = cv(bh, s1);
+}
+static float g_Xs[2048];
+template <bool PF>
+static void v6t(const uint8_t* const* R, const float* X, int K, int G, float* out) {
+  (void)X; X = g_Xs;
+  V16 a[4] = {v_zero(), v_zero(), v_zero(), v_zero()};
+  for (int g0 = 0, gi = 0; g0 < K; g0 += G, gi++) {
+    __m256 S[4], C[4];
+    for (int i = 0; i < 4; i++) {
+      const float s = bf2f(((const uint16_t*)(R[i] + K / 2))[gi]);
+      S[i] = _mm256_set1_ps(s * 0x1p101f); C[i] = _mm256_set1_ps(-8.0f * s * 0x1p-32f);
+    }
+    for (int k0 = g0; k0 < g0 + G; k0 += 32) {
+      if (PF && (k0 & 127) == 0)
+        for (int i = 0; i < 4; i++) _mm_prefetch((const char*)(R[i] + k0 / 2 + g_pf), _MM_HINT_T0);
+      const V16 x0 = v_loadf(X + k0), x1 = v_loadf(X + k0 + 16);
+      for (int i = 0; i < 4; i++) {
+        V16 wl, wh;
+        q4_den(R[i] + k0 / 2, S[i], C[i], wl, wh);
+        a[i] = v_fma(wl, x0, a[i]);
+        a[i] = v_fma(wh, x1, a[i]);
+      }
+    }
+  }
+  for (int i = 0; i < 4; i++) out[i] = tree16(a[i]);
+}
+static void v6(const uint8_t* const* R, const float* X, int K, int G, float* out) { v6t<false>(R, X, K, G, out); }
+static void v7(const uint8_t* const* R, const float* X, int K, int G, float* out) { v6t<true>(R, X, K, G, out); }
+
 typedef void (*Fn)(const uint8_t* const*, const float*, int, int, float*);
 
 static int mt_main(int nthr, int f, int K) {
@@ -135,9 +224,9 @@ static int mt_main(int nthr, int f, int K) {
   std::vector<uint8_t> W(rows * RB);
   for (size_t i = 0; i < W.size(); i += 64) W[i] = (uint8_t)i;
   for (size_t r = 0; r < rows; r++) { uint16_t* sc = (uint16_t*)(W.data() + r * RB + K / 2); for (int g = 0; g < K / G; g++) sc[g] = 0x3c00; }
-  static float X[2048]; for (int k = 0; k < K; k++) X[k] = 0.001f * (k % 7);
+  static float X[2048]; for (int k = 0; k < K; k++) { X[k] = 0.001f * (k % 7); g_Xs[k] = X[k] * 0x1p32f; }
   std::vector<float> out(rows);
-  Fn fns[] = {v0, v1, v2, v3}; const int nr[] = {4, 4, 4, 4};
+  Fn fns[] = {v0, v1, v2, v3, v4, v5, v6, v7}; const int nr[] = {4, 4, 4, 4, 4, 4, 4, 4};
   double best = 1e9;
   for (int rep = 0; rep < 5; rep++) {
     std::atomic<size_t> next{0};
@@ -145,6 +234,14 @@ static int mt_main(int nthr, int f, int K) {
     std::vector<std::thread> th;
     for (int t = 0; t < nthr; t++) th.emplace_back([&] {
       const size_t chunk = 64;
+      if (g_split) {  // gate/up layout: two contiguous streams (rows c.. of each half), two rows of each per call
+        const size_t half = rows / 2;
+        for (size_t c = next.fetch_add(chunk); c < half; c = next.fetch_add(chunk))
+          for (size_t r = c; r + 2 <= c + chunk && r + 2 <= half; r += 2) {
+            const uint8_t* R[4] = {W.data() + r * RB, W.data() + (r + 1) * RB, W.data() + (half + r) * RB, W.data() + (half + r + 1) * RB};
+            fns[f](R, X, K, G, &out[r * 2]);
+          }
+      } else
       for (size_t c = next.fetch_add(chunk); c < rows; c = next.fetch_add(chunk))
         for (size_t r = c; r + nr[f] <= c + chunk && r + nr[f] <= rows; r += nr[f]) {
           const uint8_t* R[8]; for (int i = 0; i < nr[f]; i++) R[i] = W.data() + (r + i) * RB;
@@ -164,20 +261,21 @@ int main(int argc, char** argv) {
   if (argc > 2) return mt_main(atoi(argv[1]), atoi(argv[2]), argc > 3 ? atoi(argv[3]) : 2048);
   const int K = 2048, G = 128, RB = K / 2 + 2 * (K / G);
   float X[K];
-  for (int k = 0; k < K; k++) X[k] = bf2f((uint16_t)(0x3c00 + (rand() & 0x3ff)) ^ ((rand() & 1) << 15));
+  for (int k = 0; k < K; k++) X[k] = bf2f((uint16_t)((0x3000 + (rand() & 0x1fff)) ^ ((rand() & 1) << 15)));
+  for (int k = 0; k < K; k++) g_Xs[k] = X[k] * 0x1p32f;
   for (int big = 0; big < 2; big++) {
     const size_t rows = big ? 400000 : 128;     // ~0.4 GB vs ~135 KB
     std::vector<uint8_t> W(rows * RB);
     for (size_t i = 0; i < W.size(); i++) W[i] = (uint8_t)rand();
     for (size_t r = 0; r < rows; r++) {
       uint16_t* sc = (uint16_t*)(W.data() + r * RB + K / 2);
-      for (int g = 0; g < K / G; g++) sc[g] = (uint16_t)(0x3a00 + (rand() & 0x1ff));
+      for (int g = 0; g < K / G; g++) sc[g] = (uint16_t)((0x2000 + (rand() % 0x3000)) ^ ((rand() & 1) << 15));
     }
-    const char* names[] = {"V0 1.3", "V1 hoist", "V2 magic", "V3 magic+pf"};
-    Fn fns[] = {v0, v1, v2, v3};
-    const int nr[] = {4, 4, 4, 4};
+    const char* names[] = {"V0 1.3", "V1 hoist", "V2 magic", "V3 magic+pf", "V4 fma", "V5 fma+pf", "V6 subnormal", "V7 subn+pf"};
+    Fn fns[] = {v0, v1, v2, v3, v4, v5, v6, v7};
+    const int nr[] = {4, 4, 4, 4, 4, 4, 4, 4};
     std::vector<float> ref(rows);
-    for (int f = 0; f < 4; f++) {
+    for (int f = 0; f < 8; f++) {
       std::vector<float> out(rows);
       const int reps = big ? 2 : 4000;
       uint64_t best = ~0ull;

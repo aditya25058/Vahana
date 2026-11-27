@@ -27,6 +27,11 @@ tw = torch.full((1, 8), 0.125)
 out = torch.empty(1, s.H, dtype=torch.bfloat16)
 ti = torch.arange(8).view(1, 8).to(torch.int64)
 reps = int(os.environ.get("REPS", "20"))
+if os.environ.get("CLONE") == "1":                  # experts in anonymous RAM instead of mmap'd file pages
+    for L in layers:
+        L.g, L.u, L.d = ([t.clone() if i < 8 else t for i, t in enumerate(W)] for W in (L.g, L.u, L.d))  # the 8 hot experts
+        k.register_layer(L.spec.slot, L.g, L.u, L.d)
+    print("experts cloned into anonymous memory", flush=True)
 for L in layers:                                   # warm: page in
     k.submit_moe(L.spec.slot, x, ti, tw, out, L.numa)
     k.wait_done()
