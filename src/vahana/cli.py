@@ -32,9 +32,14 @@ def _numa_off() -> str:
     mask = (ctypes.c_ulong * 16)()
     for n in nodes:
         mask[n // 64] |= 1 << (n % 64)
+    import platform
+    nr = {"x86_64": 238, "aarch64": 237}.get(platform.machine())          # set_mempolicy's syscall number
+    if nr is None:
+        return f"NUMA balancing left on (no set_mempolicy number for {platform.machine()})"
     libc = ctypes.CDLL("libc.so.6", use_errno=True)
-    if libc.syscall(238, 2, mask, ctypes.c_ulong(16 * 64 + 1)) != 0:      # set_mempolicy(MPOL_BIND), x86_64
-        raise OSError(ctypes.get_errno(), "set_mempolicy failed")
+    if libc.syscall(nr, 2, mask, ctypes.c_ulong(16 * 64 + 1)) != 0:       # set_mempolicy(MPOL_BIND)
+        # containers often forbid it (Docker's default seccomp profile, Kaggle): a speed hint, never fatal
+        return f"NUMA balancing left on (set_mempolicy refused: {os.strerror(ctypes.get_errno())})"
     return f"NUMA balancing off (MPOL_BIND nodes {sorted(nodes)})"
 
 

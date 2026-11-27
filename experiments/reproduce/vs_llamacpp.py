@@ -233,10 +233,29 @@ if ngl == "0":                                          # CPU only: llama.cpp's 
     if tbest:
         threads = tbest[0]
     print(f"  llama.cpp's best: -t {threads}", flush=True)
+    # Vahana's default (every CPU but 2) is set for GPU machines, where a CPU feeds the GPU; CPU-only, tune it too
+    print("\ntuning Vahana: threads (CPU only)", flush=True)
+    n = os.cpu_count() or 2
+    vbest = None
+    for t in sorted({max(1, n - 2), int(M.get("physical_cores") or 1), n}):
+        r = run([sys.executable, os.path.join(EXP, "v15_decode", "profile_decode.py"), vdir], timeout=3600,
+                env=dict(os.environ, VAHANA_THREADS=str(t), PROFILE_DECODE_ONLY="1", OMP_WAIT_POLICY="PASSIVE"))
+        line = next((x for x in r.stdout.splitlines() if x.startswith("decode:")), None)
+        if line is None:
+            print(f"    {t} threads: failed\n{r.stderr[-3000:]}", flush=True)
+            continue
+        ts = float(line.split()[1])
+        print(f"    {t} threads: {ts:.2f} tok/s", flush=True)
+        if vbest is None or ts > vbest[1]:
+            vbest = (t, ts)
+    if vbest:
+        os.environ["VAHANA_THREADS"] = str(vbest[0])         # inherited by both head-to-heads' Vahana runs
+        print(f"  Vahana's best: {vbest[0]} threads", flush=True)
 llama_args = ["--llama-dir", lbin, "--ncmoe", best[0], "--threads", threads, "--ngl", ngl]
 
 # ---------------------------------------------------------------- 3. head-to-heads
-out = {"machine": M, "llama.cpp": {"tag": LLAMA_TAG, "n_cpu_moe": best[0], "threads": threads, "ngl": ngl}}
+out = {"machine": M, "llama.cpp": {"tag": LLAMA_TAG, "n_cpu_moe": best[0], "threads": threads, "ngl": ngl},
+       "vahana": {"threads": os.environ.get("VAHANA_THREADS", "default")}}
 print("\nbenchmark text (decode after a 512-token prompt)", flush=True)
 f1 = os.path.join(RES, "benchmark_text.json")
 r = run([sys.executable, os.path.join(EXP, "v15_decode", "head_to_head.py"), "--vahana-model", vdir, "--gguf", gguf,
