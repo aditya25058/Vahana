@@ -434,11 +434,14 @@ struct LayerW { std::vector<torch::Tensor> g, u, d; std::vector<torch::Tensor> s
                 int act = 0; float alpha = 1.702f, limit = 7.0f; std::vector<torch::Tensor> bg, bu, bd;
                 std::vector<uint8_t> resident;                   // v0.3: experts cached on the GPU
                 std::vector<int64_t> last_use; int64_t jobs = 0;   // v1.4: prefetch mode 3 (cold experts only)
+                bool lu_init = false;                            // v1.4: last_use sized once (mode 4 reads it)
                 torch::Tensor router; };                         // v0.5: [E, H] bf16 copy of this layer's router (prefetch)
 std::map<int64_t, LayerW>* LAYERS = new std::map<int64_t, LayerW>();
 }
+namespace { void pf_drain(); }
 void register_layer(int64_t layer, std::vector<torch::Tensor> g, std::vector<torch::Tensor> u,
                     std::vector<torch::Tensor> d) {
+  pf_drain();                                       // a queued mode-4 prediction may still read the old layer
   (*LAYERS)[layer] = LayerW{std::move(g), std::move(u), std::move(d), {}, {}, {}, {}, {}};
 }
 // M2: activation (0 SiLU-GLU, 1 gpt-oss clamped SwiGLU) and optional per-expert biases (lists may be empty).
@@ -470,7 +473,9 @@ void register_resident(int64_t layer, torch::Tensor r) {
 //           with a deep queue instead of page faults inside the kernel);
 //   mode 2: + the next MoE layer's experts are predicted with its router applied to this layer's input (top-K per
 //           token, VAHANA_PREFETCH_TOPK) and prefetched by a background thread while this layer computes.
-// Off by default (v0.5 measured no gain on a disk that is already saturated); VAHANA_PREFETCH=1/2 turns it on.
+//   mode 3 (v1.4): only this job's cold experts (not used in the layer's last VAHANA_PREFETCH_COLD jobs);
+//   mode 4 (v1.4): mode 3 + the next layer's predicted cold experts, on the background thread, a layer ahead.
+// Modes 1/2 cost more than they save; the loader picks mode 3 when the CPU experts exceed 80% of RAM.
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -484,6 +489,7 @@ void register_resident(int64_t layer, torch::Tensor r) {
 #include <unistd.h>
 #endif
 #include <deque>
+#include <functional>
 #include <set>
 #include <mutex>
 #include <thread>
@@ -492,7 +498,8 @@ namespace {
 std::atomic<int> g_pf_mode{0};
 std::atomic<long long> g_pf_bytes{0}, g_pf_calls{0}, g_pf_hit{0}, g_pf_n{0}, g_pf_pred_bytes{0};
 std::mutex g_pf_mu; std::condition_variable g_pf_cv;
-std::deque<std::vector<std::pair<const void*, size_t>>>* g_pf_q = new std::deque<std::vector<std::pair<const void*, size_t>>>();
+std::atomic<bool> g_pf_busy{false};
+std::deque<std::function<void()>>* g_pf_q = new std::deque<std::function<void()>>();
 std::map<int64_t, std::set<int64_t>>* g_pf_pred = new std::map<int64_t, std::set<int64_t>>();
 std::mutex g_pf_pred_mu;
 bool g_pf_thread = false;
@@ -519,14 +526,91 @@ void os_prefetch(const std::vector<std::pair<const void*, size_t>>& r) {
 
 void pf_loop() {
   for (;;) {
-    std::vector<std::pair<const void*, size_t>> r;
+    std::function<void()> task;
     {
       std::unique_lock<std::mutex> lk(g_pf_mu);
       g_pf_cv.wait(lk, [] { return !g_pf_q->empty(); });
-      r = std::move(g_pf_q->front()); g_pf_q->pop_front();
+      task = std::move(g_pf_q->front()); g_pf_q->pop_front();
+      g_pf_busy.store(true, std::memory_order_release);
     }
-    os_prefetch(r);
+    task();
+    g_pf_busy.store(false, std::memory_order_release);
   }
+}
+
+void pf_post(std::function<void()> task) {
+  {
+    std::lock_guard<std::mutex> lk(g_pf_mu);
+    if (!g_pf_thread) { std::thread(pf_loop).detach(); g_pf_thread = true; }
+    if (g_pf_q->size() > 8) g_pf_q->pop_front();     // behind: an old hint is worth less than a new one
+    g_pf_q->push_back(std::move(task));
+  }
+  g_pf_cv.notify_one();
+}
+
+void expert_ranges(const LayerW& L, int64_t e, std::vector<std::pair<const void*, size_t>>& r);
+
+void pf_drain() {                                   // wait until no prefetch task is queued or running
+  for (;;) {
+    { std::lock_guard<std::mutex> lk(g_pf_mu); if (g_pf_q->empty() && !g_pf_busy.load(std::memory_order_acquire)) return; }
+    std::this_thread::sleep_for(std::chrono::microseconds(100));
+  }
+}
+
+int64_t pf_cold() {
+  static const int64_t cold = [] { const char* v = std::getenv("VAHANA_PREFETCH_COLD"); return v ? std::atoll(v) : 64; }();
+  return cold;
+}
+
+// v1.4 mode 4, on the prefetch thread: predict which experts of the next layer M a job will route to, and prefetch
+// those of them that are cold (not used in M's last pf_cold() jobs) and not on the GPU. Decode (few tokens): M's
+// router applied to this layer's input, top-K per token. Prefill (N*K >= 2E): every expert, since nearly all are
+// routed. Hints only: no data and no arithmetic change.
+void predict_next(int64_t layer, const LayerW* M, std::vector<uint16_t> x, int N, int H, int K) {
+  const int E = (int)M->g.size();
+  std::vector<uint8_t> want(E, 0);
+  const bool all = (int64_t)N * K >= 2 * (int64_t)E;
+  if (!all && (M->router.data_ptr() == nullptr || M->router.size(1) != H)) return;   // no router: no guess
+  if (all) {
+    std::fill(want.begin(), want.end(), 1);
+  } else {
+    const uint16_t* W = (const uint16_t*)M->router.data_ptr();
+    std::vector<float> sc(E), xf(H);
+    std::vector<int> id(E);
+    for (int n = 0; n < N; n++) {
+      for (int h = 0; h < H; h++) xf[h] = bf2f(x[(size_t)n * H + h]);
+      for (int e = 0; e < E; e++) {
+        float a0 = 0.f, a1 = 0.f, a2 = 0.f, a3 = 0.f; const uint16_t* w = W + (size_t)e * H;
+        int h = 0;
+        for (; h + 4 <= H; h += 4) {
+          a0 += bf2f(w[h]) * xf[h]; a1 += bf2f(w[h + 1]) * xf[h + 1];
+          a2 += bf2f(w[h + 2]) * xf[h + 2]; a3 += bf2f(w[h + 3]) * xf[h + 3];
+        }
+        for (; h < H; h++) a0 += bf2f(w[h]) * xf[h];
+        sc[e] = (a0 + a1) + (a2 + a3);
+      }
+      for (int e = 0; e < E; e++) id[e] = e;
+      const int P = std::min(E, K);
+      std::partial_sort(id.begin(), id.begin() + P, id.end(), [&](int a, int b) { return sc[a] > sc[b]; });
+      for (int q = 0; q < P; q++) want[(size_t)id[q]] = 1;
+    }
+    std::set<int64_t> pred;
+    for (int e = 0; e < E; e++) if (want[(size_t)e]) pred.insert(e);
+    std::lock_guard<std::mutex> lk(g_pf_pred_mu);   // scored at M's job (prefetch_job)
+    (*g_pf_pred)[layer + 1] = std::move(pred);
+  }
+  const int64_t now = std::atomic_ref<int64_t>(const_cast<int64_t&>(M->jobs)).load(std::memory_order_relaxed);
+  std::vector<std::pair<const void*, size_t>> r;
+  for (int e = 0; e < E; e++) {
+    if (!want[(size_t)e]) continue;
+    if (!M->resident.empty() && M->resident[(size_t)e]) continue;          // on the GPU: its pages are not read
+    const int64_t lu = std::atomic_ref<int64_t>(const_cast<int64_t&>(M->last_use[(size_t)e])).load(std::memory_order_relaxed);
+    if (now - lu <= pf_cold()) continue;                                   // used lately: likely resident
+    expert_ranges(*M, e, r);
+  }
+  long long nb = 0; for (auto& y : r) nb += (long long)y.second;
+  g_pf_pred_bytes += nb;
+  os_prefetch(r);
 }
 
 void expert_ranges(const LayerW& L, int64_t e, std::vector<std::pair<const void*, size_t>>& r) {
@@ -542,33 +626,46 @@ void prefetch_job(int64_t layer, const LayerW& Lc, const uint16_t* xp, int N, in
   if (mode <= 0 || !Lc.nx.empty()) return;         // NX packs live in RAM: nothing to stream
   std::set<int64_t> sel;
   for (int i = 0; i < N * K; i++) if (!mask || mask[i]) sel.insert(tip[i]);
-  if (mode == 3) {
-    // v1.4: cold experts only. When the experts do not all fit in RAM, an expert this layer has not used in its last
-    // VAHANA_PREFETCH_COLD jobs (default 64) has likely been evicted: one PrefetchVirtualMemory / WILLNEED call for just
-    // those turns the threads' 4 KB demand faults into large parallel reads. Experts used recently (likely resident) are
-    // skipped, so a warm machine pays nothing. Hints only: no data and no arithmetic change.
-    static const int64_t cold = [] { const char* v = std::getenv("VAHANA_PREFETCH_COLD"); return v ? std::atoll(v) : 64; }();
-    LayerW& L = const_cast<LayerW&>(Lc);
-    if (L.last_use.size() != L.g.size()) L.last_use.assign(L.g.size(), -(1LL << 40));
-    const int64_t now = ++L.jobs;
-    std::vector<std::pair<const void*, size_t>> r;
-    for (int64_t e : sel) {
-      if (e < 0 || e >= (int64_t)L.last_use.size()) continue;
-      if (now - L.last_use[(size_t)e] > cold) expert_ranges(L, e, r);
-      L.last_use[(size_t)e] = now;
-    }
-    os_prefetch(r);
-    return;
-  }
-  const LayerW& L = Lc;
   {
-    std::lock_guard<std::mutex> lk(g_pf_pred_mu);    // how well the previous layer predicted this one
+    std::lock_guard<std::mutex> lk(g_pf_pred_mu);    // how well the previous layer predicted this one (modes 2, 4)
     auto it = g_pf_pred->find(layer);
     if (it != g_pf_pred->end()) {
       for (int64_t e : sel) { g_pf_n += 1; if (it->second.count(e)) g_pf_hit += 1; }
       g_pf_pred->erase(it);
     }
   }
+  if (mode >= 3) {
+    // v1.4: cold experts only. When the experts do not all fit in RAM, an expert this layer has not used in its last
+    // VAHANA_PREFETCH_COLD jobs (default 64) has likely been evicted: one PrefetchVirtualMemory / WILLNEED call for just
+    // those turns the threads' 4 KB demand faults into large parallel reads. Experts used recently (likely resident) are
+    // skipped, so a warm machine pays nothing. Mode 4 also predicts the next layer's cold experts on the prefetch
+    // thread (predict_next), a layer ahead. Hints only: no data and no arithmetic change.
+    LayerW& L = const_cast<LayerW&>(Lc);
+    if (L.last_use.size() != L.g.size()) { if (L.lu_init) return; L.last_use.assign(L.g.size(), -(1LL << 40)); }
+    std::atomic_ref<int64_t> jobs(L.jobs);
+    const int64_t now = jobs.load(std::memory_order_relaxed) + 1;
+    std::vector<std::pair<const void*, size_t>> r;
+    for (int64_t e : sel) {
+      if (e < 0 || e >= (int64_t)L.last_use.size()) continue;
+      std::atomic_ref<int64_t> lu(L.last_use[(size_t)e]);
+      if (now - lu.load(std::memory_order_relaxed) > pf_cold()) expert_ranges(L, e, r);
+      lu.store(now, std::memory_order_relaxed);
+    }
+    jobs.store(now, std::memory_order_relaxed);
+    os_prefetch(r);
+    if (mode == 4) {
+      auto nx = LAYERS->find(layer + 1);
+      if (nx != LAYERS->end() && nx->second.lu_init && nx->second.nx.empty() && N > 0 && H > 0) {
+        const LayerW* M = &nx->second;
+        const bool all = (int64_t)N * K >= 2 * (int64_t)M->g.size();
+        std::vector<uint16_t> x(all ? 0 : (size_t)N * H);
+        if (!all) std::memcpy(x.data(), xp, x.size() * sizeof(uint16_t));
+        pf_post([layer, M, x = std::move(x), N, H, K]() mutable { predict_next(layer, M, std::move(x), N, H, K); });
+      }
+    }
+    return;
+  }
+  const LayerW& L = Lc;
   std::vector<std::pair<const void*, size_t>> r;
   for (int64_t e : sel) expert_ranges(L, e, r);
   os_prefetch(r);
@@ -605,15 +702,17 @@ void prefetch_job(int64_t layer, const LayerW& Lc, const uint16_t* xp, int N, in
     std::lock_guard<std::mutex> lk(g_pf_pred_mu);
     (*g_pf_pred)[layer + 1] = pred;
   }
-  {
-    std::lock_guard<std::mutex> lk(g_pf_mu);
-    if (!g_pf_thread) { std::thread(pf_loop).detach(); g_pf_thread = true; }
-    g_pf_q->push_back(std::move(rn));
-  }
-  g_pf_cv.notify_one();
+  pf_post([rn = std::move(rn)] { os_prefetch(rn); });
 }
 }  // namespace
-void set_prefetch(int64_t mode) { g_pf_mode = (int)mode; }
+void set_prefetch(int64_t mode) {
+  if (mode >= 3)                                    // size every layer's use clock once (mode 4 reads it from another thread)
+    for (auto& kv : *LAYERS) {
+      LayerW& L = kv.second;
+      if (!L.lu_init) { L.last_use.assign(L.g.size(), -(1LL << 40)); L.lu_init = true; }
+    }
+  g_pf_mode = (int)mode;
+}
 void register_router(int64_t layer, torch::Tensor W) { LAYERS->at(layer).router = W; }
 void prefetch_stats(double* out) {
   out[0] = (double)g_pf_bytes; out[1] = (double)g_pf_calls; out[2] = (double)g_pf_hit; out[3] = (double)g_pf_n;

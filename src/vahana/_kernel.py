@@ -200,7 +200,8 @@ class Kernel:
             self._ok(self.lib.vh_register_router(layer, _desc(W)), "register_router")
 
     def set_prefetch(self, mode: int):
-        """v0.5: 0 off, 1 prefetch each job's experts, 2 + predicted experts of the next layer (hints only)."""
+        """0 off, 1 each job's experts, 2 + the next layer's predicted experts, 3 (v1.4) only cold experts, 4 + the next
+        layer's predicted cold experts. Hints to the OS only: the same bits in every mode."""
         if self.has_prefetch:
             self.lib.vh_set_prefetch(int(mode))
 

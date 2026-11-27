@@ -15,7 +15,11 @@ Each version's evidence is in `experiments/` (pre-registered bars, run logs, raw
 - **Graph and cache reuse across `generate` calls:** about 0.2–0.7 s saved per call.
 - **Adaptive GPU expert cache:** what the cache holds now follows the text. It re-picks each layer's experts from the prompt's routing and swaps a few per decode step; a fixed cache served only 8–19% of real decode uses. Same bits whatever it holds (tests swap after every step). `VAHANA_ADAPTIVE_CACHE=0` keeps it fixed.
 - **4-bit attention decode kernel** unrolled, with launch shapes per matrix: 132 → 80 µs per layer on a laptop GPU. Same bits.
-- **Laptop, Qwen3-30B 4-bit, against llama.cpp on the same machine:** decode **1.86×** on the benchmark text (21.4 vs 11.6 tok/s). On five real prompts, decode **1.40×** (14.0 vs 10.0 tok/s) and time to first token **2.6× faster** (3.1 vs 8.0 s).
+- **Laptop, Qwen3-30B 4-bit, against llama.cpp on the same machine:** decode **1.86×** on the benchmark text (21.4 vs 11.6 tok/s). On five real prompts, decode **1.57×** (15.3 vs 9.7 tok/s) and time to first token **2.8× faster** (2.9 vs 8.2 s).
+- **When the experts do not fit in RAM** (Qwen3-30B's 14.3 GB of 4-bit experts on a 16 GB laptop):
+  - **Cold-expert prefetch** is on by default when the CPU experts exceed 80% of RAM. An expert that a layer has not used lately has probably been paged out, so it is requested from the OS in one large read instead of thousands of small page faults. Real-prompt decode 14.0 → 15.3 tok/s, and a faster first token.
+  - **Pages Vahana no longer reads are released first:** the checkpoint's non-expert tensors after a GPU load, and the RAM copies of GPU-cached experts.
+  - Both are hints to the OS, so the bits are the same.
 - **The first decode step of a call no longer runs eagerly** once the model is warm: it captures the CUDA graph straight away (430–840 → 56–92 ms on Windows). Same bits.
   - H100: unchanged.
   - Details: [experiments/v15_decode](https://github.com/vahana-ai/Vahana/blob/main/experiments/v15_decode/README.md).

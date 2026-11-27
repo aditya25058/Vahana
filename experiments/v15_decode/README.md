@@ -167,9 +167,33 @@ The prompt re-pick costs 0.2–0.45 s of time to first token, bound by reading c
 
 **Decode 1.40×, time to first token 2.6× faster.** Vahana is faster on every prompt in both blocks, with answers bit-identical on any machine.
 
+### 9. The RAM limit
+
+On real prompts the laptop is bound by RAM, not compute:
+- Qwen3-30B's 4-bit experts take 14.3 GB. The laptop has 15.8 GB, and Windows and apps hold about 5 GB, so about 72% of the experts stay resident.
+- In one five-prompt run, free memory fell to about 250 MB and Vahana read 22.7 GB from disk.
+- The missing experts arrive through page faults at 100–600 MB/s, against 1.4 GB/s from the SSD in large reads. That is an estimated 20–40 ms of a 70–80 ms decode step.
+- Vahana's own private working set is about 0.3 GB. (Windows' private bytes overstate it, because torch's CPU allocator keeps freed large blocks committed.) The pressure comes from the experts themselves.
+
+Two changes, both hints to the OS, so no bit depends on them:
+- **Cold-expert prefetch** (`VAHANA_PREFETCH=3`). When a layer's job uses an expert it has not used in its last 64 jobs (`VAHANA_PREFETCH_COLD`), the kernel asks the OS to read that whole expert in one large request (`PrefetchVirtualMemory` / `MADV_WILLNEED`). Experts used recently are skipped, so a machine with enough RAM pays nothing. It is the default when CPU experts exceed 80% of RAM.
+  - Real prompts, mingw build (relative A/B only): 9.0–10.6 tok/s on (8 runs) against 7.4–8.7 off (3 runs), **about +17%**.
+  - The code prompt's first token: about 5 s → 3 s.
+- **Page release.** After a GPU load, the checkpoint's non-expert tensors and the host copies of GPU-cached experts are not read again. `VirtualUnlock` / `MADV_COLD` puts their pages first in line to be dropped, so RAM goes to CPU experts. Effect within noise (+0–5%). Kept, because it costs nothing.
+
+**Head-to-head, real prompts, with both** (CI-built wheel; same protocol as section 8; `real_prompts_laptop_v2.json`):
+
+| | decode median (min–max) | time to first token, median |
+|---|---|---|
+| llama.cpp | 9.74 tok/s (7.36–12.46) | 8.21 s |
+| Vahana 1.4 | **15.33 tok/s** (10.32–17.58) | **2.92 s** |
+
+**Decode 1.57× (was 1.40×), time to first token 2.8× faster.** Vahana is faster on every prompt in both blocks.
+
 ### Tried and dropped
 - **Windows thread pinning**, one thread per physical core first: 98–167 ms per step against 63 ms unpinned. Removed.
-- **Expert prefetch** (`VAHANA_PREFETCH=1/2`): 130–150 ms per step against 84 ms off. It stays off.
+- **Whole-job expert prefetch** (`VAHANA_PREFETCH=1/2`): 130–150 ms per step against 84 ms off on the benchmark text, and real prompts 13 → 10 tok/s. Only the cold-expert mode 3 (section 9) is kept.
+- **Predicting the next layer's cold experts** (`VAHANA_PREFETCH=4`: the next layer's router on this layer's input, a layer ahead). The guesses are good: 83% of the next layer's CPU experts. Decode is still slower than mode 3 (median 8.3 against about 10.3 tok/s, mingw build). It prefetched 51 GB against 25 GB, and with RAM full every wrong guess, about 2.4 MB, evicts an expert that will be needed. Kept as an opt-in, tested for the same bits.
 - **The w64devkit (mingw g++) build** gives the same kernel-boundary speed as CI's clang/MSVC build, but about 30 ms slower decode steps. Measure only with CI-built wheels.
 
 ### Next

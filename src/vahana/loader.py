@@ -401,9 +401,10 @@ def _prefetch(model, log=None) -> dict:
     n = 0
     if mode >= 2:
         for name, m in exp:
-            parent, _ = parent_of(model, name)
+            parent, _ = parent_of(model, getattr(m.spec, "path", name))    # the MoE block (not a cache wrapper)
             E, H = m.spec.E, m.spec.H
-            W = next((p for pn, p in parent.named_parameters() if p.dim() == 2 and tuple(p.shape) == (E, H)
+            ts = list(parent.named_parameters()) + list(parent.named_buffers())
+            W = next((p for pn, p in ts if p.dim() == 2 and tuple(p.shape) == (E, H)
                       and ".experts" not in "." + pn), None)
             if W is None:
                 continue
@@ -415,7 +416,7 @@ def _prefetch(model, log=None) -> dict:
     info = {"mode": mode, "streamed_gb": round(need, 1), "routers": n}
     if log and mode:
         log(f"vahana: expert prefetch mode {mode} ({need:.0f} GB of CPU experts, {ram:.0f} GB RAM"
-            + (f", {n} routers)" if mode == 2 else ")"))
+            + (f", {n} routers)" if mode in (2, 4) else ")"))
     return info
 
 
