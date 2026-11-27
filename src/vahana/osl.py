@@ -65,3 +65,32 @@ def cpu_flags() -> set[str]:
     except OSError:
         pass
     return set()
+
+
+def release(ptr: int, nbytes: int) -> bool:
+    """v1.4: tell the OS these pages (a mapped file range we no longer read) are the first to reclaim: on Windows
+    VirtualUnlock moves them from our working set to the standby list, on Linux madvise(MADV_COLD). The data stays
+    valid (a later read faults it back in); this only makes room in RAM for pages that are read. Never affects bits."""
+    if not ptr or nbytes <= 0 or os.environ.get("VAHANA_RELEASE", "1") == "0":
+        return False
+    try:
+        import ctypes
+        if sys.platform == "win32":
+            k = ctypes.windll.kernel32
+            k.VirtualUnlock.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+            k.VirtualUnlock(ctypes.c_void_p(ptr), ctypes.c_size_t(nbytes))   # "not locked" error: pages still removed
+            return True
+        if sys.platform.startswith("linux"):
+            pg = os.sysconf("SC_PAGE_SIZE")
+            a = ptr & ~(pg - 1)
+            libc = ctypes.CDLL(None, use_errno=True)
+            libc.madvise.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+            return libc.madvise(ctypes.c_void_p(a), ctypes.c_size_t(ptr + nbytes - a), 20) == 0    # MADV_COLD
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
+def release_tensor(t) -> bool:
+    return release(t.data_ptr(), t.numel() * t.element_size())
+

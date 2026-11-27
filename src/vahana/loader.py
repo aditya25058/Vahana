@@ -347,6 +347,21 @@ def load(model_dir: str, gpu_budget_gb: float | None = None, device: str = "cuda
                      get_q4=get_q4)
     if getattr(cfg, "tie_word_embeddings", False):
         model.tie_weights()
+    if dev.type == "cuda":
+        # v1.4: the non-expert weights now live on the GPU (or, for CPU modules, in their own copies), so their pages
+        # in the checkpoint's memory map are never read again: let the OS reclaim them before expert pages.
+        from . import osl
+        rel = 0
+        for k in h.weight_map:
+            if ".experts." in k:
+                continue
+            try:
+                t = h.get_tensor(k)
+            except Exception:  # noqa: BLE001
+                continue
+            if t.device.type == "cpu" and osl.release_tensor(t):
+                rel += t.numel() * t.element_size()
+        info["released_gb"] = rel / 2**30
     info.update(model_type=cfg.model_type, moe_layers=len(specs), nonexpert_gb=total / 2**30,
                 cpu_modules=sorted(cpu), folded_shared=len(folded), load_s=time.time() - t0,
                 gpu_gb=torch.cuda.memory_allocated(dev) / 2**30 if dev.type == "cuda" else 0.0)

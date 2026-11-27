@@ -423,6 +423,10 @@ class CachedExperts(nn.Module):
         dt = torch.uint8 if self.q4 else torch.bfloat16
         st = lambda ws: torch.stack([ws[i] for i in ids]).to(device, dt).contiguous()
         self.G, self.U, self.D = st(base.g), st(base.u), st(base.d)
+        from . import osl
+        for i in ids:                                  # v1.4: the CPU no longer reads these: let their pages go first
+            for w in (base.g[i], base.u[i], base.d[i]):
+                osl.release_tensor(w)
         lut = torch.full((self.spec.E,), -1, dtype=torch.int64)
         for c, e in enumerate(ids):
             lut[e] = c

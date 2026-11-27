@@ -86,6 +86,9 @@ class Adaptive:
         self._up(m.G[s], b.g[e_in])
         self._up(m.U[s], b.u[e_in])
         self._up(m.D[s], b.d[e_in])
+        from . import osl
+        for w in (b.g[e_in], b.u[e_in], b.d[e_in]):      # now read from the GPU: its host pages may go first
+            osl.release_tensor(w)
         m.lut_cpu[e_out] = -1
         m.lut_cpu[e_in] = s
         self.stats["swaps"] += 1
