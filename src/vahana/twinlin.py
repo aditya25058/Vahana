@@ -21,6 +21,7 @@ from ._triton import div_rn, sqrt_rn, tl, triton
 from torch import nn
 
 from . import hybrid as _hy
+from ._kernel import raw as _raw
 
 
 def enabled() -> bool:
@@ -316,6 +317,7 @@ def _trms(x, w, y, N, sx, sy, eps, BLOCK: tl.constexpr):
     tl.store(y + r * sy + cols, (ww * h).to(tl.bfloat16), mask=m)
 
 
+@_raw      # v1.4: one kernel call plus allocation and views; no TwinMode-handled op
 def twin_rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
     """bf16 x and weight (other dtypes: the caller keeps the TwinMode path)."""
     assert x.dtype == torch.bfloat16 and weight.dtype == torch.bfloat16

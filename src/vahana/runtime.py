@@ -17,6 +17,7 @@ import torch
 import torch.nn as nn
 
 from . import hybrid as _hy
+from ._kernel import raw as _raw
 from ._triton import tl, triton
 from .invariant import inv_linear
 from .twinlin import gpu_linear
@@ -243,6 +244,7 @@ def cpu_slots_wait(hs: list, device) -> torch.Tensor:
     return outs[0] if len(outs) == 1 else torch.cat(outs)
 
 
+@_raw          # v1.4: allocation, copies and kernel calls only (no TwinMode-handled op): skip its Python dispatch
 def cpu_linear(W: torch.Tensor, x2: torch.Tensor, _chunk: int = 0) -> torch.Tensor:
     """y [n, R] = twin linear(x2 [n, K] bf16, W [R, K] bf16 in CPU RAM)."""
     k = _hy.ext()

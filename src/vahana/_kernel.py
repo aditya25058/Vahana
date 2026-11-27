@@ -336,6 +336,24 @@ class Kernel:
         return self.lib.vh_host_calls()
 
 
+def raw(f):
+    """v1.4: run f with torch-function handling off. Kernel calls only read tensor metadata, allocate, copy and widen
+    (none of which TwinMode handles), so the bits are unchanged; under a model's TwinMode each metadata read was
+    otherwise a Python dispatch (about 13,000 per CPU-only decode token)."""
+    import functools
+
+    @functools.wraps(f)
+    def g(*a, **k):
+        with torch._C.DisableTorchFunction():
+            return f(*a, **k)
+    return g
+
+
+for _n, _f in list(vars(Kernel).items()):
+    if callable(_f) and not _n.startswith("_"):
+        setattr(Kernel, _n, raw(_f))
+
+
 def cuda_launch_host_func() -> int:
     """Address of cudaLaunchHostFunc in the CUDA runtime torch has loaded (Linux or Windows)."""
     torch.cuda.init()
