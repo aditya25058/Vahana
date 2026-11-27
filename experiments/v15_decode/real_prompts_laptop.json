@@ -1,0 +1,108 @@
+{
+ "llama.cpp": {
+  "runs": [
+   {
+    "code": {
+     "decode": 8.88,
+     "ttft": 6.97489
+    },
+    "chat": {
+     "decode": 11.89,
+     "ttft": 8.18061
+    },
+    "math": {
+     "decode": 9.83,
+     "ttft": 13.4865
+    },
+    "story": {
+     "decode": 9.88,
+     "ttft": 4.17124
+    },
+    "hindi": {
+     "decode": 11.91,
+     "ttft": 10.64812
+    }
+   },
+   {
+    "code": {
+     "decode": 9.02,
+     "ttft": 4.99473
+    },
+    "chat": {
+     "decode": 11.61,
+     "ttft": 7.76136
+    },
+    "math": {
+     "decode": 9.89,
+     "ttft": 12.23414
+    },
+    "story": {
+     "decode": 10.06,
+     "ttft": 4.38983
+    },
+    "hindi": {
+     "decode": 11.55,
+     "ttft": 10.35568
+    }
+   }
+  ],
+  "decode_median": 9.975000000000001,
+  "decode_min": 8.88,
+  "decode_max": 11.91,
+  "ttft_median": 7.970985
+ },
+ "vahana": {
+  "runs": [
+   {
+    "code": {
+     "decode": 11.01,
+     "ttft": 5.34
+    },
+    "chat": {
+     "decode": 14.12,
+     "ttft": 2.93
+    },
+    "math": {
+     "decode": 12.86,
+     "ttft": 3.23
+    },
+    "story": {
+     "decode": 15.71,
+     "ttft": 1.96
+    },
+    "hindi": {
+     "decode": 18.58,
+     "ttft": 2.66
+    }
+   },
+   {
+    "code": {
+     "decode": 11.09,
+     "ttft": 5.17
+    },
+    "chat": {
+     "decode": 13.9,
+     "ttft": 2.97
+    },
+    "math": {
+     "decode": 13.2,
+     "ttft": 3.25
+    },
+    "story": {
+     "decode": 15.8,
+     "ttft": 1.77
+    },
+    "hindi": {
+     "decode": 18.14,
+     "ttft": 3.16
+    }
+   }
+  ],
+  "decode_median": 14.01,
+  "decode_min": 11.01,
+  "decode_max": 18.58,
+  "ttft_median": 3.0650000000000004
+ },
+ "decode_ratio_of_medians": 1.405,
+ "ttft_ratio_of_medians": 2.601
+}

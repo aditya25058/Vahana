@@ -13,6 +13,9 @@ Each version's evidence is in `experiments/` (pre-registered bars, run logs, raw
   - Against llama.cpp on the same laptop, in an alternating warm protocol: **1.41× faster decode** (median 16.44 vs 11.64 tok/s, 10 runs each, ranges not overlapping). About 2× faster under memory pressure.
 - **GPU expert kernels skip uncached slots** (GPU expert time 19.6 → 7.6 ms per token on the laptop). A **fused combine kernel** keeps the summation order. **H100: 55.9 → 70.8 tok/s.** Same bits.
 - **Graph and cache reuse across `generate` calls:** about 0.2–0.7 s saved per call.
+- **Adaptive GPU expert cache:** what the cache holds now follows the text. It re-picks each layer's experts from the prompt's routing and swaps a few per decode step; a fixed cache served only 8–19% of real decode uses. Same bits whatever it holds (tests swap after every step). `VAHANA_ADAPTIVE_CACHE=0` keeps it fixed.
+- **4-bit attention decode kernel** unrolled, with launch shapes per matrix: 132 → 80 µs per layer on a laptop GPU. Same bits.
+- **Laptop, Qwen3-30B 4-bit, against llama.cpp on the same machine:** decode **1.86×** on the benchmark text (21.4 vs 11.6 tok/s). On five real prompts, decode **1.40×** (14.0 vs 10.0 tok/s) and time to first token **2.6× faster** (3.1 vs 8.0 s).
 - **The first decode step of a call no longer runs eagerly** once the model is warm: it captures the CUDA graph straight away (430–840 → 56–92 ms on Windows). Same bits.
   - H100: unchanged.
   - Details: [experiments/v15_decode](https://github.com/vahana-ai/Vahana/blob/main/experiments/v15_decode/README.md).

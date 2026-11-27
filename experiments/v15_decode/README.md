@@ -124,6 +124,49 @@ Same bits throughout (GPU selftest 18/18 on the laptop and the H100, with and wi
 
 Caveat, recorded as is: llama.cpp's best single repetitions in other sessions reached 12.4–15.9 tok/s (section 6). Its warm repetitions under this protocol were 11.5–11.8. The first version of this protocol scored llama.cpp on its cold first repetitions only (`-r 1`, 5.3–5.5 tok/s, a 3.05× ratio). That was unfair, so it was discarded and rerun.
 
+### 8. Round 3: fewer CPU expert reads, faster 4-bit attention
+Same bits throughout: 198 tests pass, the GPU selftest is 18/18 with and without the cache, the CPU selftest is 18/18, and the Qwen3-30B receipt replays bit for bit with every change on.
+
+**Where a step went** (`gpu_profile.py`, per token): about 65% was the GPU waiting for the CPU experts. The 4-bit attention projections took 7.2 ms at about 67 GB/s on a 192 GB/s card, the bf16 LM head 3.9 ms, and about 3 ms went to small ops. The CPU expert kernel is compute-bound (`bench_q4.cpp`: about 7 cycles per 32 weights per core). Standalone it reaches the RAM's ceiling, about 25 GB/s. In situ it reaches 19.5–21.6 GB/s.
+- **Tried, no gain:** an exact one-FMA weight rebuild, which gives the same bits and is 5% faster on one core but no faster with 8 threads; a subnormal-decode variant; experts in anonymous memory instead of the memory map; thread counts 8–16; prefetch distances and task sizes (all within ±10% noise).
+
+**4-bit attention kernel** (`q4lin_bench.py`): 4 blocks of 32 weights per loop iteration, so their loads are in flight together, plus a launch shape per matrix size. Per layer, inside a CUDA graph: q 45.6 → 31.9 µs, k and v 11.6 → 6.0 µs each, o 62.8 → 36.1 µs, so **132 → 80 µs**. Decode 15.5–16.2 → 16.5–17.1 tok/s.
+
+**Adaptive GPU expert cache** (`adaptive.py`, `routing_sim.py`). The finding: with a fixed cache of 386 experts profiled on built-in text, only **8–19% of real decode expert uses hit the cache**. Which experts are hot depends strongly on the text: a cache profiled on the other prompts is no better than a random one (1.5–13%). Simulated on recorded routing (5 prompts × 96 tokens, 8 slots per layer):
+
+| policy | code | chat | math | story | Hindi |
+|---|---|---|---|---|---|
+| fixed (shipped in 1.3) | 8.8% | 16.9% | 18.7% | 8.3% | 15.6% |
+| re-picked from the prompt's prefill | 30.7% | 36.1% | 27.0% | 31.7% | 50.1% |
+| + up to 4 swaps per decode step | 35.1% | 39.4% | 31.7% | 44.4% | 53.4% |
+| best fixed set in hindsight | 40.6% | 43.6% | 37.0% | 49.9% | 56.9% |
+
+Decay and margin barely matter (41.6–41.9% mean). Capacity does: 6/8/12/16 slots per layer give 36/42/51/58%.
+
+So the cache now keeps 8 slots per layer and changes what they hold. It re-picks from each prompt's routing after the prefill, and swaps up to 4 experts after each decode step. Each swap updates the GPU lookup table and the CPU kernel's resident set together, between steps, so every routed slot is computed exactly once. Cached and uncached experts give the same bits, so the output never depends on the cache's contents. `test_adaptive.py` checks this with a swap after every step.
+
+The prompt re-pick costs 0.2–0.45 s of time to first token, bound by reading cold expert pages from the memory map. `VAHANA_ADAPTIVE_CACHE=0` turns it off.
+- **Benchmark text** (512-token prompt): 14.3–16.5 → **19.6–22.0 tok/s** (p50 44–48 ms).
+- **Real prompts** (`prompts_decode.py`): about level (median 13.5–14.6 against 14.4–14.6). Experts these prompts need are paged in from disk: the 16 GB of experts do not fit in this laptop's 15 GB of RAM, which bounds decode there whatever the cache does.
+
+**Head-to-head, benchmark text** (`head_to_head.py`, same protocol as section 7; `head_to_head_laptop_v2.json`):
+
+| | runs | median | min–max |
+|---|---|---|---|
+| llama.cpp b12494 Q4_K_M | 10 | 11.55 tok/s | 9.99–11.77 |
+| Vahana 1.4 | 10 | **21.42 tok/s** | 19.77–22.15 |
+
+**1.86×**, ranges not overlapping.
+
+**Head-to-head, real prompts** (`real_prompts_h2h.py`, `real_prompts_laptop.json`). Five prompts (code, chat, math, story, Hindi), 96 greedy tokens each, engines alternating by block. llama.cpp gets `llama-completion` with its default warm-up at its best MoE setting, and its own timings. Vahana runs one process with one warm-up call. Two blocks:
+
+| | decode median (min–max) | time to first token, median |
+|---|---|---|
+| llama.cpp | 9.98 tok/s (8.88–11.91) | 7.97 s |
+| Vahana 1.4 | **14.01 tok/s** (11.01–18.58) | **3.07 s** |
+
+**Decode 1.40×, time to first token 2.6× faster.** Vahana is faster on every prompt in both blocks, with answers bit-identical on any machine.
+
 ### Tried and dropped
 - **Windows thread pinning**, one thread per physical core first: 98–167 ms per step against 63 ms unpinned. Removed.
 - **Expert prefetch** (`VAHANA_PREFETCH=1/2`): 130–150 ms per step against 84 ms off. It stays off.
