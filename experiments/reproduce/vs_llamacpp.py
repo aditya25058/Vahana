@@ -195,7 +195,18 @@ if ngl != "0" and SYSTEM != "Darwin":
             best = (str(n), ts)
     if best[1] is None:
         sys.exit("llama.cpp did not run with any --n-cpu-moe setting")
-    print(f"  llama.cpp's best: --n-cpu-moe {best[0]}", flush=True)
+    logical = str(os.cpu_count() or threads)
+    if logical != threads:                               # llama.cpp may prefer every logical CPU
+        r = run([os.path.join(lbin, "llama-bench"), "-m", gguf, "-ngl", "99", "--n-cpu-moe", best[0], "-t", logical,
+                 "-p", "0", "-n", "32", "-r", "3", "-o", "jsonl"], timeout=1800)
+        try:
+            ts = statistics.median(json.loads(r.stdout.strip().splitlines()[0])["samples_ts"][1:])
+            print(f"    --n-cpu-moe {best[0]} -t {logical}: {ts:.2f} tok/s", flush=True)
+            if ts > best[1]:
+                threads, best = logical, (best[0], ts)
+        except (IndexError, ValueError, KeyError):
+            pass
+    print(f"  llama.cpp's best: --n-cpu-moe {best[0]} -t {threads}", flush=True)
 llama_args = ["--llama-dir", lbin, "--ncmoe", best[0], "--threads", threads, "--ngl", ngl]
 
 # ---------------------------------------------------------------- 3. head-to-heads
