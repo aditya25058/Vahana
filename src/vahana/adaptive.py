@@ -38,7 +38,8 @@ class Adaptive:
         for i, m in enumerate(self.layers):
             m._acnt = self.cnt[i]
         self.swaps = int(os.environ.get("VAHANA_CACHE_SWAPS", "4"))
-        self.stats = {"swaps": 0, "steps": 0}
+        self._ring, self._ri = {}, {}
+        self.stats = {"swaps": 0, "steps": 0, "prefill_swaps": 0, "prefill_ms": 0.0}
 
     def _take(self) -> torch.Tensor:
         c = self.cnt.to("cpu", torch.float64)
@@ -57,14 +58,34 @@ class Adaptive:
         ok = cached.any(1) & ~cached.all(1)
         return torch.where(ok, gain, float("-inf")), e_in, e_out
 
+    RING = 6
+
+    def _up(self, dst: torch.Tensor, src: torch.Tensor) -> None:
+        """dst (GPU) <- src (host, pageable: often the checkpoint's memory map) through a ring of pinned buffers: the
+        CPU copy into one buffer overlaps the DMA out of the others (pageable copies ran at ~2.3 GB/s)."""
+        src = src.to(dst.dtype).reshape(-1)
+        k = (dst.dtype, src.numel())
+        ring = self._ring.get(k)
+        if ring is None:
+            ring = self._ring[k] = [[torch.empty(src.numel(), dtype=dst.dtype, pin_memory=True), None]
+                                    for _ in range(self.RING)]
+        slot = ring[self._ri.get(k, 0)]
+        self._ri[k] = (self._ri.get(k, 0) + 1) % self.RING
+        if slot[1] is not None:
+            slot[1].synchronize()                          # its previous DMA has finished: the buffer is free
+        slot[0].copy_(src)
+        dst.reshape(-1).copy_(slot[0], non_blocking=True)
+        if slot[1] is None:
+            slot[1] = torch.cuda.Event()
+        slot[1].record()
+
     def _swap(self, i: int, e_in: int, e_out: int) -> None:
         m = self.layers[i]
         s = int(m.lut_cpu[e_out])
         b = m.base
-        dt = m.G.dtype
-        m.G[s].copy_(b.g[e_in].to(dt))
-        m.U[s].copy_(b.u[e_in].to(dt))
-        m.D[s].copy_(b.d[e_in].to(dt))
+        self._up(m.G[s], b.g[e_in])
+        self._up(m.U[s], b.u[e_in])
+        self._up(m.D[s], b.d[e_in])
         m.lut_cpu[e_out] = -1
         m.lut_cpu[e_in] = s
         self.stats["swaps"] += 1
@@ -92,6 +113,8 @@ class Adaptive:
     @torch.no_grad()
     def after_prefill(self) -> None:
         """Re-pick every layer's cached experts from the prompt's routing (older use counts are halved)."""
+        import time
+        t0, n0 = time.perf_counter(), self.stats["swaps"]
         self.score.mul_(0.5).add_(self._take())
         cached, touched = self._cached(), set()
         for _ in range(max(m.G.shape[0] for m in self.layers)):     # at most every slot of a layer once
@@ -100,6 +123,9 @@ class Adaptive:
                 break
             touched.update(done)
         self._commit(touched)
+        torch.cuda.synchronize()
+        self.stats["prefill_swaps"] = self.stats["swaps"] - n0
+        self.stats["prefill_ms"] = (time.perf_counter() - t0) * 1e3
 
     @torch.no_grad()
     def after_step(self) -> None:

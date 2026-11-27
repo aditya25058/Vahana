@@ -49,13 +49,19 @@ if os.environ.get("PROFILE_SKIP_DECODE") != "1":
     ids = tok(bench.TEXT * 20, return_tensors="pt").input_ids[:, :512].to(dev)
     decode.generate(model, ids[:, :32], max_new_tokens=4)
     f0 = faults()
-    r = decode.generate(model, ids, max_new_tokens=64)
+    fd = []
+    r = decode.generate(model, ids, max_new_tokens=64, on_token=lambda t: fd.append(faults()) and False)
     f1 = faults()
     st = r["step_ms"]
     q = sorted(st)
     print(f"decode: {len(st) / (sum(st) / 1e3):.2f} tok/s, p50 {statistics.median(st):.1f} ms/step, "
           f"p90 {q[int(0.9 * (len(q) - 1))]:.1f}, mean {sum(st) / len(st):.1f}, "
-          f"page faults/token {(f1 - f0) / 64:.0f} (incl. prefill)", flush=True)
+          f"page faults/token {(f1 - f0) / 64:.0f} (incl. prefill), decode only {(fd[-1] - fd[0]) / (len(fd) - 1):.0f}",
+          flush=True)
+    ad = getattr(model, "_vahana_adaptive", None)
+    if ad is not None:
+        print(f"adaptive cache: prefill re-pick {ad.stats['prefill_swaps']} swaps in {ad.stats['prefill_ms']:.0f} ms, "
+              f"{ad.stats['swaps']} swaps in all", flush=True)
 
 if os.environ.get("PROFILE_DECODE_ONLY") == "1":
     sys.exit(0)
