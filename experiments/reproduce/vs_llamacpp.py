@@ -120,13 +120,23 @@ gguf = os.path.join(a.dir, GGUF_FILE)
 bdir = os.path.join(a.dir, "Qwen3-30B-A3B")
 ldir = a.llama_dir or os.path.join(a.dir, f"llama.cpp-{LLAMA_TAG}")
 todo = []
-if not os.path.exists(os.path.join(vdir, "config.json")):
+
+
+def complete(d):
+    """Every weight file the checkpoint's index names is present (a stopped download leaves config.json alone)."""
+    idx = os.path.join(d, "model.safetensors.index.json")
+    if not os.path.exists(idx):
+        return os.path.exists(os.path.join(d, "model.safetensors"))
+    return all(os.path.exists(os.path.join(d, f)) for f in set(json.load(open(idx))["weight_map"].values()))
+
+
+if not complete(vdir):
     todo.append(f"Vahana's model {VAHANA_REPO} (~16.5 GB)")
 if not os.path.exists(gguf):
     todo.append(f"llama.cpp's model {GGUF_REPO}/{GGUF_FILE} (~18.6 GB)")
 if not a.llama_dir and not find_exe(ldir, "llama-bench"):
     todo.append(f"llama.cpp {LLAMA_TAG}: " + ", ".join(llama_assets()))
-if a.quality and not os.path.exists(os.path.join(bdir, "config.json")):
+if a.quality and not complete(bdir):
     todo.append(f"the bf16 original {BF16_REPO} (~61 GB) and WikiText-2 (5 MB)")
 print("machine:", json.dumps(M))
 if todo:
@@ -134,11 +144,11 @@ if todo:
     if not a.yes and input("Download these? [y/N] ").strip().lower() != "y":
         sys.exit("nothing downloaded")
     from huggingface_hub import hf_hub_download, snapshot_download
-    if not os.path.exists(os.path.join(vdir, "config.json")):
+    if not complete(vdir):
         snapshot_download(VAHANA_REPO, local_dir=vdir)
     if not os.path.exists(gguf):
         hf_hub_download(GGUF_REPO, GGUF_FILE, local_dir=a.dir)
-    if a.quality and not os.path.exists(os.path.join(bdir, "config.json")):
+    if a.quality and not complete(bdir):
         snapshot_download(BF16_REPO, local_dir=bdir)
     if not a.llama_dir and not find_exe(ldir, "llama-bench"):
         os.makedirs(ldir, exist_ok=True)
