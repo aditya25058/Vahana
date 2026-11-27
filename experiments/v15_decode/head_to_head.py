@@ -4,7 +4,8 @@
 
 For each block, each engine first warms up (one discarded run, so its weights are back in the page cache), then runs
 --runs times. Engines alternate by block (A B A B ...), so neither always runs on a cache the other just evicted.
-Decode: 64 tokens. llama.cpp: llama-bench -n 64 -p 0 at its best MoE setting (-ngl 99 --n-cpu-moe N -t T). Vahana:
+Decode: 64 tokens. llama.cpp: llama-bench -n 64 -p 0 -r 3 at its best MoE setting (-ngl 99 --n-cpu-moe N -t T),
+the median of its two warm repetitions (its first repetition in a fresh process is slow). Vahana:
 64 tokens after a 512-token prompt (experiments/v15_decode/profile_decode.py, decode only). Reported: per-run
 tok/s, median and min-max per engine, and the ratio of medians.
 """
@@ -31,8 +32,12 @@ here = os.path.dirname(os.path.abspath(__file__))
 def llama_once():
     exe = os.path.join(a.llama_dir, "llama-bench.exe" if os.name == "nt" else "llama-bench")
     r = subprocess.run([exe, "-m", a.gguf, "-ngl", "99", "--n-cpu-moe", a.ncmoe, "-t", a.threads, "-p", "0", "-n", "64",
-                        "-r", "1", "-o", "jsonl"], capture_output=True, text=True, timeout=1800)
-    return json.loads(r.stdout.strip().splitlines()[0])["avg_ts"]
+                        "-r", "3", "-o", "jsonl"], capture_output=True, text=True, timeout=1800)
+    # llama.cpp's first repetition in a fresh process is slow (its mmap'd weights fault in); later repetitions in
+    # the same process are its warm speed. Vahana's runs also warm up in-process before measuring, so report the
+    # median of llama.cpp's warm repetitions (2 and 3).
+    ts = json.loads(r.stdout.strip().splitlines()[0])["samples_ts"]
+    return statistics.median(ts[1:])
 
 
 def vahana_once():

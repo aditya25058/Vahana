@@ -10,7 +10,9 @@ Each version's evidence is in `experiments/` (pre-registered bars, run logs, raw
     - the expert-cache reserve is capped at 25% of the GPU.
   - The 4-bit CPU kernel decodes nibbles more cheaply and uses 64-row tasks.
   - Laptop RTX 3050 Ti, Qwen3-30B 4-bit: typical decode step 76.6 → 58–63 ms (14.8–16.5 tok/s on a quiet machine).
-  - Against llama.cpp on the same laptop: about level at their best (llama.cpp 12.4–15.9 tok/s), and about 2× faster under memory pressure.
+  - Against llama.cpp on the same laptop, in an alternating warm protocol: **1.41× faster decode** (median 16.44 vs 11.64 tok/s, 10 runs each, ranges not overlapping). About 2× faster under memory pressure.
+- **GPU expert kernels skip uncached slots** (GPU expert time 19.6 → 7.6 ms per token on the laptop). A **fused combine kernel** keeps the summation order. **H100: 55.9 → 70.8 tok/s.** Same bits.
+- **Graph and cache reuse across `generate` calls:** about 0.2–0.7 s saved per call.
 - **The first decode step of a call no longer runs eagerly** once the model is warm: it captures the CUDA graph straight away (430–840 → 56–92 ms on Windows). Same bits.
   - H100: unchanged.
   - Details: [experiments/v15_decode](https://github.com/vahana-ai/Vahana/blob/main/experiments/v15_decode/README.md).

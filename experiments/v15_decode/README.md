@@ -106,12 +106,31 @@ llama.cpp's large spread is its first repetition reading its model back from dis
 - **When they compete for RAM, or under memory pressure:** Vahana is about 2× faster.
 - This is with Vahana's answers bit-identical on every machine, which llama.cpp's are not (experiments/v14_llamacpp).
 
+### 7. Round 2 of optimisations, and a controlled head-to-head
+Same bits throughout (GPU selftest 18/18 on the laptop and the H100, with and without the expert cache; the 1.2 receipt replays bit for bit).
+- **GPU expert kernels skip uncached slots** (they computed every routed slot and then discarded the uncached ones): GPU expert time 19.6 → 7.6 ms per token on the laptop.
+- **Fused combine:** one kernel per layer instead of 25–30 small ones. It keeps the summation order (stable by expert id, `y0·w0` then `+ yj·wj`, no FMA contraction). About 2–3% off the laptop step. **H100: 55.9 → 70.8 tok/s (+27%).**
+- **Graph and cache reuse across calls:** a 16-token call's decode takes about 0.75 s instead of 0.93–1.42 s.
+- **q4 CPU kernel software prefetch:** about 4% at the kernel boundary. It is not in the CI wheel measured below.
+
+**Head-to-head protocol** (`head_to_head.py`, results in `head_to_head_laptop.json`): two blocks, engines alternating A B / B A. Each engine does a discarded warm-up run, then 5 runs. llama.cpp gets `llama-bench -p 0 -n 64 -r 3 -ngl 99 --n-cpu-moe 42 -t 8`, scored as the median of its two warm in-process repetitions. Vahana gets 64 tokens after a 512-token prompt, using the CI-built wheel.
+
+| | runs | median | min–max |
+|---|---|---|---|
+| llama.cpp b12494 Q4_K_M | 10 | 11.64 tok/s | 10.40–11.80 |
+| Vahana 1.4 (w4a16) | 10 | **16.44 tok/s** | 15.12–17.10 |
+
+**Ratio of medians: 1.41×.** Bar 3 (≥ 1.0×) and the stretch bar (1.2×) are met under a protocol fixed before the run. The ranges do not overlap.
+
+Caveat, recorded as is: llama.cpp's best single repetitions in other sessions reached 12.4–15.9 tok/s (section 6). Its warm repetitions under this protocol were 11.5–11.8. The first version of this protocol scored llama.cpp on its cold first repetitions only (`-r 1`, 5.3–5.5 tok/s, a 3.05× ratio). That was unfair, so it was discarded and rerun.
+
 ### Tried and dropped
 - **Windows thread pinning**, one thread per physical core first: 98–167 ms per step against 63 ms unpinned. Removed.
 - **Expert prefetch** (`VAHANA_PREFETCH=1/2`): 130–150 ms per step against 84 ms off. It stays off.
 - **The w64devkit (mingw g++) build** gives the same kernel-boundary speed as CI's clang/MSVC build, but about 30 ms slower decode steps. Measure only with CI-built wheels.
 
 ### Next
-- **Reuse the captured graph across calls** (keep the static cache and its buffers), so even the capture is paid once per process.
+- **CPU expert kernel toward memory bandwidth:** about 20 GB/s today, against 28–30 GB/s raw.
+- **Fuse the small GPU ops** (router, norms, rope) that remain between graph nodes.
 - **Fidelity:** 1.3's bf16 expansion of 4-bit attention rounds q·s (up to 12 bits) to 8 bits of mantissa. An exact-q4 attention mode would follow the checkpoint more closely. It changes the bits, so it would be opt-in with its own references.
 - **An exact integer mode** (int8 activations × int4 weights, integer accumulation, exact in any order) like llama.cpp's arithmetic. It is a different numeric model, so it is a research item.
