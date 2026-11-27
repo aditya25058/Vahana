@@ -373,11 +373,16 @@ def _prefetch(model, log=None) -> dict:
     exp = [(n, m) for n, m in model.named_modules() if isinstance(m, VahanaExperts)]
     if not exp:
         return {"mode": 0, "reason": "no CPU experts"}
-    streamed = sum(w.numel() * 2 for _, m in exp if not m.nx for trip in zip(m.g, m.u, m.d) for w in trip)
+    streamed = sum(w.numel() * w.element_size() for _, m in exp if not m.nx for trip in zip(m.g, m.u, m.d)
+                   for w in trip)
     need = streamed / 2**30
     env = os.environ.get("VAHANA_PREFETCH")
-    # Off unless asked: on the v0.5 laptop (NVMe already saturated by demand paging) prefetching did not help
-    mode = int(env) if env not in (None, "") else 0
+    # v1.4: mode 3 (prefetch only the experts a layer has not used lately, which are likely evicted) is the default
+    # when the CPU experts exceed 80% of physical RAM, so that some are always being paged in: on a 15 GB laptop with
+    # Qwen3-30B's 14 GB of 4-bit experts, real-prompt decode +17% and a faster first token (experiments/v15_decode).
+    # Modes 1 and 2 (every job's experts) cost more than they save. Off when the experts fit in RAM.
+    ram = _total_ram_gb()
+    mode = int(env) if env not in (None, "") else (3 if ram and need > 0.8 * ram else 0)
     n = 0
     if mode >= 2:
         for name, m in exp:
@@ -394,8 +399,32 @@ def _prefetch(model, log=None) -> dict:
     k.set_prefetch(mode)
     info = {"mode": mode, "streamed_gb": round(need, 1), "routers": n}
     if log and mode:
-        log(f"vahana: expert prefetch mode {mode} ({need:.0f} GB of experts streamed from disk, {n} routers)")
+        log(f"vahana: expert prefetch mode {mode} ({need:.0f} GB of CPU experts, {ram:.0f} GB RAM"
+            + (f", {n} routers)" if mode == 2 else ")"))
     return info
+
+
+def _total_ram_gb() -> float:
+    """Physical RAM in GB (0 if unknown)."""
+    import os
+    import sys
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            class MS(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            m = MS()
+            m.dwLength = ctypes.sizeof(MS)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
+            return m.ullTotalPhys / 2**30
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
+    except Exception:  # noqa: BLE001
+        return 0.0
 
 
 _CALIB = ["The history of the Roman Empire spans more than a thousand years, from the founding of the city",

@@ -433,6 +433,7 @@ namespace {
 struct LayerW { std::vector<torch::Tensor> g, u, d; std::vector<torch::Tensor> sg, su, sd; std::vector<torch::Tensor> nx, snx;
                 int act = 0; float alpha = 1.702f, limit = 7.0f; std::vector<torch::Tensor> bg, bu, bd;
                 std::vector<uint8_t> resident;                   // v0.3: experts cached on the GPU
+                std::vector<int64_t> last_use; int64_t jobs = 0;   // v1.4: prefetch mode 3 (cold experts only)
                 torch::Tensor router; };                         // v0.5: [E, H] bf16 copy of this layer's router (prefetch)
 std::map<int64_t, LayerW>* LAYERS = new std::map<int64_t, LayerW>();
 }
@@ -535,12 +536,31 @@ void expert_ranges(const LayerW& L, int64_t e, std::vector<std::pair<const void*
 }
 
 // Called at the start of a CPU expert job for `layer` with its N x K selected experts (mask: 1 = runs here).
-void prefetch_job(int64_t layer, const LayerW& L, const uint16_t* xp, int N, int H, const int64_t* tip, int K,
+void prefetch_job(int64_t layer, const LayerW& Lc, const uint16_t* xp, int N, int H, const int64_t* tip, int K,
                   const uint8_t* mask) {
   const int mode = g_pf_mode.load();
-  if (mode <= 0 || !L.nx.empty()) return;          // NX packs live in RAM: nothing to stream
+  if (mode <= 0 || !Lc.nx.empty()) return;         // NX packs live in RAM: nothing to stream
   std::set<int64_t> sel;
   for (int i = 0; i < N * K; i++) if (!mask || mask[i]) sel.insert(tip[i]);
+  if (mode == 3) {
+    // v1.4: cold experts only. When the experts do not all fit in RAM, an expert this layer has not used in its last
+    // VAHANA_PREFETCH_COLD jobs (default 64) has likely been evicted: one PrefetchVirtualMemory / WILLNEED call for just
+    // those turns the threads' 4 KB demand faults into large parallel reads. Experts used recently (likely resident) are
+    // skipped, so a warm machine pays nothing. Hints only: no data and no arithmetic change.
+    static const int64_t cold = [] { const char* v = std::getenv("VAHANA_PREFETCH_COLD"); return v ? std::atoll(v) : 64; }();
+    LayerW& L = const_cast<LayerW&>(Lc);
+    if (L.last_use.size() != L.g.size()) L.last_use.assign(L.g.size(), -(1LL << 40));
+    const int64_t now = ++L.jobs;
+    std::vector<std::pair<const void*, size_t>> r;
+    for (int64_t e : sel) {
+      if (e < 0 || e >= (int64_t)L.last_use.size()) continue;
+      if (now - L.last_use[(size_t)e] > cold) expert_ranges(L, e, r);
+      L.last_use[(size_t)e] = now;
+    }
+    os_prefetch(r);
+    return;
+  }
+  const LayerW& L = Lc;
   {
     std::lock_guard<std::mutex> lk(g_pf_pred_mu);    // how well the previous layer predicted this one
     auto it = g_pf_pred->find(layer);
