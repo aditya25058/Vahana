@@ -22,6 +22,7 @@ ap.add_argument("--gguf", required=True)
 ap.add_argument("--llama-dir", required=True)
 ap.add_argument("--ncmoe", default="42")
 ap.add_argument("--threads", default="8")
+ap.add_argument("--ngl", default="99")
 ap.add_argument("--blocks", type=int, default=2)
 ap.add_argument("--runs", type=int, default=5)
 ap.add_argument("--out", default=None)
@@ -31,7 +32,7 @@ here = os.path.dirname(os.path.abspath(__file__))
 
 def llama_once():
     exe = os.path.join(a.llama_dir, "llama-bench.exe" if os.name == "nt" else "llama-bench")
-    r = subprocess.run([exe, "-m", a.gguf, "-ngl", "99", "--n-cpu-moe", a.ncmoe, "-t", a.threads, "-p", "0", "-n", "64",
+    r = subprocess.run([exe, "-m", a.gguf, "-ngl", a.ngl, *(["--n-cpu-moe", a.ncmoe] if a.ngl != "0" else []), "-t", a.threads, "-p", "0", "-n", "64",
                         "-r", "3", "-o", "jsonl"], capture_output=True, text=True, timeout=1800)
     # llama.cpp's first repetition in a fresh process is slow (its mmap'd weights fault in); later repetitions in
     # the same process are its warm speed. Vahana's runs also warm up in-process before measuring, so report the

@@ -2,7 +2,7 @@
 
   python real_prompts_h2h.py --vahana-model DIR --gguf FILE --llama-dir DIR [--blocks 2] [--out results.json]
 Prompts: prompts_decode.PROMPTS (code, chat, math, story, Hindi). Engines alternate by block (A B, then B A).
-llama.cpp: llama-completion -ngl 99 --n-cpu-moe 42 -t 8 --temp 0 -n 96, one process per prompt with its default
+llama.cpp: llama-completion -ngl 99 --n-cpu-moe N -t T --temp 0 -n 96 (defaults 42 and 8: the laptop's best), one process per prompt with its default
 warm-up; its own timings (prompt eval = time to first token, eval = decode tok/s). Vahana: prompts_decode.py, one
 process for all five prompts after one warm-up call (decode tok/s and prefill time per prompt).
 Reported: per-prompt decode tok/s and time to first token, medians per engine, and the ratio of decode medians.
@@ -20,6 +20,9 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--vahana-model", required=True)
 ap.add_argument("--gguf", required=True)
 ap.add_argument("--llama-dir", required=True)
+ap.add_argument("--ncmoe", default="42")
+ap.add_argument("--threads", default="8")
+ap.add_argument("--ngl", default="99")
 ap.add_argument("--blocks", type=int, default=2)
 ap.add_argument("--out", default=None)
 a = ap.parse_args()
@@ -38,8 +41,8 @@ def llama():
     for name, text in PROMPTS.items():
         f = os.path.join(tmp, name + ".txt")
         open(f, "w", encoding="utf-8", newline="").write(text)
-        r = subprocess.run([exe, "-m", a.gguf, "-ngl", "99", "--n-cpu-moe", "42", "-t", "8", "-f", f, "-n", "96",
-                            "--temp", "0", "-no-cnv"], capture_output=True, text=True, encoding="utf-8",
+        r = subprocess.run([exe, "-m", a.gguf, "-ngl", a.ngl, *(["--n-cpu-moe", a.ncmoe] if a.ngl != "0" else []),
+                            "-t", a.threads, "-f", f, "-n", "96", "--temp", "0", "-no-cnv"], capture_output=True, text=True, encoding="utf-8",
                            errors="replace", timeout=1800)
         log = r.stdout + r.stderr
         pe = re.search(r"prompt eval time =\s*([\d.]+) ms", log)
