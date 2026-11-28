@@ -60,7 +60,7 @@ The second cell downloads about 35 GB and runs for about an hour. The models go 
 - **Time to first token:** 2.8× sooner.
 - See [experiments/v15_decode](../v15_decode/README.md), section 9.
 
-**Kaggle, CPU only: Intel Xeon 2.2 GHz, 2 cores (4 threads), 31 GB RAM, no GPU** (`results_kaggle_cpu.json`). **llama.cpp wins here, clearly.**
+**Kaggle, CPU only: 2 cores (4 threads), 31 GB RAM, no GPU** (Kaggle assigns an Intel Xeon 2.2 GHz or an AMD EPYC 7B12 per session; this run's model was not recorded) (`results_kaggle_cpu.json`). **llama.cpp wins here, clearly.**
 - **Tuning.** Both engines were tuned on this machine. llama.cpp ran 4.97 tok/s with 2 threads and 7.92 with 4. Vahana ran 1.20 with 2 threads and 1.38 with 4. Both used 4.
 
 | | llama.cpp | Vahana | |
@@ -69,6 +69,7 @@ The second cell downloads about 35 GB and runs for about an hour. The models go 
 | five real prompts, decode | **5.43 tok/s** | 1.34 tok/s | 0.25× |
 | time to first token, real prompts | **11.6 s** | 13.9 s | llama.cpp 1.2× sooner |
 
+- **After the CPU work in 1.4** (4-bit attention linears on the CPU, a one-call RMSNorm; same bits), a second Kaggle run, again both engines tuned (that session got an AMD EPYC 7B12, 2 cores / 4 threads, so compare each run's own ratio): decode 2.21 vs 7.91 tok/s on the benchmark text (**0.28×**, from 0.21×), 2.00 vs 6.88 on real prompts (**0.29×**, from 0.25×), first token 10.3 vs 8.8 s. llama.cpp still wins clearly without a GPU. Two later changes (kernel calls skip TwinMode's dispatch; one thread per physical core) are not in this run.
 - **Why.** Vahana's wins come from splitting work between a GPU and the CPU. With no GPU, every layer runs on the CPU in Vahana's fixed summation order, so the bits match every other machine. A first profile on the laptop with its GPU hidden (4 threads, about 460 ms per decode step):
   - about 115 ms is PyTorch overhead: about 5,400 small operations per token (slices, adds, copies), the glue around the exact kernels; on a GPU, CUDA graphs hide it;
   - 87 ms is the expert kernel, with the weights already in RAM;

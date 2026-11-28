@@ -1,12 +1,78 @@
 {
- "machine": {"where": "Kaggle notebook, accelerator None", "cpu": "Intel Xeon @ 2.20GHz, 2 cores / 4 threads", "ram_gb": 31.3,
-             "os": "Linux 6.18.55+", "python": "3.13.18", "torch": "2.11.0+cpu", "vahana": "1.4.0 (8a21c52)", "llama.cpp": "b12494 ubuntu-x64"},
- "tuning": {
-  "llama.cpp_threads": {"2": 4.97, "4": 7.92, "best": 4},
-  "vahana_threads": {"2": 1.20, "4": 1.38, "best": 4}
+ "run_1_vahana_1.4.0_8a21c52": {
+  "machine": {
+   "where": "Kaggle notebook, accelerator None",
+   "cpu": "2 cores / 4 threads (model not recorded; Kaggle sessions got an Intel Xeon 2.2 GHz or an AMD EPYC 7B12)",
+   "ram_gb": 31.3,
+   "os": "Linux 6.18.55+",
+   "python": "3.13.18",
+   "torch": "2.11.0+cpu",
+   "vahana": "1.4.0 (8a21c52)",
+   "llama.cpp": "b12494 ubuntu-x64"
+  },
+  "tuning": {
+   "llama.cpp_threads": {
+    "2": 4.97,
+    "4": 7.92,
+    "best": 4
+   },
+   "vahana_threads": {
+    "2": 1.2,
+    "4": 1.38,
+    "best": 4
+   }
+  },
+  "benchmark_text_decode_tok_s": {
+   "llama.cpp": 6.35,
+   "vahana": 1.35,
+   "ratio": 0.21
+  },
+  "real_prompts_decode_tok_s": {
+   "llama.cpp": 5.43,
+   "vahana": 1.34,
+   "ratio": 0.25
+  },
+  "real_prompts_ttft_s": {
+   "llama.cpp": 11.63,
+   "vahana": 13.89,
+   "ratio_llama_over_vahana": 0.84
+  },
+  "note": "Medians from vs_llamacpp.py's printed table. Per-run values are in the notebook's output, which Kaggle had not yet published when this was recorded."
  },
- "benchmark_text_decode_tok_s": {"llama.cpp": 6.35, "vahana": 1.35, "ratio": 0.21},
- "real_prompts_decode_tok_s": {"llama.cpp": 5.43, "vahana": 1.34, "ratio": 0.25},
- "real_prompts_ttft_s": {"llama.cpp": 11.63, "vahana": 13.89, "ratio_llama_over_vahana": 0.84},
- "note": "Medians from vs_llamacpp.py's printed table. Per-run values are in the notebook's output, which Kaggle had not yet published when this was recorded."
+ "run_2_vahana_1.4.0_f6caa46": {
+  "machine": {
+   "where": "Kaggle notebook, accelerator None",
+   "cpu": "AMD EPYC 7B12, 2 cores / 4 threads",
+   "ram_gb": 31.3,
+   "note": "Kaggle assigns hardware per session, so compare each run's own ratio, not absolute tok/s across runs"
+  },
+  "changes": "4-bit attention linears stay 4-bit on the CPU; RMSNorm in one C++ call (same bits)",
+  "tuning": {
+   "llama.cpp_threads": {
+    "2": 7.91,
+    "4": 6.89,
+    "best": 2
+   },
+   "vahana_threads": {
+    "2": 1.99,
+    "4": 2.36,
+    "best": 4
+   }
+  },
+  "benchmark_text_decode_tok_s": {
+   "llama.cpp": 7.91,
+   "vahana": 2.21,
+   "ratio": 0.28
+  },
+  "real_prompts_decode_tok_s": {
+   "llama.cpp": 6.88,
+   "vahana": 2.0,
+   "ratio": 0.29
+  },
+  "real_prompts_ttft_s": {
+   "llama.cpp": 8.82,
+   "vahana": 10.3,
+   "ratio_llama_over_vahana": 0.86
+  }
+ }
 }
