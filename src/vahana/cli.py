@@ -62,8 +62,17 @@ def _setup(args) -> dict:
     from .osl import cpus as _cpus
     cpus = _cpus()
     os.environ.setdefault("VAHANA_CPUS", ",".join(map(str, cpus)))     # before torch's OpenMP pins this thread
-    threads = args.threads or max(1, len(cpus) - 2)
     gpu = args.device == "cuda"
+    if args.threads:
+        threads = args.threads
+    elif gpu:
+        threads = max(1, len(cpus) - 2)            # two CPUs stay free to feed the GPU
+    else:
+        # v1.4 CPU-only: one thread per physical core (laptop, 8 cores / 16 CPUs: 8 threads 2.75 tok/s, 14: 2.40,
+        # 16: 2.10); with under 4 cores, every CPU (Kaggle, 2 cores / 4 CPUs: 4 threads 1.38 tok/s, 2: 1.20)
+        from .osl import physical_cores
+        pc = physical_cores(cpus)
+        threads = pc if pc and pc >= 4 else len(cpus)
     os.environ.setdefault("VAHANA_THREADS", str(threads))          # the kernel's own thread team (pool.h)
     # torch's OpenMP team: with a GPU it barely runs; CPU-only it runs only small glue ops, and a second team of
     # `threads` on the same cores would fight the kernel's (measured: 1 thread is fastest)

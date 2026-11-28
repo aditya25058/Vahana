@@ -1,12 +1,13 @@
 """Reproduce Vahana vs llama.cpp on your own machine, with one command.
 
   git clone https://github.com/vahana-ai/Vahana && pip install "vahana[gpu]"     (or plain `vahana` without a GPU)
-  python Vahana/experiments/reproduce/vs_llamacpp.py [--dir DIR] [--yes] [--quality]
+  python Vahana/experiments/reproduce/vs_llamacpp.py [--dir DIR] [--yes] [--quality] [--model mixtral-8x7b]
 
 What it does, all on this machine:
   1. Downloads, after asking (--yes skips the question; files already present are reused):
        Vahana's model       RedHatAI/Qwen3-30B-A3B-quantized.w4a16     ~16.5 GB
        llama.cpp's model    Qwen/Qwen3-30B-A3B-GGUF, Q4_K_M            ~18.6 GB
+       (--model mixtral-8x7b: Mixtral-8x7B-Instruct, 4-bit ~24.5 GB and Q4_K_M ~28.4 GB)
        llama.cpp            release b12494 for this OS / GPU           ~25-600 MB
        with --quality: the bf16 original Qwen/Qwen3-30B-A3B (~61 GB) and the WikiText-2 test text (5 MB)
   2. Tunes llama.cpp to its fastest setting here: how many MoE layers stay on the CPU (--n-cpu-moe), by a sweep
@@ -35,21 +36,30 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 EXP = os.path.dirname(HERE)
 LLAMA_TAG = "b12494"
-VAHANA_REPO = "RedHatAI/Qwen3-30B-A3B-quantized.w4a16"
-GGUF_REPO, GGUF_FILE = "Qwen/Qwen3-30B-A3B-GGUF", "Qwen3-30B-A3B-Q4_K_M.gguf"
-BF16_REPO = "Qwen/Qwen3-30B-A3B"
+# --model presets: Vahana's 4-bit checkpoint, llama.cpp's Q4_K_M of the same model, the bf16 original, MoE layers
+MODELS = {
+    "qwen3-30b": dict(vahana="RedHatAI/Qwen3-30B-A3B-quantized.w4a16", vgb=16.5, vdir="Qwen3-30B-A3B-w4a16",
+                      gguf=("Qwen/Qwen3-30B-A3B-GGUF", "Qwen3-30B-A3B-Q4_K_M.gguf"), ggb=18.6,
+                      bf16="Qwen/Qwen3-30B-A3B", bgb=61, layers=48),
+    "mixtral-8x7b": dict(vahana="nm-testing/Mixtral-8x7B-Instruct-v0.1-W4A16-quantized", vgb=24.5,
+                         vdir="Mixtral-8x7B-Instruct-w4a16",
+                         gguf=("mradermacher/Mixtral-8x7B-Instruct-v0.1-GGUF", "Mixtral-8x7B-Instruct-v0.1.Q4_K_M.gguf"),
+                         ggb=28.4, bf16="mistralai/Mixtral-8x7B-Instruct-v0.1", bgb=93, layers=32),
+}
 WIKI = "https://huggingface.co/datasets/ggml-org/ci/resolve/main/wikitext-2-raw-v1.zip"
-N_LAYERS = 48
 
 ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
 ap.add_argument("--dir", default=os.path.join(os.path.expanduser("~"), "vahana_vs_llamacpp"))
 ap.add_argument("--yes", action="store_true", help="download without asking")
-ap.add_argument("--quality", action="store_true", help="also compare quality against the bf16 original (~61 GB more)")
+ap.add_argument("--quality", action="store_true", help="also compare quality against the bf16 original (~61 GB more for qwen3-30b)")
 ap.add_argument("--llama-dir", default=None, help="use this llama.cpp build instead of downloading one")
 ap.add_argument("--blocks", type=int, default=2)
 ap.add_argument("--chunks", type=int, default=32, help="--quality: 512-token chunks of WikiText-2")
 ap.add_argument("--copy-results", default=None, help="also copy results/ here when done (e.g. /kaggle/working)")
+ap.add_argument("--model", default="qwen3-30b", choices=sorted(MODELS), help="which MoE model to compare on")
 a = ap.parse_args()
+MD = MODELS[a.model]
+VAHANA_REPO, (GGUF_REPO, GGUF_FILE), BF16_REPO, N_LAYERS = MD["vahana"], MD["gguf"], MD["bf16"], MD["layers"]
 os.makedirs(a.dir, exist_ok=True)
 RES = os.path.join(a.dir, "results")
 os.makedirs(RES, exist_ok=True)
@@ -115,9 +125,9 @@ def find_exe(root, name):
 
 
 # ---------------------------------------------------------------- 1. downloads
-vdir = os.path.join(a.dir, "Qwen3-30B-A3B-w4a16")
+vdir = os.path.join(a.dir, MD["vdir"])
 gguf = os.path.join(a.dir, GGUF_FILE)
-bdir = os.path.join(a.dir, "Qwen3-30B-A3B")
+bdir = os.path.join(a.dir, BF16_REPO.split("/")[-1])
 ldir = a.llama_dir or os.path.join(a.dir, f"llama.cpp-{LLAMA_TAG}")
 todo = []
 
@@ -131,13 +141,13 @@ def complete(d):
 
 
 if not complete(vdir):
-    todo.append(f"Vahana's model {VAHANA_REPO} (~16.5 GB)")
+    todo.append(f"Vahana's model {VAHANA_REPO} (~{MD['vgb']} GB)")
 if not os.path.exists(gguf):
-    todo.append(f"llama.cpp's model {GGUF_REPO}/{GGUF_FILE} (~18.6 GB)")
+    todo.append(f"llama.cpp's model {GGUF_REPO}/{GGUF_FILE} (~{MD['ggb']} GB)")
 if not a.llama_dir and not find_exe(ldir, "llama-bench"):
     todo.append(f"llama.cpp {LLAMA_TAG}: " + ", ".join(llama_assets()))
 if a.quality and not complete(bdir):
-    todo.append(f"the bf16 original {BF16_REPO} (~61 GB) and WikiText-2 (5 MB)")
+    todo.append(f"the bf16 original {BF16_REPO} (~{MD['bgb']} GB) and WikiText-2 (5 MB)")
 print("machine:", json.dumps(M))
 if todo:
     print(f"\nTo download into {a.dir}:\n  - " + "\n  - ".join(todo))
@@ -190,7 +200,7 @@ best = ("0", None)
 if ngl != "0" and SYSTEM != "Darwin":
     print(f"\ntuning llama.cpp: --n-cpu-moe sweep (-t {threads})", flush=True)
     fails = 0
-    for n in (N_LAYERS, 44, 40, 36, 32, 28, 24, 20, 16, 12, 8, 4, 0):
+    for n in [N_LAYERS] + [v for v in (44, 40, 36, 32, 28, 24, 20, 16, 12, 8, 4, 0) if v < N_LAYERS]:
         r = run([os.path.join(lbin, "llama-bench"), "-m", gguf, "-ngl", "99", "--n-cpu-moe", n, "-t", threads,
                  "-p", "0", "-n", "32", "-r", "3", "-o", "jsonl"], timeout=1800)
         try:

@@ -47,6 +47,39 @@ def cpus() -> list[int]:
     return list(range(os.cpu_count() or 1))
 
 
+def physical_cores(cs=None) -> int | None:
+    """v1.4: physical cores among CPUs `cs` (default: this process's), or None if unknown."""
+    cs = list(cs) if cs is not None else cpus()
+    try:
+        if sys.platform.startswith("linux"):
+            seen = set()
+            for c in cs:
+                base = f"/sys/devices/system/cpu/cpu{c}/topology/"
+                with open(base + "core_id") as f, open(base + "physical_package_id") as g:
+                    seen.add((f.read().strip(), g.read().strip()))
+            return len(seen) or None
+        if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+            n = wintypes.DWORD(0)
+            k = ctypes.windll.kernel32
+            k.GetLogicalProcessorInformation(None, ctypes.byref(n))
+            buf = (ctypes.c_byte * n.value)()
+            if not k.GetLogicalProcessorInformation(buf, ctypes.byref(n)):
+                return None
+            sz = 32 if ctypes.sizeof(ctypes.c_void_p) == 8 else 24     # SYSTEM_LOGICAL_PROCESSOR_INFORMATION
+            off = ctypes.sizeof(ctypes.c_void_p)                       # Relationship follows ProcessorMask
+            rel = [int.from_bytes(bytes(buf[i + off:i + off + 4]), "little") for i in range(0, n.value, sz)]
+            cores = sum(1 for r in rel if r == 0)                       # RelationProcessorCore
+            return min(cores, len(cs)) or None
+        if sys.platform == "darwin":
+            import subprocess
+            return int(subprocess.run(["sysctl", "-n", "hw.physicalcpu"], capture_output=True, text=True).stdout)
+    except (OSError, ValueError):
+        return None
+    return None
+
+
 def set_cpus(cs) -> bool:
     """Pin the calling thread's process to `cs` where the OS supports it (Linux); elsewhere a no-op."""
     if hasattr(os, "sched_setaffinity") and cs:
