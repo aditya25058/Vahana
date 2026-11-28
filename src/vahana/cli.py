@@ -211,7 +211,7 @@ def main(argv=None):
         pc = None
         if args.prefix_cache is not None:
             from . import prefix as _prefix
-            pc = _prefix.PrefixCache(args.prefix_cache or None, model_key=_rc.fingerprint(args.model)["sha256"])
+            pc = _prefix.PrefixCache(args.prefix_cache or None, model_key=_prefix.model_key(args.model))
         r = decode.generate(model, ids, max_new_tokens=args.max_tokens, eos_token_id=tok.eos_token_id,
                             sampler=smp, return_logits=bool(args.receipt), prefix_cache=pc)
         if pc is not None:

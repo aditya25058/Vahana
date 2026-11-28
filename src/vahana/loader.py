@@ -268,21 +268,27 @@ def load(model_dir: str, gpu_budget_gb: float | None = None, device: str = "cuda
 
     q4root = []
 
-    def q4_layer_file(L):
+    def q4_layer_file(L, pre):
         """v1.2: twin-q4 records of every expert of layer L, converted once from the pack-quantized checkpoint into
         ~/.cache/vahana/q4/<model>/layer<L>.safetensors and then memory-mapped read-only (paged by the OS like the
         bf16 checkpoint views; converting into RAM would need the whole expert set resident)."""
         import hashlib
+        import json
         import os
         if not q4root:
             idx = open(os.path.join(model_dir, "model.safetensors.index.json"), "rb").read()
-            q4root.append(os.path.join(os.path.expanduser("~"), ".cache", "vahana", "q4",
-                                       hashlib.sha256(idx).hexdigest()[:16]))
+            # v1.4: the key covers this checkpoint's location and its shards' sizes and times, not only the index:
+            # a fine-tune quantized like its base model has the same index.json and must not reuse its experts
+            hs = hashlib.sha256(idx)
+            hs.update(os.path.realpath(model_dir).encode())
+            for f in sorted(set(json.loads(idx)["weight_map"].values())):
+                st = os.stat(os.path.join(model_dir, f))
+                hs.update(f"{f}:{st.st_size}:{st.st_mtime_ns}".encode())
+            q4root.append(os.path.join(os.path.expanduser("~"), ".cache", "vahana", "q4", hs.hexdigest()[:16]))
             os.makedirs(q4root[0], exist_ok=True)
         path = os.path.join(q4root[0], f"layer{L}.safetensors")
         if not os.path.exists(path):
             from safetensors.torch import save_file
-            pre = f"model.layers.{L}.mlp.experts."
             out = {}
             for kk in ck:
                 if kk.startswith(pre) and kk.endswith(".weight_packed"):
@@ -297,7 +303,9 @@ def load(model_dir: str, gpu_budget_gb: float | None = None, device: str = "cuda
         if k not in ck and k + "_packed" in ck:
             from .loading import ShardMap
             L = int(k.split(".layers.", 1)[1].split(".", 1)[0])
-            return ShardMap.get(q4_layer_file(L)).view_tensor(k.split(".mlp.experts.", 1)[1])
+            # the experts' own prefix (mlp.experts. in Qwen / DeepSeek, block_sparse_moe.experts. in Mixtral / PhiMoE)
+            pre = k[: k.index(".experts.") + len(".experts.")]
+            return ShardMap.get(q4_layer_file(L, pre)).view_tensor(k[len(pre):])
         return h.get_tensor(ck[k])
 
     def get_experts(s):

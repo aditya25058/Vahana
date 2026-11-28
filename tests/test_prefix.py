@@ -35,3 +35,28 @@ def test_other_model_key_misses(tmp_path):
     pc = prefix.PrefixCache(str(tmp_path), "b", 16)
     decode.generate(model, q, max_new_tokens=2, graph=False, prefix_cache=pc)
     assert pc.last["hit_tokens"] == 0
+
+
+def test_model_key_separates_lookalike_checkpoints(tmp_path):
+    """v1.4: a fine-tune with the same shapes must not reuse its base model's cached prefixes."""
+    import os
+    import shutil
+    import time
+
+    import torch
+    from safetensors.torch import save_file
+
+    from vahana import prefix
+    a = tmp_path / "a"
+    a.mkdir()
+    (a / "config.json").write_text('{"model_type": "x"}')
+    save_file({"w": torch.zeros(4, 4)}, str(a / "model.safetensors"))
+    k1 = prefix.model_key(str(a))
+    assert prefix.model_key(str(a)) == k1                           # stable
+    b = tmp_path / "b"
+    shutil.copytree(a, b)
+    assert prefix.model_key(str(b)) != k1                           # same headers, another checkpoint
+    time.sleep(0.01)
+    save_file({"w": torch.ones(4, 4)}, str(a / "model.safetensors"))   # same shapes, new weights in place
+    os.utime(a / "model.safetensors", ns=(time.time_ns(), time.time_ns() + 10**9))
+    assert prefix.model_key(str(a)) != k1

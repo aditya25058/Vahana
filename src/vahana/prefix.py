@@ -29,6 +29,20 @@ def default_dir() -> str:
     return os.environ.get("VAHANA_PREFIX_CACHE") or os.path.join(os.path.expanduser("~"), ".cache", "vahana", "prefix")
 
 
+def model_key(model_dir: str) -> str:
+    """v1.4: what a cached prefix belongs to. The receipt fingerprint (config and safetensors headers) names a model
+    across machines, but a fine-tune with the same shapes has the same headers; stored KV states must not cross
+    between them, so this also covers the checkpoint's location and its files' sizes and times."""
+    from .receipt import fingerprint
+    h = hashlib.sha256(fingerprint(model_dir)["sha256"].encode())
+    h.update(os.path.realpath(model_dir).encode())
+    for f in sorted(os.listdir(model_dir)):
+        if f.endswith(".safetensors") or f == "config.json":
+            st = os.stat(os.path.join(model_dir, f))
+            h.update(f"{f}:{st.st_size}:{st.st_mtime_ns}".encode())
+    return h.hexdigest()
+
+
 class PrefixCache:
     def __init__(self, path: str | None = None, model_key: str = "", block: int = BLOCK, max_gb: float = 20.0):
         import transformers
