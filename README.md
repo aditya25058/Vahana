@@ -126,7 +126,7 @@ Vahana finds the experts by structure (transformers' `experts(hidden, indices, w
 - **RAM:**
   - **Fast:** room for the experts, plus page cache.
   - **Less RAM still works, exactly:** experts stream from disk at disk speed. A saturated NVMe caps decode; for example Qwen3-30B on a 15 GB laptop runs at about 1 tok/s.
-- **One NVIDIA GPU, or none.** Multi-GPU is not supported.
+- **One NVIDIA GPU, or none.** Multi-GPU is not supported. Apple GPUs (Metal) and AMD GPUs are not used: on a Mac, Vahana runs on the CPU only (exact, the same bits), so llama.cpp, which uses the Mac's GPU, is faster there.
 - **CPU:** x86-64 (AVX-512 fastest, AVX2, or plain) and ARM64 (NEON). Wheels: Linux x86-64 / arm64, Windows x86-64, macOS arm64. CI runs the selftest on each, under every instruction set.
 - **Checkpoints:**
   - BF16;
