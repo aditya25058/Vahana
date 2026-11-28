@@ -18,6 +18,8 @@ The script works in four steps:
    With `--quality`, both 4-bit models are also scored against the bf16 original on the same WikiText-2 tokens. This downloads the bf16 model, about 61 GB more.
 4. **Report.** It prints a table and writes JSON and logs to `~/vahana_vs_llamacpp/results`, along with a description of the machine.
 
+`--model mixtral-8x7b` runs the same comparison on Mixtral-8x7B-Instruct: Vahana's model is `nm-testing/Mixtral-8x7B-Instruct-v0.1-W4A16-quantized` (about 24.5 GB) and llama.cpp's is `mradermacher/Mixtral-8x7B-Instruct-v0.1-GGUF`, Q4_K_M (about 28.4 GB).
+
 The protocols are described in [experiments/v15_decode](../v15_decode/README.md) and [experiments/v15_quality](../v15_quality/README.md).
 
 ## On a free Kaggle GPU (T4, 16 GB)

@@ -194,48 +194,54 @@ if SYSTEM == "Linux":                                   # llama.cpp's libraries 
 os.environ.update(env_lib)
 
 # ---------------------------------------------------------------- 2. tune llama.cpp
+def bench(n, t, timeout=900):
+    """llama-bench decode tok/s (median of the warm repetitions) at --n-cpu-moe n (None: CPU only) and -t t, or None
+    if it did not run or ran out of time."""
+    gpu_args = ["-ngl", "99", "--n-cpu-moe", n] if n is not None else ["-ngl", "0"]
+    try:
+        r = run([os.path.join(lbin, "llama-bench"), "-m", gguf, *gpu_args, "-t", t, "-p", "0", "-n", "32", "-r", "3",
+                 "-o", "jsonl"], timeout=timeout)
+        return statistics.median(json.loads(r.stdout.strip().splitlines()[0])["samples_ts"][1:])
+    except (subprocess.TimeoutExpired, IndexError, ValueError, KeyError):
+        return None
+
+
 threads = str(M.get("physical_cores") or max(1, (os.cpu_count() or 2) // 2))
 ngl = "99" if GPU or SYSTEM == "Darwin" else "0"
 best = ("0", None)
 if ngl != "0" and SYSTEM != "Darwin":
     print(f"\ntuning llama.cpp: --n-cpu-moe sweep (-t {threads})", flush=True)
-    fails = 0
-    for n in [N_LAYERS] + [v for v in (44, 40, 36, 32, 28, 24, 20, 16, 12, 8, 4, 0) if v < N_LAYERS]:
-        r = run([os.path.join(lbin, "llama-bench"), "-m", gguf, "-ngl", "99", "--n-cpu-moe", n, "-t", threads,
-                 "-p", "0", "-n", "32", "-r", "3", "-o", "jsonl"], timeout=1800)
-        try:
-            ts = statistics.median(json.loads(r.stdout.strip().splitlines()[0])["samples_ts"][1:])
-        except (IndexError, ValueError, KeyError):
-            fails += 1                                   # did not fit in GPU memory
-            if fails >= 2:
-                break
-            continue
+    # From the most layers on the GPU to the fewest: settings that do not fit fail fast at load, the first that fits
+    # is usually near the best, and the sweep stops once a setting is slower than the best so far. (Starting from
+    # every layer on the CPU, a model larger than RAM can page for an hour per setting.) A setting that runs out of
+    # time counts as failed.
+    for n in sorted({v for v in (0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44) if v < N_LAYERS} | {N_LAYERS}):
+        ts = bench(n, threads)
+        if ts is None:
+            print(f"    --n-cpu-moe {n}: did not run (GPU memory or time)", flush=True)
+            if best[1] is None:
+                continue
+            break
         print(f"    --n-cpu-moe {n}: {ts:.2f} tok/s", flush=True)
-        if best[1] is None or ts > best[1]:
-            best = (str(n), ts)
+        if best[1] is not None and ts < best[1]:
+            break
+        best = (str(n), ts)
     if best[1] is None:
         sys.exit("llama.cpp did not run with any --n-cpu-moe setting")
     logical = str(os.cpu_count() or threads)
     if logical != threads:                               # llama.cpp may prefer every logical CPU
-        r = run([os.path.join(lbin, "llama-bench"), "-m", gguf, "-ngl", "99", "--n-cpu-moe", best[0], "-t", logical,
-                 "-p", "0", "-n", "32", "-r", "3", "-o", "jsonl"], timeout=1800)
-        try:
-            ts = statistics.median(json.loads(r.stdout.strip().splitlines()[0])["samples_ts"][1:])
+        ts = bench(best[0], logical)
+        if ts is not None:
             print(f"    --n-cpu-moe {best[0]} -t {logical}: {ts:.2f} tok/s", flush=True)
             if ts > best[1]:
                 threads, best = logical, (best[0], ts)
-        except (IndexError, ValueError, KeyError):
-            pass
     print(f"  llama.cpp's best: --n-cpu-moe {best[0]} -t {threads}", flush=True)
 if ngl == "0":                                          # CPU only: llama.cpp's faster thread count
     print("\ntuning llama.cpp: threads (CPU only)", flush=True)
     tbest = None
     for t in sorted({threads, str(os.cpu_count() or threads)}, key=int):
-        r = run([os.path.join(lbin, "llama-bench"), "-m", gguf, "-ngl", "0", "-t", t, "-p", "0", "-n", "32", "-r", "3",
-                 "-o", "jsonl"], timeout=3600)
-        try:
-            ts = statistics.median(json.loads(r.stdout.strip().splitlines()[0])["samples_ts"][1:])
-        except (IndexError, ValueError, KeyError):
+        ts = bench(None, t, timeout=3600)
+        if ts is None:
             continue
         print(f"    -t {t}: {ts:.2f} tok/s", flush=True)
         if tbest is None or ts > tbest[1]:
